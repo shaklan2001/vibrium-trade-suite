@@ -1,5 +1,7 @@
 # Vibrium Trade — Phase A runbook
 
+> Full documentation index: [README.md](./README.md) · Continue building: [CONTINUATION_GUIDE.md](./CONTINUATION_GUIDE.md)
+
 ## Org
 
 Uses the existing Vibrium customer (same as HR / payment automations).
@@ -16,7 +18,7 @@ Set the same keys on **Vercel → Project → Settings → Environment Variables
 
 ## Agent slots
 
-Configure in-app at `/routing` (persisted in browser) or via `NEXT_PUBLIC_*` env.
+Configure in-app at `/routing` (persisted in this browser) or via `NEXT_PUBLIC_*` env. Full roster: [agents/AGENT_ROSTER.md](./agents/AGENT_ROSTER.md).
 
 | Slot | Kind | How to create |
 |------|------|----------------|
@@ -48,7 +50,7 @@ Until workflow callbacks exist, dispositions can be set on the Outreach screen.
 
 `requirement → outreach → quoting → selection → artwork → samples → pi_po → packaging → production → booking → docs_payment → closed`
 
-UI automates only the first four. Later labels are shown as Phase B–G.
+UI automates only the first four. Later labels are shown as Phase B–G. Build guide: [phases/PHASES_B_TO_G.md](./phases/PHASES_B_TO_G.md).
 
 ## Vercel
 
@@ -62,12 +64,7 @@ Smoke: `https://<deployment>/api/health`
 
 ## Demo script
 
-Petrageous-style leather toys enquiry → Y.K. outreach → AS LEATHER TOYS normalize → buyer SKU selection.
-
-## Next (Phase B)
-
-Artwork / sample chase workers + conversational follow-up — same slot pattern, no new domain APIs until SoR requires it.
-
+Petrageous-style leather toys enquiry → Y.K. outreach → AS LEATHER TOYS normalize → buyer selection.
 
 ## Provisioned on staging (Phase A)
 
@@ -79,3 +76,7 @@ Artwork / sample chase workers + conversational follow-up — same slot pattern,
 - App: https://vibrium-trade-suite.vercel.app
 - Health: https://vibrium-trade-suite.vercel.app/api/health
 - Repo: https://github.com/pj-022/vibrium-trade-suite
+
+## Next (Phase B)
+
+Artwork / sample chase workers + conversational follow-up — same slot pattern, no new domain APIs until SoR requires it. See [CONTINUATION_GUIDE.md](./CONTINUATION_GUIDE.md).
