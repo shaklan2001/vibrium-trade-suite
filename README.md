@@ -10,6 +10,12 @@ Phase A (live): **Requirement → Factory outreach → Quote matrix → Buyer se
 - Vibrium staging: token BFF, `/api/proxy/*`, worker executions, add-lead, SES threads, agents-api copilot
 - Deploy: Vercel
 
+## Deployed
+
+- **Production:** https://vibrium-trade-suite.vercel.app
+- **GitHub:** https://github.com/pj-022/vibrium-trade-suite
+- Workers on staging: `AA00000025` (requirement), `AA00000026` (quote)
+
 ## Local
 
 ```bash

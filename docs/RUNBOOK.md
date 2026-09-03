@@ -73,3 +73,9 @@ Artwork / sample chase workers + conversational follow-up — same slot pattern,
 
 - `requirement_extractor`: **AA00000025**
 - `quote_normalizer`: **AA00000026**
+
+## Production
+
+- App: https://vibrium-trade-suite.vercel.app
+- Health: https://vibrium-trade-suite.vercel.app/api/health
+- Repo: https://github.com/pj-022/vibrium-trade-suite
