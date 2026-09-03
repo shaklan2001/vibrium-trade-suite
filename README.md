@@ -1,36 +1,44 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Vibrium Trade — Sourcing Suite
 
-## Getting Started
+Buying-agency sourcing automation on **existing Vibrium APIs** (worker agents + conversational agents + workflows). No new domain Lambdas.
 
-First, run the development server:
+Phase A (live): **Requirement → Factory outreach → Quote matrix → Buyer selection**.
+
+## Stack
+
+- Next.js 15 App Router, React 19, Tailwind v4
+- Vibrium staging: token BFF, `/api/proxy/*`, worker executions, add-lead, SES threads, agents-api copilot
+- Deploy: Vercel
+
+## Local
 
 ```bash
+cp .env.example .env.local
+# fill from HR_Workflow / payment_automation service account
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000 → Enter suite.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Health: `GET /api/health` (mints a staging token).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Provision Phase A workers
 
-## Learn More
+```bash
+node --env-file=.env.local scripts/provision-phase-a.mjs
+```
 
-To learn more about Next.js, take a look at the following resources:
+Then paste `AA*` IDs into **Agent Routing**. Assign existing `VB*` bots and api-integrated workflow IDs for outreach / buyer chase.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Golden path
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Intake → Load Petrageous fixture → Extract → Create deal
+2. Outreach → Enroll Y.K. Industries (WhatsApp/email/voice)
+3. Quotes → Upload `docs/fixtures/AS LEATHER TOYS 6.3.25.xlsx` → select SKUs → lock
+4. Copilot for next-step Q&A
 
-## Deploy on Vercel
+## Docs
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- [docs/Sourcing-Buying-Agency-Process-Map.md](docs/Sourcing-Buying-Agency-Process-Map.md)
+- [docs/RUNBOOK.md](docs/RUNBOOK.md)

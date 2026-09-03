@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "src/app/api/chat/route.ts": { "maxDuration": 120 },
+    "src/app/api/proxy/[...path]/route.ts": { "maxDuration": 120 }
+  }
+}
