@@ -20,15 +20,20 @@
 # production
 /build
 
-# misc
+# misc / OS / editor
 .DS_Store
+**/.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
 *.pem
 
 # debug
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 .pnpm-debug.log*
+*.log
 
 # env files (can opt-in for committing if needed)
 .env*
@@ -43,3 +48,16 @@ next-env.d.ts
 
 .env*.local
 .env.local
+
+# Reference docs, BRDs, supplier form packs, accounting notes, etc.
+# Keep docs/samples — required for vault / sample file serving in the app.
+/docs/**
+!/docs/samples/
+!/docs/samples/**
+
+# Cursor / local agent artefacts (if ever present in-repo)
+.cursor/
+agent-transcripts/
+
+# Turbo
+.turbo

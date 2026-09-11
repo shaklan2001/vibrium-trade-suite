@@ -4,11 +4,17 @@ import { vibriumGet, vibriumPost } from "./vibriumClient";
 import type { VoiceBot, WorkflowMeta } from "@/types/vibrium";
 
 export async function listVoiceBots() {
-  const data = await vibriumGet<{ bots?: VoiceBot[] } | VoiceBot[]>(
-    "/voice-bots",
-  );
-  if (Array.isArray(data)) return data;
-  return data?.bots || [];
+  try {
+    const data = await vibriumGet<{ bots?: VoiceBot[] } | VoiceBot[]>(
+      "/voice-bots",
+    );
+    if (Array.isArray(data)) return data;
+    return data?.bots || [];
+  } catch {
+    // Vibrium staging voice-bots-get has been returning 502 independently of Trade;
+    // keep Agent Routing usable without conversational bots.
+    return [];
+  }
 }
 
 export async function listWorkflows() {

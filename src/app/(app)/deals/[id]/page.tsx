@@ -8,10 +8,15 @@ import {
   Button,
   Card,
   CardHeader,
-  ChannelBadge,
 } from "@/components/ui/primitives";
 import { useTradeStore } from "@/lib/trade/store";
 import { STAGE_LABELS } from "@/types/trade";
+import { DealAttentionPanel } from "@/components/ops/deal-attention-panel";
+import { DealTimeline } from "@/components/ops/deal-timeline";
+import { SourceEmailsPanel } from "@/components/ops/source-emails-panel";
+import { FactoryRecommendations } from "@/components/ops/factory-recommendations";
+import { OpenableFileLink } from "@/components/ops/openable-file-link";
+import { DealPaymentsPanel } from "@/components/ops/deal-payments-panel";
 
 export default function DealRoomPage() {
   const params = useParams<{ id: string }>();
@@ -33,11 +38,14 @@ export default function DealRoomPage() {
     <div>
       <PageHeader
         title={deal.title}
-        description={`${STAGE_LABELS[deal.stage]} · ${deal.id.slice(0, 8)}`}
+        description={`${deal.code} · ${STAGE_LABELS[deal.stage]}`}
         actions={
-          <div className="flex gap-2">
-            <Link href="/intake">
-              <Button variant="secondary">Intake</Button>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/home">
+              <Button variant="ghost">Command Center</Button>
+            </Link>
+            <Link href="/pipeline">
+              <Button variant="secondary">Pipeline</Button>
             </Link>
             <Link href="/quotes">
               <Button variant="secondary">Quotes</Button>
@@ -58,30 +66,26 @@ export default function DealRoomPage() {
         }
       />
 
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="rounded-md bg-zinc-900 px-2.5 py-1 font-mono text-sm font-semibold text-white">
+          {deal.code}
+        </span>
+        <Badge tone="info">{STAGE_LABELS[deal.stage]}</Badge>
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader title="Timeline" description="Channel activity" />
-          <div className="divide-y divide-zinc-100">
-            {deal.timeline.map((e) => (
-              <div key={e.id} className="flex gap-3 px-4 py-3">
-                <ChannelBadge channel={e.channel} />
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium">{e.title}</div>
-                  {e.detail ? (
-                    <div className="mt-0.5 text-xs text-zinc-500">
-                      {e.detail}
-                    </div>
-                  ) : null}
-                  <div className="mt-1 text-[11px] text-zinc-400">
-                    {new Date(e.at).toLocaleString()}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+          <CardHeader
+            title="Timeline"
+            description="Day count from deal open · dates highlighted"
+          />
+          <DealTimeline createdAt={deal.createdAt} events={deal.timeline} />
         </Card>
 
         <div className="space-y-4">
+          <DealAttentionPanel deal={deal} />
+          <FactoryRecommendations requirement={deal.requirement} deal={deal} />
+
           <Card>
             <CardHeader title="Parties" />
             <div className="space-y-2 px-4 py-3">
@@ -89,6 +93,9 @@ export default function DealRoomPage() {
                 <div key={i} className="text-sm">
                   <Badge>{p.role}</Badge>{" "}
                   <span className="font-medium">{p.name}</span>
+                  {p.company ? (
+                    <span className="text-zinc-500"> · {p.company}</span>
+                  ) : null}
                   {p.email ? (
                     <div className="text-xs text-zinc-500">{p.email}</div>
                   ) : null}
@@ -118,12 +125,6 @@ export default function DealRoomPage() {
                       ? `$${deal.requirement.targetRetailPrice}`
                       : "—"}
                   </div>
-                  <div>
-                    <span className="text-zinc-500">Confidence:</span>{" "}
-                    {deal.requirement.confidence != null
-                      ? `${Math.round(deal.requirement.confidence * 100)}%`
-                      : "—"}
-                  </div>
                 </>
               ) : (
                 <p className="text-zinc-500">Not extracted yet</p>
@@ -132,40 +133,69 @@ export default function DealRoomPage() {
           </Card>
 
           <Card>
-            <CardHeader title="Documents" />
+            <CardHeader title="Documents" description="Open source files" />
             <div className="space-y-2 px-4 py-3 text-sm">
               {deal.documents.length === 0 ? (
                 <p className="text-zinc-500">None</p>
               ) : (
                 deal.documents.map((doc) => (
-                  <div key={doc.id} className="flex justify-between gap-2">
-                    <span>{doc.name}</span>
-                    <Badge>{doc.type}</Badge>
-                  </div>
-                ))
-              )}
-            </div>
-          </Card>
-
-          <Card>
-            <CardHeader title="Outreach" />
-            <div className="space-y-2 px-4 py-3 text-sm">
-              {deal.outreach.length === 0 ? (
-                <p className="text-zinc-500">None enrolled</p>
-              ) : (
-                deal.outreach.map((o) => (
-                  <div key={o.id}>
-                    <div className="font-medium">{o.factoryName}</div>
-                    <div className="text-xs text-zinc-500">
-                      {o.status}
-                      {o.disposition ? ` · ${o.disposition}` : ""}
+                  <div key={doc.id} className="flex flex-col gap-0.5">
+                    <div className="flex justify-between gap-2">
+                      <OpenableFileLink
+                        name={doc.name}
+                        samplePath={doc.samplePath}
+                        url={doc.url}
+                      />
+                      <Badge>{doc.type}</Badge>
                     </div>
+                    {doc.extractedBy || doc.extractedSummary ? (
+                      <p className="text-[11px] text-zinc-500">
+                        {doc.extractedBy ? (
+                          <span className="font-medium text-zinc-700">
+                            {doc.extractedBy}
+                          </span>
+                        ) : null}
+                        {doc.extractedSummary
+                          ? `${doc.extractedBy ? " — " : ""}${doc.extractedSummary}`
+                          : null}
+                      </p>
+                    ) : null}
                   </div>
                 ))
               )}
             </div>
           </Card>
         </div>
+      </div>
+
+      <div className="mt-4">
+        <DealPaymentsPanel deal={deal} />
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <SourceEmailsPanel sources={deal.sources || []} />
+        <Card>
+          <CardHeader title="Stage snapshot" />
+          <div className="space-y-1 px-4 py-3 text-xs text-zinc-600">
+            <div>Artwork: {deal.artwork?.summary || "—"}</div>
+            <div>Samples: {deal.samples?.summary || "—"}</div>
+            <div>
+              PI/PO:{" "}
+              {deal.discrepancy?.summary ||
+                deal.pi?.summary ||
+                deal.po?.summary ||
+                "—"}
+            </div>
+            <div>
+              Packaging:{" "}
+              {deal.packaging?.summary || deal.upcMatch?.summary || "—"}
+            </div>
+            <div>Production: {deal.production?.summary || "—"}</div>
+            <div>Booking: {deal.booking?.summary || "—"}</div>
+            <div>Payment: {deal.payment?.summary || "—"}</div>
+            <div>Commission: {deal.commission?.summary || "—"}</div>
+          </div>
+        </Card>
       </div>
     </div>
   );

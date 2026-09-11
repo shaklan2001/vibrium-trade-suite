@@ -47,8 +47,12 @@ export interface AgentExecution {
   agent_id: string;
   status: ExecutionStatus;
   input?: Record<string, unknown>;
+  /** Structured worker payload — API field name is `result` (not `output`). */
+  result?: Record<string, unknown>;
+  /** @deprecated Legacy alias; prefer `result`. */
   output?: Record<string, unknown>;
   error?: string;
+  error_code?: string;
   created_at?: string;
   updated_at?: string;
   completed_at?: string;

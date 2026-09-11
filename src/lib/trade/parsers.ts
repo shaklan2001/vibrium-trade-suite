@@ -1,149 +1,180 @@
 import type { RequirementFields, QuoteMatrix, QuoteSku } from "@/types/trade";
 
-/** Local fallback extractor when worker agent is not yet provisioned. */
-export function extractRequirementLocal(emailText: string): RequirementFields {
-  const text = emailText.trim();
-  const lower = text.toLowerCase();
-
-  const retailMatch = text.match(/\$?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:retail|msrp)/i)
-    || text.match(/retail(?:\s*price)?[^\d$]*\$?\s*([0-9]+(?:\.[0-9]+)?)/i);
-  const costMatch = text.match(/(?:factory|cost|target)[^\d$]*\$?\s*([0-9]+(?:\.[0-9]+)?)/i)
-    || text.match(/less than\s*\$?\s*([0-9]+(?:\.[0-9]+)?)/i);
-
-  let productCategory = "General merchandise";
-  if (lower.includes("leather") && lower.includes("toy")) {
-    productCategory = "Leather / suede toys";
-  } else if (lower.includes("silicone") || lower.includes("mat")) {
-    productCategory = "Pet mats / silicone";
-  } else if (lower.includes("bowl")) {
-    productCategory = "Pet bowls";
+function pickString(...values: Array<unknown>): string | undefined {
+  for (const v of values) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (typeof v === "number" && Number.isFinite(v)) return String(v);
   }
-
-  const emailMatches = text.match(
-    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
-  );
-
-  return {
-    productCategory,
-    materials: lower.includes("suede")
-      ? "Leather / suede"
-      : lower.includes("silicone")
-        ? "Silicone"
-        : undefined,
-    targetRetailPrice: retailMatch ? Number(retailMatch[1]) : undefined,
-    targetFactoryCost: costMatch ? Number(costMatch[1]) : undefined,
-    currency: "USD",
-    destination: lower.includes("usa") || lower.includes("us ")
-      ? "USA"
-      : undefined,
-    buyerContacts: emailMatches ? [...new Set(emailMatches)] : [],
-    urgency: lower.includes("asap") || lower.includes("urgent")
-      ? "high"
-      : "normal",
-    summary: text.slice(0, 280),
-    confidence: 0.55,
-    raw: { mode: "local_fallback" },
-  };
+  return undefined;
 }
 
+function pickNumber(...values: Array<unknown>): number | undefined {
+  for (const v of values) {
+    if (v === null || v === undefined) continue;
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim()) {
+      const n = Number(v.replace(/[^0-9.-]/g, ""));
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return undefined;
+}
+
+function pickStringArray(...values: Array<unknown>): string[] {
+  for (const v of values) {
+    if (!Array.isArray(v)) continue;
+    return [
+      ...new Set(
+        v
+          .map((x) => (typeof x === "string" ? x.trim() : String(x || "")))
+          .filter(Boolean),
+      ),
+    ];
+  }
+  return [];
+}
+
+function unwrapPayload(
+  output: Record<string, unknown>,
+): Record<string, unknown> {
+  const nestedCandidates = [output.result, output.data, output.fields];
+  for (const nested of nestedCandidates) {
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const n = nested as Record<string, unknown>;
+      if (
+        n.productCategory ||
+        n.product_category ||
+        n.summary ||
+        n.skus ||
+        n.items
+      ) {
+        return n;
+      }
+    }
+  }
+  return output;
+}
+
+/** True when the agent result has no usable commercial fields. */
+export function isSparseRequirement(fields: RequirementFields): boolean {
+  return !(
+    fields.productCategory ||
+    fields.materials ||
+    fields.targetRetailPrice != null ||
+    fields.targetFactoryCost != null ||
+    fields.summary ||
+    (fields.buyerContacts && fields.buyerContacts.length > 0)
+  );
+}
+
+export function isSparseQuote(matrix: QuoteMatrix): boolean {
+  return !matrix.skus.length;
+}
+
+/** Map requirement_extractor worker result → UI fields. */
+export function requirementFromWorkerOutput(
+  output: Record<string, unknown> | undefined,
+): RequirementFields {
+  if (!output) {
+    throw new Error("Worker completed without a result payload");
+  }
+
+  const src = unwrapPayload(output);
+  const fields: RequirementFields = {
+    productCategory: pickString(src.productCategory, src.product_category),
+    materials: pickString(src.materials),
+    targetRetailPrice: pickNumber(
+      src.targetRetailPrice,
+      src.target_retail_price,
+    ),
+    targetFactoryCost: pickNumber(
+      src.targetFactoryCost,
+      src.target_factory_cost,
+    ),
+    currency: pickString(src.currency) || "USD",
+    destination: pickString(src.destination),
+    buyerCompany: pickString(src.buyerCompany, src.buyer_company),
+    buyerContacts: pickStringArray(src.buyerContacts, src.buyer_contacts),
+    urgency: pickString(src.urgency) || "normal",
+    currentSourcingNotes: pickString(
+      src.currentSourcingNotes,
+      src.current_sourcing_notes,
+    ),
+    packingRequirements: pickString(
+      src.packingRequirements,
+      src.packing_requirements,
+    ),
+    complianceNotes: pickString(src.complianceNotes, src.compliance_notes),
+    quantityHints: pickString(src.quantityHints, src.quantity_hints),
+    openQuestions: pickStringArray(src.openQuestions, src.open_questions),
+    nextActions: pickStringArray(src.nextActions, src.next_actions),
+    subject: pickString(src.subject),
+    summary: pickString(src.summary) || "",
+    confidence: pickNumber(src.confidence) ?? 0,
+    raw: output,
+  };
+
+  if (isSparseRequirement(fields)) {
+    throw new Error(
+      "Worker result was empty — check agent schema / execution logs",
+    );
+  }
+
+  return fields;
+}
+
+/** Map quote_normalizer worker result → SKU matrix. */
 export function normalizeQuoteFromWorkerOutput(
   output: Record<string, unknown> | undefined,
   executionId?: string,
 ): QuoteMatrix {
   if (!output) {
-    return { skus: [], executionId, raw: {} };
+    throw new Error("Worker completed without a result payload");
   }
 
+  const src = unwrapPayload(output);
   const skusRaw =
-    (output.skus as unknown[]) ||
-    (output.items as unknown[]) ||
-    (output.products as unknown[]) ||
+    (src.skus as unknown[]) ||
+    (src.items as unknown[]) ||
+    (src.products as unknown[]) ||
     [];
 
   const skus: QuoteSku[] = skusRaw.map((row) => {
     const r = (row || {}) as Record<string, unknown>;
     return {
-      itemCode: String(r.itemCode || r.item_code || r.sku || r.code || ""),
-      description: String(r.description || r.name || r.product || ""),
-      imageRef: r.imageRef || r.image_ref || r.image
-        ? String(r.imageRef || r.image_ref || r.image)
-        : undefined,
-      moq: r.moq != null ? Number(r.moq) : undefined,
-      unitPrice:
-        r.unitPrice != null
-          ? Number(r.unitPrice)
-          : r.unit_price != null
-            ? Number(r.unit_price)
-            : r.price != null
-              ? Number(r.price)
-              : undefined,
-      currency: String(r.currency || output.currency || "USD"),
-      packingNotes: r.packingNotes || r.packing_notes || r.packing
-        ? String(r.packingNotes || r.packing_notes || r.packing)
-        : undefined,
+      itemCode: pickString(r.itemCode, r.item_code, r.sku, r.code) || "",
+      description: pickString(r.description, r.name, r.product) || "",
+      imageRef: pickString(r.imageRef, r.image_ref, r.image),
+      moq: pickNumber(r.moq),
+      unitPrice: pickNumber(r.unitPrice, r.unit_price, r.price),
+      currency: pickString(r.currency, src.currency) || "USD",
+      packingNotes: pickString(r.packingNotes, r.packing_notes, r.packing),
+      innerCarton: pickNumber(r.innerCarton, r.inner_carton),
+      masterCarton: pickNumber(r.masterCarton, r.master_carton),
+      cbm: pickNumber(r.cbm),
       selected: false,
     };
   });
 
-  return {
-    factoryName: String(
-      output.factoryName || output.factory_name || output.factory || "",
-    ),
-    currency: String(output.currency || "USD"),
+  const matrix: QuoteMatrix = {
+    factoryName: pickString(src.factoryName, src.factory_name, src.factory),
+    currency: pickString(src.currency) || "USD",
+    quoteDate: pickString(src.quoteDate, src.quote_date),
+    incoterm: pickString(src.incoterm),
+    paymentTerms: pickString(src.paymentTerms, src.payment_terms),
+    leadTimeDays: pickNumber(src.leadTimeDays, src.lead_time_days),
+    notes: pickString(src.notes),
+    confidence: pickNumber(src.confidence),
     skus,
     raw: output,
     executionId,
   };
+
+  if (isSparseQuote(matrix)) {
+    throw new Error(
+      "Worker returned no SKUs — check the document URL and agent logs",
+    );
+  }
+
+  return matrix;
 }
-
-export function requirementFromWorkerOutput(
-  output: Record<string, unknown> | undefined,
-): RequirementFields {
-  if (!output) return { confidence: 0, summary: "" };
-  return {
-    productCategory: String(
-      output.productCategory || output.product_category || "",
-    ),
-    materials: output.materials ? String(output.materials) : undefined,
-    targetRetailPrice:
-      output.targetRetailPrice != null
-        ? Number(output.targetRetailPrice)
-        : output.target_retail_price != null
-          ? Number(output.target_retail_price)
-          : undefined,
-    targetFactoryCost:
-      output.targetFactoryCost != null
-        ? Number(output.targetFactoryCost)
-        : output.target_factory_cost != null
-          ? Number(output.target_factory_cost)
-          : undefined,
-    currency: String(output.currency || "USD"),
-    destination: output.destination
-      ? String(output.destination)
-      : undefined,
-    buyerContacts: Array.isArray(output.buyerContacts)
-      ? (output.buyerContacts as string[])
-      : Array.isArray(output.buyer_contacts)
-        ? (output.buyer_contacts as string[])
-        : [],
-    urgency: output.urgency ? String(output.urgency) : "normal",
-    summary: String(output.summary || ""),
-    confidence:
-      output.confidence != null ? Number(output.confidence) : 0.8,
-    raw: output,
-  };
-}
-
-export const PETRAGEOUS_FIXTURE_EMAIL = `From: Gretchen George <gretchen@petrageousdesigns.com>
-To: Swinder Juneja <swinder@snspl.in>
-Cc: Brian George <brian@petrageousdesigns.com>, Matthew Smigiel <Matthew@petrageousdesigns.com>
-Subject: Leather Toys AS Sheet
-
-Hi Swinder,
-
-Do you know of a factory that can produce leather/suede toys? These are currently made in India (Ethical is one of the sources). Retail is around $4.99 so factory cost needs to be less than $1.00.
-
-I have design sheets ready to send once we identify a potential factory. I also have INTERZOO notes I can dig through if helpful.
-
-Thanks,
-Gretchen`;

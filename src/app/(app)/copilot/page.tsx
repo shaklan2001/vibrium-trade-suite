@@ -10,7 +10,7 @@ export default function CopilotPage() {
     <div>
       <PageHeader
         title="Ops Copilot"
-        description="Conversational agent (agents-api) grounded with the current deal JSON."
+        description="Savvy — answers attention, todos, product, process, and deal questions. Grounded on Command Center pulse + current deal."
       />
       <CopilotPanel dealId={dealId} />
     </div>

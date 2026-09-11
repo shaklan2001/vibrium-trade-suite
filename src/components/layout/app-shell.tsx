@@ -2,55 +2,103 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  Boxes,
-  FileText,
-  FolderOpen,
-  LayoutDashboard,
-  MessageSquare,
-  Route,
-  Send,
-  Settings2,
-  Upload,
-} from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  WORKSPACE_PROCESSES,
+  type WorkspaceProcessId,
+} from "@/lib/trade/workspaceProcess";
+import {
+  useWorkspaceProcess,
+  WorkspaceProcessProvider,
+} from "@/components/layout/workspace-process";
 
-const NAV = [
-  { href: "/deals", label: "Deal Board", icon: LayoutDashboard },
-  { href: "/intake", label: "Requirement Intake", icon: Upload },
-  { href: "/quotes", label: "Quotes", icon: Boxes },
-  { href: "/outreach", label: "Outreach", icon: Send },
-  { href: "/vault", label: "Document Vault", icon: FolderOpen },
-  { href: "/routing", label: "Agent Routing", icon: Route },
-  { href: "/copilot", label: "Ops Copilot", icon: MessageSquare },
-  { href: "/docs", label: "Process map", icon: FileText },
-];
+function ProcessToggle() {
+  const { processId, setProcessId, hydrated } = useWorkspaceProcess();
+  const processes = WORKSPACE_PROCESSES;
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+  // Two processes → pill toggle. Three+ → compact select (ready for expansion).
+  if (processes.length > 2) {
+    return (
+      <label className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-sm">
+        <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          Process
+        </span>
+        <select
+          className="bg-transparent text-sm font-medium text-zinc-900 outline-none"
+          value={processId}
+          disabled={!hydrated}
+          onChange={(e) =>
+            setProcessId(e.target.value as WorkspaceProcessId)
+          }
+          aria-label="Workspace process"
+        >
+          {processes.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Workspace process"
+      className="inline-flex rounded-full border border-zinc-200 bg-white p-0.5"
+    >
+      {processes.map((p) => {
+        const active = hydrated && processId === p.id;
+        return (
+          <button
+            key={p.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            disabled={!hydrated}
+            onClick={() => setProcessId(p.id)}
+            className={cn(
+              "rounded-full px-3.5 py-1.5 text-sm font-medium transition",
+              active
+                ? "bg-teal-700 text-white shadow-sm"
+                : "text-zinc-600 hover:text-zinc-900",
+            )}
+          >
+            {p.shortLabel}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function AppShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { process, processId } = useWorkspaceProcess();
 
   return (
     <div className="flex min-h-screen bg-zinc-50 text-zinc-900">
       <aside className="flex w-60 shrink-0 flex-col border-r border-zinc-200 bg-white">
         <div className="border-b border-zinc-100 px-4 py-4">
-          <Link href="/" className="block">
+          <Link href="/home" className="block">
             <div className="text-xs font-medium uppercase tracking-wide text-teal-700">
               Vibrium Trade
             </div>
-            <div className="text-sm font-semibold">Sourcing Suite</div>
+            <div className="text-sm font-semibold">Savvy Net Sourcing</div>
           </Link>
           <p className="mt-1 text-[11px] text-zinc-500">
-            Phase A · Buying agency
+            {process.description}
           </p>
         </div>
-        <nav className="flex-1 space-y-0.5 p-2">
-          {NAV.map((item) => {
+        <nav className="flex-1 space-y-0.5 p-2" aria-label={`${process.label} navigation`}>
+          {process.nav.map((item) => {
             const Icon = item.icon;
             const active =
-              pathname === item.href || pathname.startsWith(item.href + "/");
+              pathname === item.href || pathname.startsWith(`${item.href}/`);
             return (
               <Link
-                key={item.href}
+                key={`${processId}-${item.href}`}
                 href={item.href}
                 className={cn(
                   "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm",
@@ -65,15 +113,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <div className="border-t border-zinc-100 p-3 text-[11px] text-zinc-500">
-          <div className="flex items-center gap-1.5">
-            <Settings2 className="h-3.5 w-3.5" />
-            Existing Vibrium APIs only
-          </div>
-        </div>
       </aside>
-      <main className="min-w-0 flex-1 overflow-auto">{children}</main>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 md:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <ProcessToggle />
+            <span className="hidden truncate text-xs text-zinc-500 sm:inline">
+              {process.label} process
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="hidden items-center gap-2 rounded-full border border-zinc-200 px-2.5 py-1 sm:flex">
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-teal-50 text-[11px] font-semibold text-teal-800">
+                SN
+              </div>
+              <div className="pr-1 leading-tight">
+                <div className="text-xs font-medium text-zinc-900">
+                  Savvy Net
+                </div>
+                <div className="text-[10px] text-zinc-500">
+                  {processId === "finance" ? "Finance" : "Trade Ops"}
+                </div>
+              </div>
+            </div>
+          </div>
+        </header>
+        <main className="min-w-0 flex-1 overflow-auto">{children}</main>
+      </div>
     </div>
+  );
+}
+
+export function AppShell({ children }: { children: React.ReactNode }) {
+  return (
+    <WorkspaceProcessProvider>
+      <AppShellInner>{children}</AppShellInner>
+    </WorkspaceProcessProvider>
   );
 }
 

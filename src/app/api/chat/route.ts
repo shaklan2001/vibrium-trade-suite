@@ -25,9 +25,9 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
-    if (!message || message.length > 8000) {
+    if (!message || message.length > 16000) {
       return NextResponse.json(
-        { error: "Message is required (max 8000 chars)" },
+        { error: "Message is required (max 16000 chars)" },
         { status: 400 },
       );
     }

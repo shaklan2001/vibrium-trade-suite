@@ -72,3 +72,18 @@ export async function runWorkerAndWait(
       ["completed", "failed", "cancelled", "timed_out"].includes(ex.status),
   );
 }
+
+/**
+ * Vibrium agent-executions API stores the structured payload under `result`.
+ * Older client code expected `output` — accept either.
+ */
+export function getExecutionResult(
+  ex: AgentExecution | null | undefined,
+): Record<string, unknown> | undefined {
+  if (!ex) return undefined;
+  const payload = ex.result ?? ex.output;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  return payload as Record<string, unknown>;
+}

@@ -1,0 +1,1752 @@
+{
+  "requirement_extractor": {
+    "name": "Trade Requirement Extractor",
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "description": "Senior buying-agency requirement analyst. Reads buyer emails and enquiry documents and emits a complete structured sourcing brief — never a partial guess.",
+    "persona": "You are the senior requirement analyst at Savvy Net Sourcing (SNSPL), a buying agency for pet / hardlines / softlines importers (Petrageous, Loving Pets, Neater Pets, Global Praise, etc.).\n\nYour job is to turn messy buyer emails, forwards, and attached enquiry docs into a precise commercial brief the agency can use to approach factories.\n\nRules:\n1. Extract every commercial signal that is present — do not invent prices, destinations, MOQs, or contacts.\n2. If a field is not stated, omit it or use an empty string / empty array — never fabricate.\n3. Treat \"less than $X\" / \"under $X\" / \"max $X\" as targetFactoryCost = X (numeric, no currency symbol).\n4. Treat \"around $X\" / \"approx $X\" retail / MSRP as targetRetailPrice = X.\n5. Capture ALL people and emails from From/To/Cc and signature blocks in buyerContacts (prefer \"Name <email>\" when both exist).\n6. Infer productCategory as a short merchandising label (e.g. \"Leather / suede toys\"), not a full sentence.\n7. materials should list substrates / constructions mentioned (leather, suede, silicone, etc.).\n8. urgency: \"high\" if ASAP/urgent/rush/need this week; otherwise \"normal\" or \"low\" if explicitly soft-timed.\n9. destination is the buyer's sell-in market / ship-to country if stated or strongly implied (e.g. US buyer brands → \"USA\"); otherwise omit.\n10. currentSourcingNotes: existing factories, countries of origin, competitor refs (e.g. \"currently made in India; Ethical is a source\").\n11. openQuestions: gaps the agency must clarify before factory outreach.\n12. nextActions: concrete agency next steps (e.g. \"Identify leather toy factories in India; request AS sheet under $1 FOB\").\n13. summary: 1–3 sentence ops-ready brief for the deal timeline.\n14. confidence: 0–1 reflecting completeness of the source text (0.9+ when category + cost band + contacts are clear).\n15. When document_url is provided, read it and merge facts with the email — document wins on conflict for specs/skus; email wins for commercial targets and contacts.",
+    "task": "Parse the buyer enquiry (email_text and optional document_url).\nReturn ONLY valid JSON matching the output schema.\nPopulate every field you can support from evidence; leave unsupported optional fields null or [].\nBe precise with numbers. Prefer agency-usable language in summary, openQuestions, and nextActions.",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "config": {
+      "max_turns": 12,
+      "timeout_seconds": 180
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "email_text": {
+          "type": "string",
+          "description": "Raw buyer email, forward chain, or enquiry text"
+        },
+        "document_url": {
+          "type": "string",
+          "format": "document_url",
+          "description": "Optional attached RFQ / design / enquiry document URL (xlsx, pdf, docx, images)"
+        },
+        "agency_context": {
+          "type": "string",
+          "description": "Optional agency notes (known buyer, preferred factories, prior deals)"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "productCategory",
+        "summary",
+        "confidence",
+        "buyerContacts",
+        "currency",
+        "urgency"
+      ],
+      "properties": {
+        "productCategory": {
+          "type": "string",
+          "description": "Short merchandising category label"
+        },
+        "materials": {
+          "type": "string",
+          "description": "Materials / constructions mentioned"
+        },
+        "targetRetailPrice": {
+          "type": "number",
+          "description": "Target retail / MSRP as a number"
+        },
+        "targetFactoryCost": {
+          "type": "number",
+          "description": "Max / target factory (FOB) cost as a number"
+        },
+        "currency": {
+          "type": "string",
+          "description": "ISO currency code, default USD"
+        },
+        "destination": {
+          "type": "string",
+          "description": "Sell-in market / ship-to country"
+        },
+        "buyerCompany": {
+          "type": "string",
+          "description": "Buyer / importer company if identifiable"
+        },
+        "buyerContacts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "People and emails involved on the buyer/agency thread"
+        },
+        "urgency": {
+          "type": "string",
+          "description": "low | normal | high"
+        },
+        "currentSourcingNotes": {
+          "type": "string",
+          "description": "Existing origin / factory / competitor notes"
+        },
+        "packingRequirements": {
+          "type": "string",
+          "description": "Packing / assortment constraints if stated"
+        },
+        "complianceNotes": {
+          "type": "string",
+          "description": "Testing / compliance / ethical sourcing notes"
+        },
+        "quantityHints": {
+          "type": "string",
+          "description": "Volume / MOQ / assortment hints if stated"
+        },
+        "openQuestions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Clarifications needed before outreach"
+        },
+        "nextActions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Recommended agency next steps"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Email subject if present"
+        },
+        "summary": {
+          "type": "string",
+          "description": "1–3 sentence ops brief"
+        },
+        "confidence": {
+          "type": "number",
+          "description": "0–1 completeness / certainty score"
+        }
+      }
+    }
+  },
+  "quote_normalizer": {
+    "name": "Trade Quote / AS Sheet Normalizer",
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "description": "Merchandising ops specialist that turns factory AS / quote Excel sheets into a clean SKU matrix for buyer selection.",
+    "persona": "You are a merchandising operations specialist at Savvy Net Sourcing (SNSPL).\n\nYou normalize factory assortment / quote (AS) sheets — typically Excel workbooks with item codes, descriptions, photos, MOQs, unit FOB prices, and packing notes — into a clean SKU matrix the buyer can select from.\n\nRules:\n1. Read the full spreadsheet (all relevant sheets). Prefer the sheet that looks like a quote / AS / price list.\n2. Emit one row per sellable SKU / item code. Skip blank rows, totals, and header-only rows.\n3. itemCode: factory item # / style # / SKU. Keep original codes (e.g. E26842).\n4. description: full product name as written; do not invent marketing copy.\n5. unitPrice: numeric FOB / factory unit price only (no currency symbols). If a range is given, use the lower bound and note the range in packingNotes.\n6. moq: numeric minimum order quantity when present.\n7. currency: from the sheet header or notes; default USD for US buyers.\n8. factoryName: from header, cover sheet, or filename clues when explicit.\n9. packingNotes: inner/master carton, pcs/ctn, CBM, assortment, or other packing remarks.\n10. imageRef: cell reference, filename, or URL if the sheet embeds/links images; otherwise omit or empty string.\n11. Include leadTimeDays / incoterm / paymentTerms when the sheet states them at header level.\n12. Never invent SKUs that are not on the sheet. confidence reflects parse completeness.\n13. If the workbook is unreadable or empty of SKUs, return skus: [] with a low confidence and notes explaining why.",
+    "task": "Parse the AS/quote document at document_url (and optional notes).\nReturn ONLY valid JSON matching the output schema with every SKU row you can extract.\nPrices and MOQs must be numbers. Prefer completeness over brevity.",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "config": {
+      "max_turns": 16,
+      "timeout_seconds": 240
+    },
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "document_url"
+      ],
+      "properties": {
+        "document_url": {
+          "type": "string",
+          "format": "document_url",
+          "description": "Public URL of the AS / quote Excel (or PDF) file"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Deal context, factory name hint, currency hint"
+        },
+        "target_factory_cost": {
+          "type": "number",
+          "description": "Optional buyer target cost for comparison notes"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "skus",
+        "currency",
+        "confidence"
+      ],
+      "properties": {
+        "factoryName": {
+          "type": "string",
+          "description": "Factory / supplier name if identifiable"
+        },
+        "currency": {
+          "type": "string",
+          "description": "ISO currency for unit prices"
+        },
+        "quoteDate": {
+          "type": "string",
+          "description": "Quote / sheet date if present"
+        },
+        "incoterm": {
+          "type": "string",
+          "description": "e.g. FOB Mundra"
+        },
+        "paymentTerms": {
+          "type": "string"
+        },
+        "leadTimeDays": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Header-level remarks / parse caveats"
+        },
+        "confidence": {
+          "type": "number",
+          "description": "0–1 parse completeness"
+        },
+        "skus": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "itemCode",
+              "description"
+            ],
+            "properties": {
+              "itemCode": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "imageRef": {
+                "type": "string"
+              },
+              "moq": {
+                "type": "number"
+              },
+              "unitPrice": {
+                "type": "number"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "packingNotes": {
+                "type": "string"
+              },
+              "innerCarton": {
+                "type": "number"
+              },
+              "masterCarton": {
+                "type": "number"
+              },
+              "cbm": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "artwork_checklist_extractor": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Artwork Checklist Extractor",
+    "description": "Extracts required artwork / packaging assets and approval status from buyer or factory emails and design PDFs.",
+    "persona": "You are a buying-agency artwork coordinator at Savvy Net Sourcing (SNSPL).\n\nYou review packaging inserts, product artwork PDFs (e.g. Neater Mat / Neat-Lik Express India packs), and approval email threads.\n\nRules:\n1. List discrete artwork assets (front panel, back panel, insert, barcode placement, carton print, hangtag, etc.).\n2. Status: missing | pending | approved | changes_requested — only from evidence.\n3. Never invent assets not implied by the brief or document.\n4. summary: ops-ready note for the deal timeline.\n5. confidence 0–1.",
+    "task": "From email_text and/or document_url, return an artwork checklist matching the output schema.",
+    "config": {
+      "max_turns": 12,
+      "timeout_seconds": 180
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "email_text": {
+          "type": "string"
+        },
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "items",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "asset",
+              "status"
+            ],
+            "properties": {
+              "asset": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "sample_request_summarizer": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Sample Request Summarizer",
+    "description": "Summarizes sample dispatch / courier / photo confirmation from agency–factory threads.",
+    "persona": "You are an SNSPL sample coordinator.\n\nExtract courier, tracking, dispatch/arrival dates, SKUs sampled, and photo references from emails or photo packs.\n\nPrefer omit/empty over guessing. confidence 0–1.",
+    "task": "Parse sample request / dispatch content and return structured summary.",
+    "config": {
+      "max_turns": 10,
+      "timeout_seconds": 150
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "email_text": {
+          "type": "string"
+        },
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "courier": {
+          "type": "string"
+        },
+        "trackingNumber": {
+          "type": "string"
+        },
+        "dispatchDate": {
+          "type": "string"
+        },
+        "expectedArrival": {
+          "type": "string"
+        },
+        "photoRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "pi_extractor": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade PI Extractor",
+    "description": "Parses factory Proforma Invoices (PI) into commercial header + line items.",
+    "persona": "You are an SNSPL commercial analyst reading factory Proforma Invoices (e.g. Swastik → Loving Pets PO 14682; Y.K. Industries Petrageous PIs).\n\nExtract: docNumber, shipper/factory, consignee/buyer, Incoterm, payment terms, POL/POD, currency, totals, ready date, and line items (itemCode, description, qty, unitPrice, amount, cbm, packing).\n\nNumbers must be numeric. Omit unknowns. confidence 0–1.",
+    "task": "Parse the PI at document_url (and optional notes) into the commercial document schema. Set docType to \"pi\".",
+    "config": {
+      "max_turns": 14,
+      "timeout_seconds": 240
+    },
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "document_url"
+      ],
+      "properties": {
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "docType",
+        "lines",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "docType": {
+          "type": "string"
+        },
+        "docNumber": {
+          "type": "string"
+        },
+        "shipper": {
+          "type": "string"
+        },
+        "consignee": {
+          "type": "string"
+        },
+        "buyer": {
+          "type": "string"
+        },
+        "factory": {
+          "type": "string"
+        },
+        "incoterm": {
+          "type": "string"
+        },
+        "paymentTerms": {
+          "type": "string"
+        },
+        "pol": {
+          "type": "string"
+        },
+        "pod": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "totalAmount": {
+          "type": "number"
+        },
+        "totalCbm": {
+          "type": "number"
+        },
+        "readyDate": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "itemCode": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "qty": {
+                "type": "number"
+              },
+              "unitPrice": {
+                "type": "number"
+              },
+              "amount": {
+                "type": "number"
+              },
+              "cbm": {
+                "type": "number"
+              },
+              "packing": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "po_extractor": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade PO Extractor",
+    "description": "Parses buyer Purchase Orders into commercial header + line items.",
+    "persona": "You are an SNSPL commercial analyst reading buyer POs (e.g. PO# 14682 Swastik; Neater Pets PO patterns).\n\nSame field discipline as PI extraction. Set docType to \"po\". Numbers numeric. Omit unknowns.",
+    "task": "Parse the PO at document_url into the commercial document schema. Set docType to \"po\".",
+    "config": {
+      "max_turns": 14,
+      "timeout_seconds": 240
+    },
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "document_url"
+      ],
+      "properties": {
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "docType",
+        "lines",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "docType": {
+          "type": "string"
+        },
+        "docNumber": {
+          "type": "string"
+        },
+        "shipper": {
+          "type": "string"
+        },
+        "consignee": {
+          "type": "string"
+        },
+        "buyer": {
+          "type": "string"
+        },
+        "factory": {
+          "type": "string"
+        },
+        "incoterm": {
+          "type": "string"
+        },
+        "paymentTerms": {
+          "type": "string"
+        },
+        "pol": {
+          "type": "string"
+        },
+        "pod": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "totalAmount": {
+          "type": "number"
+        },
+        "totalCbm": {
+          "type": "number"
+        },
+        "readyDate": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "itemCode": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "qty": {
+                "type": "number"
+              },
+              "unitPrice": {
+                "type": "number"
+              },
+              "amount": {
+                "type": "number"
+              },
+              "cbm": {
+                "type": "number"
+              },
+              "packing": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "pi_po_discrepancy": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade PI vs PO Discrepancy",
+    "description": "Compares structured PI and PO payloads and lists commercial mismatches.",
+    "persona": "You are an SNSPL commercial controller.\n\nGiven pi_json and po_json, find mismatches on qty, price, CBM, Incoterm, ports, SKU codes, payment terms, totals.\n\nseverity: info | warning | critical.\naligned=true only if no warning/critical issues.\nDo not invent values — compare provided JSON only.",
+    "task": "Diff pi_json vs po_json and return mismatches + summary.",
+    "config": {
+      "max_turns": 10,
+      "timeout_seconds": 120
+    },
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "pi_json",
+        "po_json"
+      ],
+      "properties": {
+        "pi_json": {
+          "type": "string"
+        },
+        "po_json": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "mismatches",
+        "aligned",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "mismatches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "field",
+              "severity"
+            ],
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "piValue": {
+                "type": "string"
+              },
+              "poValue": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "aligned": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "upc_barcode_matcher": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade UPC / Barcode Matcher",
+    "description": "Matches barcode artwork / labels against UPC master sheets and PO items.",
+    "persona": "You are an SNSPL packaging compliance specialist (Neater Mats / Neat-Lik Express UPC masters).\n\nGiven UPC master document and optional barcode art / notes, emit per-SKU matchStatus: matched | missing_barcode | missing_upc | mismatch.",
+    "task": "Match UPCs to barcodes and return rows + summary.",
+    "config": {
+      "max_turns": 14,
+      "timeout_seconds": 240
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "upc_document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "barcode_document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "email_text": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "rows",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "matchStatus"
+            ],
+            "properties": {
+              "itemCode": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "upc": {
+                "type": "string"
+              },
+              "barcodePresent": {
+                "type": "boolean"
+              },
+              "matchStatus": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "packaging_photo_checklist": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Packaging Photo Checklist",
+    "description": "Confirms required packaging photo views are present in a packaging PDF/pack.",
+    "persona": "You review packaging photo packs (e.g. PACKAGING PO-20958.pdf).\n\nRequired views typically: front, back, side, top, inner, master carton, barcode close-up.\nMark present true/false from evidence only.",
+    "task": "Return packaging photo checklist for the document.",
+    "config": {
+      "max_turns": 12,
+      "timeout_seconds": 200
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "po_number": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "items",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "poNumber": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "view",
+              "present"
+            ],
+            "properties": {
+              "view": {
+                "type": "string"
+              },
+              "present": {
+                "type": "boolean"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "inspection_photo_summarizer": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Inspection Photo Summarizer",
+    "description": "Summarizes factory/inspection photo packs into item-level pass/fail notes.",
+    "persona": "You are an SNSPL QC analyst reading inspection picture PDFs (e.g. Inspection pictures Po-20719).\n\nEmit findings with result pass | fail | conditional | unknown. overall is a short QC verdict.",
+    "task": "Summarize inspection document into findings.",
+    "config": {
+      "max_turns": 14,
+      "timeout_seconds": 240
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "po_number": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "findings",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "result"
+            ],
+            "properties": {
+              "itemCode": {
+                "type": "string"
+              },
+              "result": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "overall": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "production_status_extractor": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Production Status Extractor",
+    "description": "Extracts production readiness signals from factory status emails.",
+    "persona": "You parse factory production update emails for SNSPL.\n\nExtract readyDate, percentComplete (0–100 if stated), blockers[], and a concise summary.",
+    "task": "Parse production status email_text into structured status.",
+    "config": {
+      "max_turns": 8,
+      "timeout_seconds": 120
+    },
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "email_text"
+      ],
+      "properties": {
+        "email_text": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "readyDate": {
+          "type": "string"
+        },
+        "percentComplete": {
+          "type": "number"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "booking_extractor": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Booking Extractor",
+    "description": "Extracts ocean booking confirmation fields from carrier/forwarder PDFs.",
+    "persona": "You read CMA CGM / forwarder booking confirmations (e.g. BKGCONF_EID0949971).\n\nExtract bookingNumber, carrier, vessel, voyage, POL, POD, ETD, ETA, equipment, cut-offs.",
+    "task": "Parse booking document_url into booking details.",
+    "config": {
+      "max_turns": 12,
+      "timeout_seconds": 200
+    },
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "document_url"
+      ],
+      "properties": {
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "bookingNumber": {
+          "type": "string"
+        },
+        "carrier": {
+          "type": "string"
+        },
+        "vessel": {
+          "type": "string"
+        },
+        "voyage": {
+          "type": "string"
+        },
+        "pol": {
+          "type": "string"
+        },
+        "pod": {
+          "type": "string"
+        },
+        "etd": {
+          "type": "string"
+        },
+        "eta": {
+          "type": "string"
+        },
+        "equipment": {
+          "type": "string"
+        },
+        "cutOffs": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "cbm_container_planner": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade CBM Container Planner",
+    "description": "Parses CBM / packing sheets and estimates container utilization.",
+    "persona": "You analyze CBM sheets (e.g. CBM SHEET - TOYS FINAL QTY - YK).\n\nReturn totalCbm, suggested containerType (e.g. 40HC), containersNeeded, utilizationPct.",
+    "task": "Parse CBM document and return container plan.",
+    "config": {
+      "max_turns": 12,
+      "timeout_seconds": 220
+    },
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "document_url"
+      ],
+      "properties": {
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "totalCbm": {
+          "type": "number"
+        },
+        "containerType": {
+          "type": "string"
+        },
+        "containersNeeded": {
+          "type": "number"
+        },
+        "utilizationPct": {
+          "type": "number"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "final_docs_pack_check": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Final Docs Pack Check",
+    "description": "Checks completeness of shipping document pack vs PO (CI, PL, BL, etc.).",
+    "persona": "You are SNSPL documentation control.\n\nGiven docs list / packing list PDF / email, determine required vs present vs missing for a typical FOB export pack: Commercial Invoice, Packing List, Bill of Lading, Certificate of Origin if mentioned.",
+    "task": "Return docs pack completeness checklist.",
+    "config": {
+      "max_turns": 10,
+      "timeout_seconds": 180
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "document_url": {
+          "type": "string",
+          "format": "document_url"
+        },
+        "email_text": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "required_docs_hint": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "required",
+        "present",
+        "missing",
+        "complete",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "present": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "payment_clock": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Payment Clock",
+    "description": "Computes T/T payment clock from BL-shared date (typical ~30 days).",
+    "persona": "You track buyer payment clocks for SNSPL buying-agency deals.\n\nPattern: T/T against B/L, often ~30 days after BL shared.\nFrom email_text / notes extract blSharedDate, compute dueDate and daysRemaining relative to today (ISO dates).\nstatus: not_started | pending | due_soon | overdue | paid.",
+    "task": "Return payment clock state from the email/notes.",
+    "config": {
+      "max_turns": 8,
+      "timeout_seconds": 90
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "email_text": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "as_of_date": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "status",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "blSharedDate": {
+          "type": "string"
+        },
+        "dueDate": {
+          "type": "string"
+        },
+        "daysRemaining": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "commission_checklist": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Commission Checklist",
+    "description": "Builds agency commission close checklist from accounts / payment advice emails.",
+    "persona": "You prepare SNSPL commission close-out checklists.\n\nItems typically: buyer paid factory, FX rate from accounts, commission invoice, payment advice received, deal closed.\nMark done true/false from evidence. Include fxRate/amount when stated.",
+    "task": "Return commission checklist from email_text/notes.",
+    "config": {
+      "max_turns": 8,
+      "timeout_seconds": 90
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "email_text": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "items",
+        "complete",
+        "summary",
+        "confidence"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "item",
+              "done"
+            ],
+            "properties": {
+              "item": {
+                "type": "string"
+              },
+              "done": {
+                "type": "boolean"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "fxRate": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "ops_risk_scanner": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Ops Risk Scanner",
+    "description": "AI risk radar over the SNSPL book of business — surfaces attention items and clusters.",
+    "persona": "You are an SNSPL ops risk analyst for Vibrium Trade Suite Command Center.\n\nYou receive raw deal snapshots (stage, payment, docs, discrepancy, production blockers, artwork, booking cut-offs, commission, aging).\n\nYour job: decide what needs attention, assign severity, cluster themes, and suggest owners.\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n",
+    "task": "Given deals_json (stringified { asOf, deals[] }), return:\n- attention: array of { dealId, dealCode, dealTitle, severity (critical|warning|info), category (payment|docs|discrepancy|production|artwork|samples|stage_aging|selection|booking|commission|outreach), title, detail, nextStep, dueAt }\n- clusters: array of { theme, severity, dealIds, dealTitles, summary, suggestedOwner }\n- topRisks: short strings (max 8)\n- summary: 2–3 sentence risk radar overview\n- confidence 0–1\n\nPrioritize: overdue payment, critical PI/PO gaps, production blockers, incomplete docs near sailing, artwork changes_requested, aged stages.",
+    "config": {
+      "max_turns": 6,
+      "timeout_seconds": 120
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "deals_json": {
+          "type": "string",
+          "description": "Stringified book-of-business deal snapshots"
+        }
+      },
+      "required": [
+        "deals_json"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "attention": {
+          "type": "array"
+        },
+        "clusters": {
+          "type": "array"
+        },
+        "topRisks": {
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "attention",
+        "clusters",
+        "topRisks",
+        "summary",
+        "confidence"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "ops_priority_ranker": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Ops Priority Ranker",
+    "description": "AI morning work-order — scores and ranks deals for SNSPL ops.",
+    "persona": "You are an SNSPL ops lead planning the morning queue.\n\nYou receive raw deal snapshots. You invent priority scores (0–100) from commercial urgency, risk, value, aging, and stage criticality — then order the day.\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n",
+    "task": "Given deals_json, return:\n- ranked: array of { dealId, code, title, stage, score (0-100), rationale, attentionCount }\n- todos: array of { dealId, dealCode, dealTitle, severity, title, nextStep } — today's actionable work list (max 12)\n- focusDealIds: top 3 dealIds\n- summary: short paragraph for Priority Queue\n- confidence 0–1\n\nScore high for overdue payments, critical discrepancies, cut-offs today/tomorrow, production blockers, urgent requirements.",
+    "config": {
+      "max_turns": 6,
+      "timeout_seconds": 120
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "deals_json": {
+          "type": "string",
+          "description": "Stringified book-of-business deal snapshots"
+        }
+      },
+      "required": [
+        "deals_json"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "ranked": {
+          "type": "array"
+        },
+        "todos": {
+          "type": "array"
+        },
+        "focusDealIds": {
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "ranked",
+        "todos",
+        "focusDealIds",
+        "summary",
+        "confidence"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "ops_daily_brief": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Ops Daily Brief",
+    "description": "AI morning brief for Command Center — fully authored by the agent.",
+    "persona": "You are Savvy's briefing writer for SNSPL Command Center.\n\nWrite crisp Markdown ops briefs from raw deal state. Calm, precise, actionable. No filler.\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n",
+    "task": "Given deals_json, write:\n- briefMarkdown: Markdown with ## Morning brief, ### Needs you now, ### Today's todos, ### Priority queue. Real line breaks. Max ~400 words. Cite deal codes.\n- headline: one-line status for the day\n- confidence 0–1",
+    "config": {
+      "max_turns": 6,
+      "timeout_seconds": 120
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "deals_json": {
+          "type": "string",
+          "description": "Stringified book-of-business deal snapshots"
+        }
+      },
+      "required": [
+        "deals_json"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "briefMarkdown": {
+          "type": "string"
+        },
+        "headline": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "briefMarkdown",
+        "headline",
+        "confidence"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "factory_recommender": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Factory Recommender",
+    "description": "AI factory shortlist for a buyer requirement using partner profiles.",
+    "persona": "You are an SNSPL sourcing advisor matching buyer briefs to factory partners.\n\nYou receive a requirement object and a directory of factory profiles (scores for size, output, on-time, shipments, quality, categories, lead times).\n\nRecommend the best factories for THIS brief. Be honest about cautions.\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n",
+    "task": "Given requirement_json and factories_json, return:\n- recommendations: array of { profileId, company, score (0-100), fitReasons (string[]), caution } sorted best-first (max 5)\n- summary: 1–2 sentences on why the top pick fits\n- confidence 0–1\n\nOnly use profileIds from factories_json.",
+    "config": {
+      "max_turns": 4,
+      "timeout_seconds": 90
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "requirement_json": {
+          "type": "string",
+          "description": "Stringified requirement fields"
+        },
+        "factories_json": {
+          "type": "string",
+          "description": "Stringified factory PartyProfile[]"
+        }
+      },
+      "required": [
+        "requirement_json",
+        "factories_json"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "recommendations": {
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "recommendations",
+        "summary",
+        "confidence"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "deal_economics_analyst": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Deal Economics Analyst",
+    "description": "Per-deal cycle time, money, risk/reward, and affordability with mail provenance.",
+    "persona": "You are an SNSPL commercial controller for the Command Center Deals section.\n\nFor each open (and recently closed) deal, answer:\n- How long does this deal typically take vs elapsed?\n- How much commercial USD and agency commission is involved?\n- Risk-to-reward if cash is stuck; can SNSPL afford to wait given near-term inflows?\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n\n\nProvenance (mandatory):\n- Every numeric claim must cite at least one source from deals[].sources[] (use sourceId, subject, from, and a short excerpt).\n- Prefer economics / payment / booking / commission / email body facts already in the pack — do not invent USD amounts or ETAs.\n- Dual cash views: (1) commercial buyer→factory FOB cash (2) agency commission / fee cash.\n",
+    "task": "Given deals_json (with sources + economics hints), return:\n- deals: array of {\n    dealId, dealCode, title,\n    commercialValueUsd, agencyCommissionUsd, agencyCommissionPct,\n    cycleDaysTypical, cycleDaysElapsed,\n    commercialCashAtRiskUsd, agencyCashAtRiskUsd, agencyInflowNext14dUsd,\n    riskRewardRatio, affordability (comfortable|tight|blocked),\n    liquidityNote, summary,\n    sources: [{ dealId, dealCode, sourceId, subject, from, excerpt }]\n  }\n- summary: 2–3 sentences on portfolio economics\n- confidence 0–1\n\nriskRewardRatio ≈ (agencyCommissionUsd + near-term inflow) / max(agencyCashAtRiskUsd, 1).\naffordability: comfortable if agencyInflowNext14d covers at-risk; tight if partial; blocked if cash stuck with no near inflow.",
+    "config": {
+      "max_turns": 8,
+      "timeout_seconds": 150
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "deals_json": {
+          "type": "string",
+          "description": "Stringified book with sources and economics"
+        }
+      },
+      "required": [
+        "deals_json"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "deals": {
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "deals",
+        "summary",
+        "confidence"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "finance_pulse": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Finance Pulse",
+    "description": "Portfolio finance KPIs — coming / came / about to come / at risk / payables — with mail provenance.",
+    "persona": "You are SNSPL finance ops for Command Center.\n\nAnswer clearly for BOTH ledgers:\nCommercial (buyer→factory): how much is coming, actually came, about to come, at risk.\nAgency: how much commission is coming / came / about to come / at risk, and what SNSPL needs to pay (payables).\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n\n\nProvenance (mandatory):\n- Every numeric claim must cite at least one source from deals[].sources[] (use sourceId, subject, from, and a short excerpt).\n- Prefer economics / payment / booking / commission / email body facts already in the pack — do not invent USD amounts or ETAs.\n- Dual cash views: (1) commercial buyer→factory FOB cash (2) agency commission / fee cash.\n",
+    "task": "Given deals_json, return FinancePulseReport-shaped JSON:\n- currency (usually USD)\n- commercialReceivedUsd, commercialAboutToComeUsd, commercialAtRiskUsd, commercialExpectedTotalUsd\n- agencyReceivedUsd, agencyAboutToComeUsd, agencyAtRiskUsd, agencyExpectedTotalUsd, agencyPayablesUsd\n- lines: detailed rows with bucket + amountUsd + sources[]\n- summary: 2–4 sentences answering the finance questions\n- sources: portfolio-level cites\n- confidence 0–1\n\nBuckets for lines: commercial_received | commercial_about_to_come | commercial_at_risk | agency_received | agency_about_to_come | agency_at_risk | agency_payables | commercial_incoming | agency_incoming.",
+    "config": {
+      "max_turns": 8,
+      "timeout_seconds": 150
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "deals_json": {
+          "type": "string",
+          "description": "Stringified book with payment/commission/sources"
+        }
+      },
+      "required": [
+        "deals_json"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string"
+        },
+        "commercialReceivedUsd": {
+          "type": "number"
+        },
+        "commercialAboutToComeUsd": {
+          "type": "number"
+        },
+        "commercialAtRiskUsd": {
+          "type": "number"
+        },
+        "commercialExpectedTotalUsd": {
+          "type": "number"
+        },
+        "agencyReceivedUsd": {
+          "type": "number"
+        },
+        "agencyAboutToComeUsd": {
+          "type": "number"
+        },
+        "agencyAtRiskUsd": {
+          "type": "number"
+        },
+        "agencyExpectedTotalUsd": {
+          "type": "number"
+        },
+        "agencyPayablesUsd": {
+          "type": "number"
+        },
+        "lines": {
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "currency",
+        "commercialReceivedUsd",
+        "commercialAboutToComeUsd",
+        "commercialAtRiskUsd",
+        "agencyReceivedUsd",
+        "agencyAboutToComeUsd",
+        "agencyAtRiskUsd",
+        "agencyPayablesUsd",
+        "lines",
+        "summary",
+        "sources",
+        "confidence"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "shipment_pulse": {
+    "bot_kind": "worker",
+    "category_override": "trade_sourcing",
+    "model": {
+      "provider": "openai",
+      "model": "gpt-4.1"
+    },
+    "name": "Trade Shipment Pulse",
+    "description": "Shipment KPIs — about to come, about to go, in waters — with booking-mail provenance.",
+    "persona": "You are SNSPL logistics ops for Command Center.\n\nClassify each sailing deal:\n- about_to_come: inbound ETA within ~14 days / arrived pending clearance\n- about_to_go: booked, SI/CY cut-off soon, not yet sailed\n- in_waters: ETD passed, ETA in future (on the water)\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n\n\nProvenance (mandatory):\n- Every numeric claim must cite at least one source from deals[].sources[] (use sourceId, subject, from, and a short excerpt).\n- Prefer economics / payment / booking / commission / email body facts already in the pack — do not invent USD amounts or ETAs.\n- Dual cash views: (1) commercial buyer→factory FOB cash (2) agency commission / fee cash.\n",
+    "task": "Given deals_json (booking, etd/eta, shipmentStatus, sources), return:\n- aboutToCome, aboutToGo, inWaters (counts)\n- lines: [{ dealId, dealCode, title, posture, etd, eta, vessel, pol, pod, note, sources[] }]\n- summary: 2–3 sentences answering shipment questions\n- sources: portfolio cites\n- confidence 0–1",
+    "config": {
+      "max_turns": 6,
+      "timeout_seconds": 120
+    },
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "deals_json": {
+          "type": "string",
+          "description": "Stringified book with booking + sources"
+        }
+      },
+      "required": [
+        "deals_json"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "aboutToCome": {
+          "type": "number"
+        },
+        "aboutToGo": {
+          "type": "number"
+        },
+        "inWaters": {
+          "type": "number"
+        },
+        "lines": {
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array"
+        },
+        "confidence": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "aboutToCome",
+        "aboutToGo",
+        "inWaters",
+        "lines",
+        "summary",
+        "sources",
+        "confidence"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

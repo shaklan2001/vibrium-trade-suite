@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Card } from "@/components/ui/primitives";
 import { useTradeStore } from "@/lib/trade/store";
+import { dealLabel } from "@/lib/trade/dealCode";
+import { OpenableFileLink } from "@/components/ops/openable-file-link";
 
 export default function VaultPage() {
   const deals = useTradeStore((s) => s.deals);
@@ -13,7 +15,11 @@ export default function VaultPage() {
       deals
         .filter((d) => !dealId || d.id === dealId)
         .flatMap((d) =>
-          d.documents.map((doc) => ({ ...doc, dealTitle: d.title })),
+          d.documents.map((doc) => ({
+            ...doc,
+            dealTitle: d.title,
+            dealCode: d.code,
+          })),
         ),
     [deals, dealId],
   );
@@ -22,7 +28,7 @@ export default function VaultPage() {
     <div>
       <PageHeader
         title="Document Vault"
-        description="Files uploaded to S3 via Vibrium presigned URLs, plus local deal attachments."
+        description="Source files on deals — open the original artefact the agent extracted from."
       />
       <div className="mb-4 max-w-sm">
         <select
@@ -33,7 +39,7 @@ export default function VaultPage() {
           <option value="">All deals</option>
           {deals.map((d) => (
             <option key={d.id} value={d.id}>
-              {d.title}
+              {dealLabel(d)}
             </option>
           ))}
         </select>
@@ -45,7 +51,7 @@ export default function VaultPage() {
               <th className="px-3 py-2">Name</th>
               <th className="px-3 py-2">Type</th>
               <th className="px-3 py-2">Deal</th>
-              <th className="px-3 py-2">S3 key</th>
+              <th className="px-3 py-2">Agent</th>
               <th className="px-3 py-2">When</th>
             </tr>
           </thead>
@@ -53,32 +59,34 @@ export default function VaultPage() {
             {docs.length === 0 ? (
               <tr>
                 <td className="px-3 py-6 text-zinc-500" colSpan={5}>
-                  No documents yet.
+                  No documents yet. Open Command Center and refresh data to sync the vault
+                  or upload from Quotes / Pipeline.
                 </td>
               </tr>
             ) : (
               docs.map((d) => (
                 <tr key={d.id} className="border-b border-zinc-50">
                   <td className="px-3 py-2">
-                    {d.url ? (
-                      <a
-                        href={d.url}
-                        className="text-teal-700 underline"
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {d.name}
-                      </a>
-                    ) : (
-                      d.name
-                    )}
+                    <OpenableFileLink
+                      name={d.name}
+                      samplePath={d.samplePath}
+                      url={d.url}
+                    />
+                    {d.extractedSummary ? (
+                      <div className="mt-0.5 text-[11px] text-zinc-500">
+                        {d.extractedSummary}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2">
                     <Badge>{d.type}</Badge>
                   </td>
-                  <td className="px-3 py-2">{d.dealTitle}</td>
-                  <td className="px-3 py-2 font-mono text-xs">
-                    {d.s3Key || "—"}
+                  <td className="px-3 py-2">
+                    <span className="font-mono text-xs">{d.dealCode}</span>
+                    <span className="text-zinc-500"> · {d.dealTitle}</span>
+                  </td>
+                  <td className="px-3 py-2 text-xs text-zinc-600">
+                    {d.extractedBy || d.s3Key || "—"}
                   </td>
                   <td className="px-3 py-2 text-xs text-zinc-500">
                     {new Date(d.uploadedAt).toLocaleString()}
