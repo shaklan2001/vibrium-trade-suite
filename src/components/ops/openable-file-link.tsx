@@ -2,6 +2,7 @@
 
 import { ExternalLink, FileText, Paperclip } from "lucide-react";
 import { sampleOpenUrl } from "@/lib/trade/sampleFiles";
+import { digestFromIngestPath, ingestFileOpenUrl } from "@/lib/trade/ingestFiles";
 
 /** Open link for a vault / source sample artefact. */
 export function OpenableFileLink({
@@ -15,9 +16,14 @@ export function OpenableFileLink({
   url?: string;
   className?: string;
 }) {
-  const href = url || (samplePath ? sampleOpenUrl(samplePath) : undefined);
+  const href =
+    url ||
+    ingestFileOpenUrl({ path: samplePath, name, url }) ||
+    (samplePath && !digestFromIngestPath(samplePath)
+      ? sampleOpenUrl(samplePath)
+      : undefined);
   if (!href) {
-    return <span className={className}>{name}</span>;
+    return <span className={`${className} text-zinc-600`}>{name}</span>;
   }
   return (
     <a

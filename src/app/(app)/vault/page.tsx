@@ -3,12 +3,12 @@
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Card } from "@/components/ui/primitives";
-import { useTradeStore } from "@/lib/trade/store";
+import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { dealLabel } from "@/lib/trade/dealCode";
 import { OpenableFileLink } from "@/components/ops/openable-file-link";
 
 export default function VaultPage() {
-  const deals = useTradeStore((s) => s.deals);
+  const deals = useVisibleDeals();
   const [dealId, setDealId] = useState("");
   const docs = useMemo(
     () =>

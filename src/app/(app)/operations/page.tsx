@@ -33,11 +33,12 @@ import {
   type DrillPayload,
 } from "@/components/ops/chart-drill-panel";
 import { useTradeStore } from "@/lib/trade/store";
+import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { companyPulse } from "@/lib/trade/opsIntelligence";
+import { hydrateMailboxBook } from "@/lib/trade/mailboxHydrate";
 import {
   buildDealEconomicsList,
   buildShipmentPulseFromDeals,
-  usd,
 } from "@/lib/trade/commandCenterMetrics";
 import { refreshOpsIntelligence } from "@/lib/trade/refreshOpsIntelligence";
 import type { CashDrillDeal } from "@/lib/trade/cashExposure";
@@ -67,10 +68,9 @@ function shortCode(code?: string) {
 }
 
 export default function OperationsDashboardPage() {
-  const deals = useTradeStore((s) => s.deals);
+  const deals = useVisibleDeals();
   const routing = useTradeStore((s) => s.routing);
   const opsIntel = useTradeStore((s) => s.opsIntel);
-  const seedBookOfBusiness = useTradeStore((s) => s.seedBookOfBusiness);
   const setOpsIntel = useTradeStore((s) => s.setOpsIntel);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -81,8 +81,10 @@ export default function OperationsDashboardPage() {
     setHydrated(true);
   }, []);
   useEffect(() => {
-    if (hydrated) seedBookOfBusiness();
-  }, [hydrated, seedBookOfBusiness]);
+    if (!hydrated) return;
+    void hydrateMailboxBook();
+  }, [hydrated]);
+  useTradeStore((s) => s.displayCurrency);
 
   const pulse = useMemo(() => companyPulse(deals), [deals]);
   const shipment = opsIntel.shipment || buildShipmentPulseFromDeals(deals);

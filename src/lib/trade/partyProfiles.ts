@@ -123,7 +123,7 @@ export const SEED_PARTY_PROFILES: PartyProfile[] = [
 
 export function recommendFactories(
   requirement?: RequirementFields | null,
-  profiles: PartyProfile[] = SEED_PARTY_PROFILES,
+  profiles: PartyProfile[] = [],
   limit = 3,
 ): FactoryRecommendation[] {
   const factories = profiles.filter((p) => p.role === "factory");

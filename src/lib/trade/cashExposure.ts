@@ -13,6 +13,11 @@ import type {
 import type { CashBlockLocation } from "@/types/trade";
 import { ensureDealEconomics } from "./commandCenterMetrics";
 import { scheduleCashHints } from "./paymentSchedule";
+import type { BuyerCommissionRate } from "./agencyCommission";
+import {
+  agencyCommissionForDeal,
+  toAgencyShareUsd,
+} from "./agencyCommission";
 
 export type { CashBlockLocation };
 
@@ -35,6 +40,8 @@ export interface RollingBucket {
 
 export interface CashExposureReport {
   asOf: string;
+  /** When true, amounts are Agency commission shares — not trade size */
+  agencyMode?: boolean;
   /** 1 */ cashDeployedUsd: number;
   /** 2 */ cashStillRequiredUsd: number;
   /** 3 */ rolling: RollingBucket[];
@@ -54,8 +61,18 @@ export interface CashExposureReport {
   commissionLines: CashDrillDeal[];
   deployedDeals: CashDrillDeal[];
   stillRequiredDeals: CashDrillDeal[];
+  /** Agency book totals (display overlay) */
+  agencyCommissionBookUsd?: number;
+  agencyCommercialFootnoteUsd?: number;
+  agencyUnconfiguredDeals?: number;
   summary: string;
 }
+
+export type CashExposureOptions = {
+  /** Scale commercial cash figures to buyer commission % */
+  agencyMode?: boolean;
+  rates?: BuyerCommissionRate[];
+};
 
 function cites(deal: Deal): ProvenanceCite[] {
   const econ = ensureDealEconomics(deal);
@@ -207,7 +224,12 @@ function drill(
   };
 }
 
-export function buildCashExposureReport(deals: Deal[]): CashExposureReport {
+export function buildCashExposureReport(
+  deals: Deal[],
+  options: CashExposureOptions = {},
+): CashExposureReport {
+  const agencyMode = Boolean(options.agencyMode);
+  const rates = options.rates || [];
   const asOf = new Date().toISOString();
   let cashDeployedUsd = 0;
   let cashStillRequiredUsd = 0;
@@ -215,6 +237,9 @@ export function buildCashExposureReport(deals: Deal[]): CashExposureReport {
   let commissionAwaitingUsd = 0;
   let commissionReceivedUsd = 0;
   let commissionChasingUsd = 0;
+  let agencyCommissionBookUsd = 0;
+  let agencyCommercialFootnoteUsd = 0;
+  const unconfiguredIds = new Set<string>();
   const deployedDeals: CashDrillDeal[] = [];
   const stillRequiredDeals: CashDrillDeal[] = [];
   const recoveries: CashDrillDeal[] = [];
@@ -232,18 +257,44 @@ export function buildCashExposureReport(deals: Deal[]): CashExposureReport {
   let gapSum = 0;
   let gapN = 0;
 
+  const scale = (deal: Deal, amountUsd: number) => {
+    if (!agencyMode) return { amountUsd, metaExtra: "" };
+    const share = toAgencyShareUsd(deal, amountUsd, rates);
+    const overlay = agencyCommissionForDeal(deal, rates);
+    if (!share.configured) {
+      unconfiguredIds.add(deal.id);
+      return {
+        amountUsd: 0,
+        metaExtra: overlay.warning ? ` · ${overlay.warning}` : " · rate missing",
+      };
+    }
+    return {
+      amountUsd: share.amountUsd,
+      metaExtra: share.pct != null ? ` · ${share.pct}% commission` : "",
+    };
+  };
+
   for (const d of deals) {
     const c = ensureCashExposure(d);
+    if (agencyMode) {
+      const overlay = agencyCommissionForDeal(d, rates);
+      agencyCommercialFootnoteUsd += overlay.commercialValueUsd;
+      agencyCommissionBookUsd += overlay.commissionUsd;
+      if (!overlay.configured) unconfiguredIds.add(d.id);
+    }
+
     if (c.cashDeployedUsd > 0) {
-      cashDeployedUsd += c.cashDeployedUsd;
+      const s = scale(d, c.cashDeployedUsd);
+      cashDeployedUsd += s.amountUsd;
       deployedDeals.push(
-        drill(d, c.cashDeployedUsd, `Deployed · ${d.stage}`),
+        drill(d, s.amountUsd, `Deployed · ${d.stage}${s.metaExtra}`),
       );
     }
     if (c.cashStillRequiredUsd > 0) {
-      cashStillRequiredUsd += c.cashStillRequiredUsd;
+      const s = scale(d, c.cashStillRequiredUsd);
+      cashStillRequiredUsd += s.amountUsd;
       stillRequiredDeals.push(
-        drill(d, c.cashStillRequiredUsd, `Still required · ${d.stage}`),
+        drill(d, s.amountUsd, `Still required · ${d.stage}${s.metaExtra}`),
       );
       // Heuristic horizons by stage urgency
       const h: 30 | 60 | 90 | 120 =
@@ -255,63 +306,95 @@ export function buildCashExposureReport(deals: Deal[]): CashExposureReport {
               ? 90
               : 120;
       rollingMap[h].push(
-        drill(d, c.cashStillRequiredUsd, `Need within ${h}d`),
+        drill(d, s.amountUsd, `Need within ${h}d${s.metaExtra}`),
       );
     }
     if (
       c.receivableExpectedUsd > 0 &&
       (c.receivableStatus === "expected" || c.receivableStatus === "overdue")
     ) {
-      expectedRecoveriesUsd += c.receivableExpectedUsd;
+      const s = scale(d, c.receivableExpectedUsd);
+      expectedRecoveriesUsd += s.amountUsd;
       recoveries.push(
         drill(
           d,
-          c.receivableExpectedUsd,
-          c.receivableDueDate
+          s.amountUsd,
+          (c.receivableDueDate
             ? `Due ${c.receivableDueDate} · ${c.receivableStatus}`
-            : c.receivableStatus,
+            : c.receivableStatus) + s.metaExtra,
         ),
       );
     }
     if (c.blockedAt && c.blockedAt !== "none") {
-      const amt =
+      const rawAmt =
         c.cashDeployedUsd ||
         c.receivableExpectedUsd ||
         c.pipelineCommitmentUsd ||
         0;
-      if (amt > 0) {
+      const s = scale(d, rawAmt);
+      if (s.amountUsd > 0 || (!agencyMode && rawAmt > 0)) {
         const list = blockMap.get(c.blockedAt) || [];
-        list.push(drill(d, amt, `Blocked at ${c.blockedAt}`, c.blockedAt));
+        list.push(
+          drill(
+            d,
+            agencyMode ? s.amountUsd : rawAmt,
+            `Blocked at ${c.blockedAt}${s.metaExtra}`,
+            c.blockedAt,
+          ),
+        );
         blockMap.set(c.blockedAt, list);
       }
     }
     if (c.payGapDays != null && c.payGapDays > 0) {
       gapSum += c.payGapDays;
       gapN += 1;
+      const s = scale(d, c.pipelineCommitmentUsd);
       payGapDeals.push(
-        drill(d, c.pipelineCommitmentUsd, `Gap ${c.payGapDays} days`),
+        drill(
+          d,
+          agencyMode ? s.amountUsd : c.pipelineCommitmentUsd,
+          `Gap ${c.payGapDays} days${s.metaExtra}`,
+        ),
       );
     }
-    const comm = c.commissionInvoiceUsd || 0;
+
+    // Commission settlement lines — prefer configured overlay in Agency mode
+    const overlay = agencyMode
+      ? agencyCommissionForDeal(d, rates)
+      : null;
+    const comm = agencyMode
+      ? overlay?.commissionUsd || 0
+      : c.commissionInvoiceUsd || 0;
     if (comm > 0) {
-      if (c.commissionStatus === "received") {
+      const status = c.commissionStatus;
+      const pctNote =
+        overlay?.pct != null ? ` · ${overlay.pct}%` : "";
+      if (status === "received" || (agencyMode && d.commission?.complete)) {
         commissionReceivedUsd += comm;
-        commissionLines.push(drill(d, comm, "Commission received"));
-      } else if (c.commissionStatus === "chasing") {
+        commissionLines.push(
+          drill(d, comm, `Commission received${pctNote}`),
+        );
+      } else if (status === "chasing" || (agencyMode && d.stage === "closed")) {
         commissionChasingUsd += comm;
-        commissionLines.push(drill(d, comm, "Chasing factory payment"));
-      } else if (c.commissionStatus === "invoiced" || c.commissionStatus === "awaiting_fx") {
+        commissionLines.push(
+          drill(d, comm, `Chasing commission${pctNote}`),
+        );
+      } else {
         commissionAwaitingUsd += comm;
         commissionLines.push(
           drill(
             d,
             comm,
-            c.commissionStatus === "awaiting_fx"
-              ? "Awaiting FX from factory"
-              : "Commission invoiced",
+            status === "awaiting_fx"
+              ? `Awaiting FX${pctNote}`
+              : `Commission due${pctNote}`,
           ),
         );
       }
+    } else if (agencyMode && overlay && !overlay.configured) {
+      commissionLines.push(
+        drill(d, 0, overlay.warning || "Commission % not configured"),
+      );
     }
   }
 
@@ -338,6 +421,7 @@ export function buildCashExposureReport(deals: Deal[]): CashExposureReport {
 
   return {
     asOf,
+    agencyMode,
     cashDeployedUsd,
     cashStillRequiredUsd,
     rolling,
@@ -352,7 +436,14 @@ export function buildCashExposureReport(deals: Deal[]): CashExposureReport {
     commissionLines,
     deployedDeals,
     stillRequiredDeals,
-    summary: `Deployed ${fmt(cashDeployedUsd)} · still required ${fmt(cashStillRequiredUsd)} · recoveries ${fmt(expectedRecoveriesUsd)} · avg vendor–buyer gap ${gapN ? Math.round(gapSum / gapN) : 0}d`,
+    agencyCommissionBookUsd: agencyMode ? agencyCommissionBookUsd : undefined,
+    agencyCommercialFootnoteUsd: agencyMode
+      ? agencyCommercialFootnoteUsd
+      : undefined,
+    agencyUnconfiguredDeals: agencyMode ? unconfiguredIds.size : undefined,
+    summary: agencyMode
+      ? `Agency commission book ${fmt(agencyCommissionBookUsd)} · trade size footnote ${fmt(agencyCommercialFootnoteUsd)} · unconfigured ${unconfiguredIds.size}`
+      : `Deployed ${fmt(cashDeployedUsd)} · still required ${fmt(cashStillRequiredUsd)} · recoveries ${fmt(expectedRecoveriesUsd)} · avg vendor–buyer gap ${gapN ? Math.round(gapSum / gapN) : 0}d`,
   };
 }
 

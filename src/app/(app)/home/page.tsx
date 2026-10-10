@@ -9,8 +9,13 @@ import { useWorkspaceProcess } from "@/components/layout/workspace-process";
 import { Button, Card } from "@/components/ui/primitives";
 import { KpiTile } from "@/components/ops/command-center-ui";
 import { useTradeStore } from "@/lib/trade/store";
+import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { companyPulse } from "@/lib/trade/opsIntelligence";
 import { buildCashExposureReport } from "@/lib/trade/cashExposure";
+import {
+  hydrateMailboxBook,
+  friendlyMailboxError,
+} from "@/lib/trade/mailboxHydrate";
 import {
   buildShipmentPulseFromDeals,
   usd,
@@ -22,8 +27,7 @@ function k(n: number) {
 }
 
 export default function CommandCenterHubPage() {
-  const deals = useTradeStore((s) => s.deals);
-  const seedBookOfBusiness = useTradeStore((s) => s.seedBookOfBusiness);
+  const deals = useVisibleDeals();
   const opsIntel = useTradeStore((s) => s.opsIntel);
   const { setProcessId } = useWorkspaceProcess();
   const [hydrated, setHydrated] = useState(false);
@@ -34,8 +38,11 @@ export default function CommandCenterHubPage() {
 
   useEffect(() => {
     if (!hydrated) return;
-    seedBookOfBusiness();
-  }, [hydrated, seedBookOfBusiness]);
+    void hydrateMailboxBook();
+  }, [hydrated]);
+
+  // Re-render money when currency toggles
+  useTradeStore((s) => s.displayCurrency);
 
   const pulse = useMemo(() => companyPulse(deals), [deals]);
   const cash = useMemo(() => buildCashExposureReport(deals), [deals]);
@@ -52,13 +59,18 @@ export default function CommandCenterHubPage() {
     <div>
       <PageHeader
         title="Command Center"
-        description="Company pulse across working capital and sourcing — switch process in the header to focus the workspace."
+        description="Company pulse from the Outlook mailbox ingest — switch process in the header to focus the workspace."
         actions={
           <Button
             variant="secondary"
             onClick={() => {
-              seedBookOfBusiness();
-              toast.success("Book of business updated");
+              void hydrateMailboxBook().then((r) => {
+                if (r.error) {
+                  toast.error(friendlyMailboxError(r.error));
+                  return;
+                }
+                toast.success(`Loaded ${r.count} mailbox deals`);
+              });
             }}
           >
             <RefreshCw className="h-3.5 w-3.5" />
@@ -177,8 +189,8 @@ export default function CommandCenterHubPage() {
       </div>
 
       <p className="mt-6 text-xs text-zinc-500">
-        Command Center stays shared. Use the Ops / Finance toggle to focus
-        navigation, process map, and day-to-day tools.
+        Command Center reads the shared mailbox book. Open Mailbox book for
+        ingest progress and LLM cost.
       </p>
     </div>
   );

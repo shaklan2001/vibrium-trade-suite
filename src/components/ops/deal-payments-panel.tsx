@@ -130,33 +130,54 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
           </div>
           <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-3">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Factory terms (PI / PO)
+              Factory terms (PI)
             </div>
             <p className="mt-1 text-sm text-zinc-800">
               {schedule.factoryTerms || deal.pi?.paymentTerms || "—"}
             </p>
-            <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-              <div>
-                <div className="text-[10px] uppercase text-zinc-500">Agreed</div>
-                <div className="font-mono text-sm font-semibold">
-                  {usd(factory.agreed)}
+            {factory.list.length === 0 ? (
+              <p className="mt-3 text-xs text-amber-800">
+                No factory PI extract on this deal yet — buyer PO value is not
+                mirrored as factory payable.
+              </p>
+            ) : (
+              <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <div className="text-[10px] uppercase text-zinc-500">Agreed</div>
+                  <div className="font-mono text-sm font-semibold">
+                    {usd(factory.agreed)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase text-zinc-500">Paid</div>
+                  <div className="font-mono text-sm font-semibold text-emerald-700">
+                    {usd(factory.received)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase text-zinc-500">Still due</div>
+                  <div className="font-mono text-sm font-semibold text-amber-700">
+                    {usd(factory.outstanding)}
+                  </div>
                 </div>
               </div>
-              <div>
-                <div className="text-[10px] uppercase text-zinc-500">Paid</div>
-                <div className="font-mono text-sm font-semibold text-emerald-700">
-                  {usd(factory.received)}
-                </div>
-              </div>
-              <div>
-                <div className="text-[10px] uppercase text-zinc-500">Still due</div>
-                <div className="font-mono text-sm font-semibold text-amber-700">
-                  {usd(factory.outstanding)}
-                </div>
-              </div>
-            </div>
+            )}
           </div>
         </div>
+        <p className="border-b border-zinc-100 px-4 py-2 text-[11px] text-zinc-500">
+          Source:{" "}
+          {deal.po?.docNumber || deal.mailboxSlot === "po_extractor"
+            ? "buyer PO extract"
+            : deal.pi?.docNumber
+              ? "factory PI extract"
+              : deal.mailboxSlot || "mailbox extract"}
+          {deal.po?.totalAmount
+            ? ` · PO ${usd(deal.po.totalAmount)}`
+            : ""}
+          {deal.pi?.totalAmount
+            ? ` · PI ${usd(deal.pi.totalAmount)}`
+            : ""}
+        </p>
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -204,6 +225,9 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
                 const confirm = (deal.sources || []).find(
                   (s) => s.id === cp.confirmationSourceId,
                 );
+                const linked = (deal.sources || []).filter((s) =>
+                  (cp.sourceIds || []).includes(s.id),
+                );
                 return (
                   <tr
                     key={cp.id}
@@ -230,6 +254,19 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
                       {cp.percent != null ? (
                         <div className="font-sans font-normal text-zinc-500">
                           {cp.percent}%
+                        </div>
+                      ) : null}
+                      {linked.length > 0 ? (
+                        <div className="mt-1 space-y-0.5 text-left font-sans font-normal">
+                          {linked.slice(0, 2).map((s) => (
+                            <a
+                              key={s.id}
+                              href={`#source-${s.id}`}
+                              className="block text-[10px] text-teal-700 hover:underline"
+                            >
+                              ← {(s.subject || s.label || "Source mail").slice(0, 42)}
+                            </a>
+                          ))}
                         </div>
                       ) : null}
                     </td>

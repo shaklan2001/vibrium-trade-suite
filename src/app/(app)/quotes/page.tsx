@@ -11,6 +11,7 @@ import {
   Label,
 } from "@/components/ui/primitives";
 import { useTradeStore } from "@/lib/trade/store";
+import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { normalizeQuoteFromWorkerOutput } from "@/lib/trade/parsers";
 import { getExecutionResult, runWorkerAndWait } from "@/services/agentsApi";
 import { getPresignedUpload } from "@/services/channelsApi";
@@ -18,7 +19,7 @@ import { SourceEmailsPanel } from "@/components/ops/source-emails-panel";
 import { dealLabel } from "@/lib/trade/dealCode";
 
 export default function QuotesPage() {
-  const deals = useTradeStore((s) => s.deals);
+  const deals = useVisibleDeals();
   const setQuote = useTradeStore((s) => s.setQuote);
   const toggleSku = useTradeStore((s) => s.toggleSku);
   const lockSelection = useTradeStore((s) => s.lockSelection);

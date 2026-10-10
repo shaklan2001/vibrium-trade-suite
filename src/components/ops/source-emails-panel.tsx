@@ -70,7 +70,7 @@ export function SourceEmailsPanel({
           {list.map((s) => {
             const open = openId === s.id;
             return (
-              <li key={s.id} className="px-4 py-3">
+              <li key={s.id} id={`source-${s.id}`} className="px-4 py-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
@@ -83,10 +83,28 @@ export function SourceEmailsPanel({
                       ) : null}
                     </div>
                     <div className="mt-1 text-xs text-zinc-500">
-                      {s.from ? <span>{s.from}</span> : null}
-                      {s.receivedAt ? (
+                      {s.from ? <span>From {s.from}</span> : null}
+                      {s.to ? (
                         <span>
                           {s.from ? " · " : ""}
+                          To {s.to}
+                        </span>
+                      ) : null}
+                      {s.cc ? (
+                        <span>
+                          {(s.from || s.to) ? " · " : ""}
+                          Cc {s.cc}
+                        </span>
+                      ) : null}
+                      {s.bcc ? (
+                        <span>
+                          {(s.from || s.to || s.cc) ? " · " : ""}
+                          Bcc {s.bcc}
+                        </span>
+                      ) : null}
+                      {s.receivedAt ? (
+                        <span>
+                          {s.from || s.to || s.cc || s.bcc ? " · " : ""}
                           {new Date(s.receivedAt).toLocaleString()}
                         </span>
                       ) : null}

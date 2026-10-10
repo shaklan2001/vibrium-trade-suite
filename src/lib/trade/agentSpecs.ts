@@ -12,7 +12,7 @@ Your job is to turn messy buyer emails, forwards, and attached enquiry docs into
 
 Rules:
 1. Extract every commercial signal that is present — do not invent prices, destinations, MOQs, or contacts.
-2. If a field is not stated, omit it or use an empty string / empty array — never fabricate.
+2. If a field is not stated, omit the key (especially numbers) or use an empty string / empty array — never fabricate and never output null for numeric fields.
 3. Treat "less than $X" / "under $X" / "max $X" as targetFactoryCost = X (numeric, no currency symbol).
 4. Treat "around $X" / "approx $X" retail / MSRP as targetRetailPrice = X.
 5. Capture ALL people and emails from From/To/Cc and signature blocks in buyerContacts (prefer "Name <email>" when both exist).
@@ -23,12 +23,14 @@ Rules:
 10. currentSourcingNotes: existing factories, countries of origin, competitor refs (e.g. "currently made in India; Ethical is a source").
 11. openQuestions: gaps the agency must clarify before factory outreach.
 12. nextActions: concrete agency next steps (e.g. "Identify leather toy factories in India; request AS sheet under $1 FOB").
-13. summary: 1–3 sentence ops-ready brief for the deal timeline.
+13. summary: 1–3 sentence ops-ready brief for the deal timeline — use the FULL mail chain, not only the last message.
 14. confidence: 0–1 reflecting completeness of the source text (0.9+ when category + cost band + contacts are clear).
-15. When document_url is provided, read it and merge facts with the email — document wins on conflict for specs/skus; email wins for commercial targets and contacts.`,
-  task: `Parse the buyer enquiry (email_text and optional document_url).
+15. When document_url is provided, read it and merge facts with the email — document wins on conflict for specs/skus; email wins for commercial targets and contacts.
+16. commercial_model in the pack: agency_commission (SNSPL referee) vs trader_principal (Global Praise buy/sell). Reflect that in summary.
+17. GATE: If this is travel, hotel, expo booth admin, plant renewal, or otherwise not a sourcing/trade deal, set isTradeDeal=false with rejectReason.`,
+  task: `Parse the buyer enquiry mail chain (email_text and optional document_url).
 Return ONLY valid JSON matching the output schema.
-Populate every field you can support from evidence; leave unsupported optional fields null or [].
+Always include isTradeDeal. Populate every field you can support from evidence; leave unsupported optional fields omitted.
 Be precise with numbers. Prefer agency-usable language in summary, openQuestions, and nextActions.`,
   model: { provider: "openai", model: "gpt-4.1" },
   config: { max_turns: 12, timeout_seconds: 180 },
@@ -61,8 +63,22 @@ Be precise with numbers. Prefer agency-usable language in summary, openQuestions
       "buyerContacts",
       "currency",
       "urgency",
+      "isTradeDeal",
     ],
     properties: {
+      isTradeDeal: {
+        type: "boolean",
+        description:
+          "false when the mail is travel/admin/non-sourcing; true for real trade enquiries",
+      },
+      rejectReason: {
+        type: "string",
+        description: "Why isTradeDeal is false",
+      },
+      commercialModel: {
+        type: "string",
+        description: "agency_commission | trader_principal",
+      },
       productCategory: {
         type: "string",
         description: "Short merchandising category label",
@@ -73,11 +89,11 @@ Be precise with numbers. Prefer agency-usable language in summary, openQuestions
       },
       targetRetailPrice: {
         type: "number",
-        description: "Target retail / MSRP as a number",
+        description: "Target retail / MSRP as a number. Omit this key if not stated — do not output null.",
       },
       targetFactoryCost: {
         type: "number",
-        description: "Max / target factory (FOB) cost as a number",
+        description: "Max / target factory (FOB) cost as a number. Omit this key if not stated — do not output null.",
       },
       currency: {
         type: "string",
@@ -165,10 +181,12 @@ Rules:
 10. imageRef: cell reference, filename, or URL if the sheet embeds/links images; otherwise omit or empty string.
 11. Include leadTimeDays / incoterm / paymentTerms when the sheet states them at header level.
 12. Never invent SKUs that are not on the sheet. confidence reflects parse completeness.
-13. If the workbook is unreadable or empty of SKUs, return skus: [] with a low confidence and notes explaining why.`,
+13. If the workbook is unreadable or empty of SKUs, return skus: [] with a low confidence and notes explaining why.
+14. CRITICAL: Never output null for moq, unitPrice, leadTimeDays, or any number — omit the key when unknown.`,
   task: `Parse the AS/quote document at document_url (and optional notes).
 Return ONLY valid JSON matching the output schema with every SKU row you can extract.
-Prices and MOQs must be numbers. Prefer completeness over brevity.`,
+Prices and MOQs must be numbers when present. Omit unknown numeric keys — never null.
+Prefer completeness over brevity.`,
   model: { provider: "openai", model: "gpt-4.1" },
   config: { max_turns: 16, timeout_seconds: 240 },
   input_schema: {

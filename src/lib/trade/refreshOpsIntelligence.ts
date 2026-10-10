@@ -243,7 +243,7 @@ export async function refreshOpsIntelligence(opts: {
           if (r.briefMarkdown) patch.briefMarkdown = r.briefMarkdown;
           if (r.headline) patch.headline = r.headline;
         } else {
-          throw new Error(ex.error || "Daily brief agent failed");
+          onStatus?.(ex.error || "Daily brief agent failed");
         }
       })(),
     );
@@ -284,7 +284,7 @@ export async function refreshOpsIntelligence(opts: {
           }
           if (r.summary) patch.prioritySummary = r.summary;
         } else {
-          throw new Error(ex.error || "Priority ranker failed");
+          onStatus?.(ex.error || "Priority ranker failed");
         }
       })(),
     );
@@ -313,7 +313,7 @@ export async function refreshOpsIntelligence(opts: {
               .filter((x): x is AttentionItem => Boolean(x));
           }
         } else {
-          throw new Error(ex.error || "Risk scanner failed");
+          onStatus?.(ex.error || "Risk scanner failed");
         }
       })(),
     );
@@ -380,12 +380,46 @@ export async function refreshOpsIntelligence(opts: {
     routing.ops_priority_ranker,
     routing.ops_risk_scanner,
   ].filter(Boolean);
-  if (!core.length) {
+
+  // Soft-fail agents: never wipe the board if workers fail — fill from local intel.
+  const results = await Promise.allSettled(jobs);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length) {
+    onStatus?.(
+      `${failures.length} ops agent(s) failed — using local attention / todos`,
+    );
+  }
+
+  if (!patch.briefMarkdown) {
+    const { buildLocalBrief } = await import("@/lib/trade/opsIntelligence");
+    patch.briefMarkdown = buildLocalBrief(deals);
+    patch.headline = patch.headline || "Local morning brief";
+    patch.agentSourced = Boolean(core.length) && failures.length === 0;
+  }
+  if (!patch.attention?.length || !patch.todos?.length || !patch.ranked?.length) {
+    const {
+      collectAllAttention,
+      todaysTodos,
+      rankDeals,
+    } = await import("@/lib/trade/opsIntelligence");
+    if (!patch.attention?.length) {
+      patch.attention = collectAllAttention(deals);
+    }
+    if (!patch.todos?.length) {
+      patch.todos = todaysTodos(deals);
+    }
+    if (!patch.ranked?.length) {
+      const ranked = rankDeals(deals);
+      patch.ranked = ranked;
+      patch.rankedDealIds = ranked.map((r) => r.dealId);
+    }
+  }
+
+  if (!core.length && !patch.briefMarkdown) {
     throw new Error(
       "Ops agents not configured — set ops_daily_brief, ops_priority_ranker, ops_risk_scanner in Agent Routing",
     );
   }
 
-  await Promise.all(jobs);
   return patch;
 }

@@ -86,12 +86,16 @@ export function KpiTile({
   value,
   tone = "neutral",
   size = "md",
+  onClick,
+  href,
 }: {
   label: string;
   value: string | number;
   hint?: string;
   tone?: "neutral" | "success" | "warning" | "danger" | "info";
   size?: "md" | "lg";
+  onClick?: () => void;
+  href?: string;
 }) {
   const ring =
     tone === "danger"
@@ -103,10 +107,23 @@ export function KpiTile({
           : tone === "info"
             ? "border-sky-200 bg-sky-50/50"
             : "border-zinc-200 bg-white";
-  return (
-    <div className={`rounded-lg border shadow-sm ${ring} ${size === "lg" ? "px-4 py-4" : "px-3 py-3"}`}>
+  const clickable = Boolean(onClick || href);
+  const className = `rounded-lg border shadow-sm ${ring} ${
+    size === "lg" ? "px-4 py-4" : "px-3 py-3"
+  } ${
+    clickable
+      ? "cursor-pointer transition hover:border-teal-400 hover:shadow-md hover:ring-2 hover:ring-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+      : ""
+  }`;
+  const inner = (
+    <>
       <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
         {label}
+        {clickable ? (
+          <span className="ml-1 font-normal normal-case text-teal-700">
+            · open
+          </span>
+        ) : null}
       </div>
       <div
         className={`mt-1 font-semibold tabular-nums tracking-tight text-zinc-900 ${
@@ -115,8 +132,23 @@ export function KpiTile({
       >
         {value}
       </div>
-    </div>
+    </>
   );
+  if (href) {
+    return (
+      <a href={href} className={`block ${className}`}>
+        {inner}
+      </a>
+    );
+  }
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={`w-full text-left ${className}`}>
+        {inner}
+      </button>
+    );
+  }
+  return <div className={className}>{inner}</div>;
 }
 
 export function ExpandSection({

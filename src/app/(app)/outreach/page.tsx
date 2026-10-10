@@ -12,12 +12,13 @@ import {
   Label,
 } from "@/components/ui/primitives";
 import { useTradeStore } from "@/lib/trade/store";
+import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { addLead } from "@/services/channelsApi";
 import { EmailThreadsPanel } from "@/components/shared/email-threads-panel";
 import type { Channel } from "@/types/trade";
 
 export default function OutreachPage() {
-  const deals = useTradeStore((s) => s.deals);
+  const deals = useVisibleDeals();
   const routing = useTradeStore((s) => s.routing);
   const addOutreach = useTradeStore((s) => s.addOutreach);
   const updateOutreach = useTradeStore((s) => s.updateOutreach);

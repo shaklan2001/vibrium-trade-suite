@@ -6,11 +6,13 @@ import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Button, Card } from "@/components/ui/primitives";
 import { TradeMapCanvas } from "@/components/ops/trade-map";
 import { useTradeStore } from "@/lib/trade/store";
+import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import {
   buildMapShipmentsFromDeals,
   listMapPorts,
 } from "@/lib/trade/shipmentMap";
 import { usd } from "@/lib/trade/commandCenterMetrics";
+import { hydrateMailboxBook } from "@/lib/trade/mailboxHydrate";
 
 function k(n: number) {
   if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -19,16 +21,17 @@ function k(n: number) {
 }
 
 export default function ShipmentsMapPage() {
-  const deals = useTradeStore((s) => s.deals);
-  const seedBookOfBusiness = useTradeStore((s) => s.seedBookOfBusiness);
+  const deals = useVisibleDeals();
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     setHydrated(true);
   }, []);
   useEffect(() => {
-    if (hydrated) seedBookOfBusiness();
-  }, [hydrated, seedBookOfBusiness]);
+    if (!hydrated) return;
+    void hydrateMailboxBook();
+  }, [hydrated]);
+  useTradeStore((s) => s.displayCurrency);
 
   const shipments = useMemo(
     () => buildMapShipmentsFromDeals(deals),

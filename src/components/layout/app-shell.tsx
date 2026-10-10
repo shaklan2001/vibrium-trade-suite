@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
+  GLOBAL_SIDEBAR_NAV,
   WORKSPACE_PROCESSES,
   type WorkspaceProcessId,
 } from "@/lib/trade/workspaceProcess";
@@ -11,6 +12,68 @@ import {
   useWorkspaceProcess,
   WorkspaceProcessProvider,
 } from "@/components/layout/workspace-process";
+import { MailboxHydrator } from "@/components/layout/mailbox-hydrator";
+import { useTradeStore } from "@/lib/trade/store";
+import {
+  COMMERCIAL_MODEL_OPTIONS,
+  type CommercialModelFilter,
+} from "@/lib/trade/commercialModel";
+import {
+  DISPLAY_CURRENCY_OPTIONS,
+  type DisplayCurrency,
+} from "@/lib/trade/currencyDisplay";
+
+function CommercialModelToggle() {
+  const filter = useTradeStore((s) => s.commercialModelFilter);
+  const setFilter = useTradeStore((s) => s.setCommercialModelFilter);
+
+  return (
+    <label className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-sm">
+      <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+        Book
+      </span>
+      <select
+        className="bg-transparent text-sm font-medium text-zinc-900 outline-none"
+        value={filter}
+        onChange={(e) =>
+          setFilter(e.target.value as CommercialModelFilter)
+        }
+        aria-label="Agency vs trader book filter"
+      >
+        {COMMERCIAL_MODEL_OPTIONS.map((opt) => (
+          <option key={opt.id} value={opt.id}>
+            {opt.shortLabel}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function CurrencyToggle() {
+  const currency = useTradeStore((s) => s.displayCurrency);
+  const setCurrency = useTradeStore((s) => s.setDisplayCurrency);
+
+  return (
+    <label className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-sm">
+      <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+        Currency
+      </span>
+      <select
+        className="bg-transparent text-sm font-medium text-zinc-900 outline-none"
+        value={currency}
+        onChange={(e) => setCurrency(e.target.value as DisplayCurrency)}
+        aria-label="Display currency"
+      >
+        {DISPLAY_CURRENCY_OPTIONS.map((opt) => (
+          <option key={opt.id} value={opt.id}>
+            {opt.shortLabel}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 function ProcessToggle() {
   const { processId, setProcessId, hydrated } = useWorkspaceProcess();
@@ -73,6 +136,33 @@ function ProcessToggle() {
   );
 }
 
+function NavLink({
+  href,
+  label,
+  icon: Icon,
+  active,
+}: {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  active: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm",
+        active
+          ? "bg-teal-50 font-medium text-teal-900"
+          : "text-zinc-600 hover:bg-zinc-50",
+      )}
+    >
+      <Icon className="h-4 w-4" />
+      {label}
+    </Link>
+  );
+}
+
 function AppShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { process, processId } = useWorkspaceProcess();
@@ -91,27 +181,45 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
             {process.description}
           </p>
         </div>
-        <nav className="flex-1 space-y-0.5 p-2" aria-label={`${process.label} navigation`}>
-          {process.nav.map((item) => {
-            const Icon = item.icon;
-            const active =
-              pathname === item.href || pathname.startsWith(`${item.href}/`);
-            return (
-              <Link
-                key={`${processId}-${item.href}`}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm",
-                  active
-                    ? "bg-teal-50 font-medium text-teal-900"
-                    : "text-zinc-600 hover:bg-zinc-50",
-                )}
-              >
-                <Icon className="h-4 w-4" />
-                {item.label}
-              </Link>
-            );
-          })}
+        <nav
+          className="flex flex-1 flex-col overflow-y-auto p-2"
+          aria-label={`${process.label} navigation`}
+        >
+          <div className="space-y-0.5">
+            {process.nav.map((item) => {
+              const active =
+                pathname === item.href ||
+                pathname.startsWith(`${item.href}/`);
+              return (
+                <NavLink
+                  key={`${processId}-${item.href}`}
+                  href={item.href}
+                  label={item.label}
+                  icon={item.icon}
+                  active={active}
+                />
+              );
+            })}
+          </div>
+
+          <div className="mt-2 space-y-0.5 border-t border-zinc-200 pt-2">
+            {GLOBAL_SIDEBAR_NAV.map((item) => {
+              const active =
+                pathname === item.href ||
+                pathname.startsWith(`${item.href}/`) ||
+                pathname === "/supplier-hub" ||
+                pathname.startsWith("/supplier-hub/");
+              return (
+                <NavLink
+                  key={`global-${item.href}`}
+                  href={item.href}
+                  label={item.label}
+                  icon={item.icon}
+                  active={active}
+                />
+              );
+            })}
+          </div>
         </nav>
       </aside>
 
@@ -119,11 +227,14 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
         <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 md:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <ProcessToggle />
+            <CommercialModelToggle />
+            <CurrencyToggle />
             <span className="hidden truncate text-xs text-zinc-500 sm:inline">
               {process.label} process
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <MailboxHydrator />
             <div className="hidden items-center gap-2 rounded-full border border-zinc-200 px-2.5 py-1 sm:flex">
               <div className="flex h-7 w-7 items-center justify-center rounded-full bg-teal-50 text-[11px] font-semibold text-teal-800">
                 SN

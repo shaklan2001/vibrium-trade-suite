@@ -18,15 +18,18 @@ import type {
   TimelineEvent,
 } from "@/types/trade";
 import { DEFAULT_ROUTING } from "@/types/trade";
-import { buildShowcaseDeal } from "./showcaseDeal";
-import { buildBookOfBusiness } from "./bookOfBusiness";
-import { formatDealCode, SEEDED_DEAL_CODES } from "./dealCode";
-import { SEED_PARTY_PROFILES } from "./partyProfiles";
+import { formatDealCode } from "./dealCode";
 import {
   applicationToPartyProfile,
   prepareApplicationForSubmit,
   submitValidationErrors,
 } from "./supplierOnboarding";
+import type { CommercialModelFilter } from "./commercialModel";
+import type { DisplayCurrency } from "./currencyDisplay";
+import { setDisplayCurrency as applyDisplayCurrency } from "./currencyDisplay";
+
+export type StageFilter = "all" | DealStage;
+export type ProductionDueFilter = "all" | 15 | 30 | 45 | 60 | 90;
 
 interface TradeState {
   deals: Deal[];
@@ -35,15 +38,21 @@ interface TradeState {
   partyProfiles: PartyProfile[];
   supplierApplications: SupplierHubApplication[];
   dealCodeSeq: number;
+  /** Filter Command Center / boards by agency vs trader book */
+  commercialModelFilter: CommercialModelFilter;
+  setCommercialModelFilter: (filter: CommercialModelFilter) => void;
+  /** Display currency for money formatting (amounts stored USD) */
+  displayCurrency: DisplayCurrency;
+  setDisplayCurrency: (currency: DisplayCurrency) => void;
+  /** Deal board stage filter */
+  stageFilter: StageFilter;
+  setStageFilter: (filter: StageFilter) => void;
+  /** Production ready/due window (days) */
+  productionDueFilter: ProductionDueFilter;
+  setProductionDueFilter: (filter: ProductionDueFilter) => void;
   createDeal: (partial?: Partial<Deal>) => Deal;
   upsertDeal: (deal: Deal) => Deal;
-  loadShowcaseDeal: () => Deal;
-  seedBookOfBusiness: () => {
-    added: number;
-    refreshed?: number;
-    total: number;
-  };
-  seedPartyProfiles: () => { added: number; total: number };
+  mergeMailboxDeals: (deals: Deal[]) => void;
   upsertPartyProfile: (profile: PartyProfile) => PartyProfile;
   saveSupplierApplication: (app: SupplierHubApplication) => SupplierHubApplication;
   getSupplierApplication: (id: string) => SupplierHubApplication | undefined;
@@ -153,14 +162,19 @@ function normalizeSources(
   }));
 }
 
+function isSyntheticDeal(deal: Pick<Deal, "id" | "portfolioSeed" | "showcase">) {
+  return Boolean(
+    deal.portfolioSeed ||
+      deal.showcase ||
+      deal.id.startsWith("bob-"),
+  );
+}
+
 function ensureCode(
   partial: Partial<Deal> | undefined,
   seq: number,
 ): { code: string; nextSeq: number } {
   if (partial?.code) return { code: partial.code, nextSeq: seq };
-  if (partial?.id && SEEDED_DEAL_CODES[partial.id]) {
-    return { code: SEEDED_DEAL_CODES[partial.id], nextSeq: seq };
-  }
   return { code: formatDealCode(seq), nextSeq: seq + 1 };
 }
 
@@ -170,9 +184,22 @@ export const useTradeStore = create<TradeState>()(
       deals: [],
       routing: { ...DEFAULT_ROUTING },
       opsIntel: {},
-      partyProfiles: [...SEED_PARTY_PROFILES],
+      partyProfiles: [],
       supplierApplications: [],
       dealCodeSeq: 1100,
+      commercialModelFilter: "all" as CommercialModelFilter,
+      setCommercialModelFilter: (filter) =>
+        set({ commercialModelFilter: filter }),
+      displayCurrency: "USD" as DisplayCurrency,
+      setDisplayCurrency: (currency) => {
+        applyDisplayCurrency(currency);
+        set({ displayCurrency: currency });
+      },
+      stageFilter: "all" as StageFilter,
+      setStageFilter: (filter) => set({ stageFilter: filter }),
+      productionDueFilter: "all" as ProductionDueFilter,
+      setProductionDueFilter: (filter) =>
+        set({ productionDueFilter: filter }),
 
       createDeal: (partial) => {
         const { code, nextSeq } = ensureCode(partial, get().dealCodeSeq);
@@ -186,8 +213,9 @@ export const useTradeStore = create<TradeState>()(
           parties: partial?.parties || [
             { role: "agency", name: "SNSPL", company: "Savvy Net Sourcing" },
           ],
-          showcase: partial?.showcase,
-          portfolioSeed: partial?.portfolioSeed,
+          showcase: false,
+          portfolioSeed: false,
+          mailboxIngest: partial?.mailboxIngest,
           recommendedFactoryIds: partial?.recommendedFactoryIds,
           requirement: partial?.requirement,
           requirementExecutionId: partial?.requirementExecutionId,
@@ -244,10 +272,13 @@ export const useTradeStore = create<TradeState>()(
       },
 
       upsertDeal: (deal) => {
+        if (isSyntheticDeal(deal)) return deal;
         const withDefaults: Deal = {
           ...deal,
-          code: deal.code || SEEDED_DEAL_CODES[deal.id] || formatDealCode(get().dealCodeSeq),
+          code: deal.code || formatDealCode(get().dealCodeSeq),
           sources: deal.sources || [],
+          showcase: false,
+          portfolioSeed: false,
         };
         set((s) => ({
           deals: s.deals.some((d) => d.id === withDefaults.id)
@@ -257,60 +288,54 @@ export const useTradeStore = create<TradeState>()(
         return withDefaults;
       },
 
-      loadShowcaseDeal: () => {
-        const existing = get().deals.find((d) => d.showcase);
-        if (existing) return existing;
-        const fromBook = buildBookOfBusiness().find((d) => d.showcase);
-        if (fromBook) return get().upsertDeal(fromBook);
-        return get().createDeal(
-          buildShowcaseDeal() as unknown as Partial<Deal>,
-        );
-      },
-
-      seedBookOfBusiness: () => {
-        get().seedPartyProfiles();
-        const portfolio = buildBookOfBusiness();
-        let added = 0;
-        let refreshed = 0;
-        for (const deal of portfolio) {
-          const existing = get().deals.find((d) => d.id === deal.id);
-          if (!existing) {
-            get().upsertDeal(deal);
-            added += 1;
-          } else if (existing.portfolioSeed || existing.showcase) {
-            // Refresh evidence trail so deals keep openable sources and files
-            get().updateDeal(deal.id, {
-              sources: normalizeSources(deal.sources),
-              documents: normalizeDocs(deal.documents),
-              economics: deal.economics,
-              cashExposure: deal.cashExposure,
-              paymentSchedule: deal.paymentSchedule,
-              payment: deal.payment,
-              booking: deal.booking,
-              commission: deal.commission,
-              code: deal.code || existing.code,
-              title: deal.title || existing.title,
-              stage: deal.stage || existing.stage,
+      mergeMailboxDeals: (incoming) => {
+        set((s) => {
+          const existingById = new Map(
+            s.deals.filter((d) => d.mailboxIngest).map((d) => [d.id, d]),
+          );
+          const realIncoming = incoming
+            .filter((d) => !isSyntheticDeal(d))
+            .map((d) => {
+              const prev = existingById.get(d.id);
+              if (!prev) return d;
+              // List hydrate omits evidence_json — keep richer sources already loaded.
+              const prevSources = prev.sources?.length || 0;
+              const nextSources = d.sources?.length || 0;
+              const prevBody = (prev.sources || []).reduce(
+                (n, src) => n + (src.body?.length || 0),
+                0,
+              );
+              const nextBody = (d.sources || []).reduce(
+                (n, src) => n + (src.body?.length || 0),
+                0,
+              );
+              const keepPrevEvidence =
+                prevSources > nextSources ||
+                (prevSources > 0 && prevBody > nextBody);
+              if (!keepPrevEvidence) return d;
+              return {
+                ...d,
+                sources: prev.sources,
+                documents:
+                  (prev.documents?.length || 0) >= (d.documents?.length || 0)
+                    ? prev.documents
+                    : d.documents,
+                timeline:
+                  (prev.timeline?.length || 0) >= (d.timeline?.length || 0)
+                    ? prev.timeline
+                    : d.timeline,
+                agentResult: prev.agentResult || d.agentResult,
+                paymentSchedule: prev.paymentSchedule || d.paymentSchedule,
+                payment: prev.payment || d.payment,
+                booking: prev.booking || d.booking,
+                commission: prev.commission || d.commission,
+              };
             });
-            refreshed += 1;
-          }
-        }
-        return { added, refreshed, total: portfolio.length };
-      },
-
-      seedPartyProfiles: () => {
-        const have = new Set(get().partyProfiles.map((p) => p.id));
-        let added = 0;
-        const next = [...get().partyProfiles];
-        for (const p of SEED_PARTY_PROFILES) {
-          if (!have.has(p.id)) {
-            next.push(p);
-            added += 1;
-            have.add(p.id);
-          }
-        }
-        set({ partyProfiles: next });
-        return { added, total: SEED_PARTY_PROFILES.length };
+          const keep = s.deals.filter(
+            (d) => !d.mailboxIngest && !isSyntheticDeal(d),
+          );
+          return { deals: [...realIncoming, ...keep] };
+        });
       },
 
       upsertPartyProfile: (profile) => {
@@ -601,14 +626,23 @@ export const useTradeStore = create<TradeState>()(
         set((s) => ({ opsIntel: { ...s.opsIntel, ...patch } })),
     }),
     {
-      name: "vibrium-trade-store-v2",
+      // v3: wipe localStorage that still held demo portfolio / seed parties
+      name: "vibrium-trade-store-v3",
       partialize: (s) => ({
-        deals: s.deals,
+        // Mailbox deals re-hydrate from API; never persist synthetic seeds.
+        deals: s.deals.filter((d) => !d.mailboxIngest && !isSyntheticDeal(d)),
         routing: s.routing,
         opsIntel: s.opsIntel,
-        partyProfiles: s.partyProfiles,
+        // Only persist hub-onboarded / user-created parties (no demo directory).
+        partyProfiles: s.partyProfiles.filter((p) =>
+          Boolean(p.sourceApplicationId),
+        ),
         supplierApplications: s.supplierApplications,
         dealCodeSeq: s.dealCodeSeq,
+        commercialModelFilter: s.commercialModelFilter,
+        displayCurrency: s.displayCurrency,
+        stageFilter: s.stageFilter,
+        productionDueFilter: s.productionDueFilter,
       }),
       merge: (persisted, current) => {
         const p = (persisted || {}) as Partial<TradeState>;
@@ -622,19 +656,21 @@ export const useTradeStore = create<TradeState>()(
               DEFAULT_ROUTING[k as keyof typeof DEFAULT_ROUTING];
           }
         }
-        const deals = (p.deals || current.deals).map((d) => ({
-          ...d,
-          code:
-            d.code ||
-            SEEDED_DEAL_CODES[d.id] ||
-            formatDealCode(1100),
-          sources: normalizeSources(d.sources || []),
-          documents: normalizeDocs(d.documents || []),
-        }));
-        const partyProfiles =
-          p.partyProfiles && p.partyProfiles.length > 0
-            ? p.partyProfiles
-            : current.partyProfiles;
+        const deals = (p.deals || current.deals)
+          .filter((d) => !isSyntheticDeal(d))
+          .map((d) => ({
+            ...d,
+            code: d.code || formatDealCode(1100),
+            showcase: false,
+            portfolioSeed: false,
+            sources: normalizeSources(d.sources || []),
+            documents: normalizeDocs(d.documents || []),
+          }));
+        const partyProfiles = (
+          p.partyProfiles ||
+          current.partyProfiles ||
+          []
+        ).filter((profile) => Boolean(profile.sourceApplicationId));
         return {
           ...current,
           ...p,
@@ -644,7 +680,26 @@ export const useTradeStore = create<TradeState>()(
           supplierApplications: p.supplierApplications || current.supplierApplications || [],
           opsIntel: { ...current.opsIntel, ...(p.opsIntel || {}) },
           dealCodeSeq: p.dealCodeSeq || current.dealCodeSeq,
+          commercialModelFilter:
+            p.commercialModelFilter === "agency_commission" ||
+            p.commercialModelFilter === "trader_principal" ||
+            p.commercialModelFilter === "all"
+              ? p.commercialModelFilter
+              : current.commercialModelFilter,
+          displayCurrency:
+            p.displayCurrency === "INR" || p.displayCurrency === "USD"
+              ? p.displayCurrency
+              : current.displayCurrency,
+          stageFilter: (p.stageFilter as StageFilter) || current.stageFilter,
+          productionDueFilter:
+            (p.productionDueFilter as ProductionDueFilter) ||
+            current.productionDueFilter,
         };
+      },
+      onRehydrateStorage: () => (state) => {
+        if (state?.displayCurrency) {
+          applyDisplayCurrency(state.displayCurrency);
+        }
       },
     },
   ),

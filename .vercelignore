@@ -1,0 +1,17 @@
+# Local PST extract and mail attachments (PII, multi-GB)
+/data
+/docs/**
+!/docs/samples/
+!/docs/samples/**
+
+# Python venv and caches
+scripts/pst-extract/.venv
+**/__pycache__
+**/*.pyc
+
+# Env and editor
+.env*
+!.env.example
+.cursor
+agent-transcripts
+.DS_Store

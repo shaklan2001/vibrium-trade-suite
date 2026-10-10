@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
 import Link from "next/link";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Button, Card, CardHeader, Stat } from "@/components/ui/primitives";
@@ -10,12 +9,7 @@ import { readinessClassLabel } from "@/lib/trade/supplierOnboarding";
 export default function PartnersPage() {
   const profiles = useTradeStore((s) => s.partyProfiles);
   const applications = useTradeStore((s) => s.supplierApplications);
-  const seedPartyProfiles = useTradeStore((s) => s.seedPartyProfiles);
   const deleteApplication = useTradeStore((s) => s.deleteSupplierApplication);
-
-  useEffect(() => {
-    seedPartyProfiles();
-  }, [seedPartyProfiles]);
 
   const buyers = profiles.filter((p) => p.role === "buyer");
   const factories = profiles.filter((p) => p.role === "factory");
@@ -26,8 +20,8 @@ export default function PartnersPage() {
   return (
     <div>
       <PageHeader
-        title="Buyers & factories"
-        description="Partner directory for factory recommendations. Onboard manufacturers via Supplier HUB — submitted factories are scored and eligible for deal mapping immediately."
+        title="Supplier Hub"
+        description="Buyer & factory directory for recommendations. Onboard manufacturers here — submitted factories are scored and eligible for deal mapping immediately."
         actions={
           <div className="flex flex-wrap gap-2">
             <Link href="/partners/onboard">
@@ -36,9 +30,9 @@ export default function PartnersPage() {
             <Link href="/supplier-hub">
               <Button variant="secondary">Supplier self-serve link</Button>
             </Link>
-            <Button variant="secondary" onClick={() => seedPartyProfiles()}>
-              Refresh seed directory
-            </Button>
+            <Link href="/partners/commissions">
+              <Button variant="secondary">Agency commissions</Button>
+            </Link>
           </div>
         }
       />

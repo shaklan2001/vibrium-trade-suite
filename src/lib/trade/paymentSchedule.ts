@@ -10,7 +10,8 @@ import type {
   ProvenanceCite,
 } from "@/types/trade";
 import type { CashDrillDeal } from "./cashExposure";
-import { SEEDED_PAYMENT_SCHEDULES } from "./portfolioPaymentScheduleSeed";
+import type { BuyerCommissionRate } from "./agencyCommission";
+import { toAgencyShareUsd } from "./agencyCommission";
 
 export interface PaymentLine {
   dealId: string;
@@ -61,6 +62,7 @@ export interface OrderPaymentBucket {
 
 export interface PaymentScheduleReport {
   asOf: string;
+  agencyMode?: boolean;
   /** Buyer remittances (recovery lane) */
   buyerReceivedUsd: number;
   buyerUpcomingUsd: number;
@@ -74,6 +76,11 @@ export interface PaymentScheduleReport {
   lines: PaymentLine[];
   summary: string;
 }
+
+export type PaymentScheduleOptions = {
+  agencyMode?: boolean;
+  rates?: BuyerCommissionRate[];
+};
 
 function monthKeyFromIso(iso?: string, fallback = new Date()): string {
   const d = iso ? new Date(`${iso}T12:00:00`) : fallback;
@@ -186,7 +193,7 @@ export function lateLabel(daysLate?: number, notReceived?: boolean): string | nu
 }
 
 export function ensurePaymentSchedule(deal: Deal): DealPaymentSchedule | undefined {
-  return deal.paymentSchedule || SEEDED_PAYMENT_SCHEDULES[deal.id];
+  return deal.paymentSchedule;
 }
 
 export function linesFromDeal(deal: Deal): PaymentLine[] {
@@ -283,9 +290,30 @@ export function monthBucketsFromLines(lines: PaymentLine[]): MonthPaymentBucket[
   );
 }
 
-export function buildPaymentScheduleReport(deals: Deal[]): PaymentScheduleReport {
+export function buildPaymentScheduleReport(
+  deals: Deal[],
+  options: PaymentScheduleOptions = {},
+): PaymentScheduleReport {
+  const agencyMode = Boolean(options.agencyMode);
+  const rates = options.rates || [];
   const asOf = new Date().toISOString().slice(0, 10);
-  const lines = deals.flatMap(linesFromDeal);
+  const dealById = new Map(deals.map((d) => [d.id, d]));
+
+  let lines = deals.flatMap(linesFromDeal);
+  if (agencyMode) {
+    lines = lines.map((line) => {
+      const deal = dealById.get(line.dealId);
+      if (!deal) return { ...line, amountUsd: 0 };
+      const share = toAgencyShareUsd(deal, line.amountUsd, rates);
+      return {
+        ...line,
+        amountUsd: share.amountUsd,
+        termsExcerpt: share.configured
+          ? `${line.termsExcerpt || line.label} · ${share.pct}% commission`
+          : `${line.termsExcerpt || line.label} · commission % not configured`,
+      };
+    });
+  }
 
   const byMonth = monthBucketsFromLines(lines);
 
@@ -337,6 +365,7 @@ export function buildPaymentScheduleReport(deals: Deal[]): PaymentScheduleReport
 
   return {
     asOf,
+    agencyMode,
     buyerReceivedUsd,
     buyerUpcomingUsd,
     buyerOverdueUsd,
@@ -346,7 +375,9 @@ export function buildPaymentScheduleReport(deals: Deal[]): PaymentScheduleReport
     byMonth,
     byOrder,
     lines,
-    summary: `Buyer received ${fmt(buyerReceivedUsd)} · due/upcoming ${fmt(buyerUpcomingUsd + buyerOverdueUsd)} · factory paid ${fmt(factoryReceivedUsd)} · still to pay factory ${fmt(factoryUpcomingUsd + factoryOverdueUsd)}`,
+    summary: agencyMode
+      ? `Agency commission share — buyer received ${fmt(buyerReceivedUsd)} · upcoming ${fmt(buyerUpcomingUsd + buyerOverdueUsd)}`
+      : `Buyer received ${fmt(buyerReceivedUsd)} · due/upcoming ${fmt(buyerUpcomingUsd + buyerOverdueUsd)} · factory paid ${fmt(factoryReceivedUsd)} · still to pay factory ${fmt(factoryUpcomingUsd + factoryOverdueUsd)}`,
   };
 }
 

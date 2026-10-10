@@ -11,6 +11,7 @@ import type {
   ShipmentPulseLine,
   ShipmentPulseReport,
 } from "@/types/trade";
+import { formatMoney } from "@/lib/trade/currencyDisplay";
 
 function money(n: number) {
   return Math.round(n);
@@ -323,5 +324,5 @@ export function buildDealEconomicsList(deals: Deal[]): DealEconomics[] {
 }
 
 export function usd(n: number) {
-  return `$${Math.round(n).toLocaleString()}`;
+  return formatMoney(n);
 }

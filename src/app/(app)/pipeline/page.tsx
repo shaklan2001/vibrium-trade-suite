@@ -12,17 +12,8 @@ import {
   Textarea,
 } from "@/components/ui/primitives";
 import { useTradeStore } from "@/lib/trade/store";
+import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { SourceEmailsPanel } from "@/components/ops/source-emails-panel";
-import {
-  ARTWORK_APPROVAL_EMAIL,
-  COMMISSION_EMAIL,
-  PAYMENT_CLOCK_EMAIL,
-  PRODUCTION_STATUS_EMAIL,
-  SAMPLE_DISPATCH_EMAIL,
-  SAMPLE_PATHS,
-} from "@/lib/trade/fixtureEmails";
-import { sampleOpenUrl } from "@/lib/trade/sampleFiles";
-import type { SourceAttachment } from "@/types/trade";
 import {
   artworkFromWorker,
   commissionFromWorker,
@@ -33,22 +24,6 @@ import {
   samplesFromWorker,
   upcFromWorker,
 } from "@/lib/trade/parsersPhaseBG";
-import {
-  GOLDEN_ARTWORK,
-  GOLDEN_BOOKING,
-  GOLDEN_CBM,
-  GOLDEN_COMMISSION,
-  GOLDEN_DISCREPANCY,
-  GOLDEN_DOCS,
-  GOLDEN_INSPECTION,
-  GOLDEN_PACKAGING,
-  GOLDEN_PAYMENT,
-  GOLDEN_PI,
-  GOLDEN_PO,
-  GOLDEN_PRODUCTION,
-  GOLDEN_SAMPLES,
-  GOLDEN_UPC,
-} from "@/lib/trade/golden";
 import { getExecutionResult, runWorkerAndWait } from "@/services/agentsApi";
 import type { DealStage, WorkerSlot } from "@/types/trade";
 import { STAGE_LABELS } from "@/types/trade";
@@ -73,18 +48,17 @@ const STAGES: { key: StageKey; label: string }[] = [
 ];
 
 export default function PipelinePage() {
-  const deals = useTradeStore((s) => s.deals);
+  const deals = useVisibleDeals();
   const routing = useTradeStore((s) => s.routing);
   const updateDeal = useTradeStore((s) => s.updateDeal);
   const setStage = useTradeStore((s) => s.setStage);
   const addTimeline = useTradeStore((s) => s.addTimeline);
   const addSource = useTradeStore((s) => s.addSource);
-  const loadShowcaseDeal = useTradeStore((s) => s.loadShowcaseDeal);
 
-  const [dealId, setDealId] = useState(deals.find((d) => d.showcase)?.id || deals[0]?.id || "");
+  const [dealId, setDealId] = useState(deals[0]?.id || "");
   const deal = useMemo(() => deals.find((d) => d.id === dealId), [deals, dealId]);
   const [tab, setTab] = useState<StageKey>("artwork");
-  const [emailText, setEmailText] = useState(ARTWORK_APPROVAL_EMAIL);
+  const [emailText, setEmailText] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
 
@@ -129,56 +103,6 @@ export default function PipelinePage() {
                 : stage === "docs_payment"
                   ? "payment"
                   : "other";
-        const attachments: SourceAttachment[] = [];
-        if (slot === "artwork_checklist_extractor") {
-          for (const p of [
-            SAMPLE_PATHS.artworkMat,
-            SAMPLE_PATHS.artworkLik,
-            SAMPLE_PATHS.barcodeArt,
-          ]) {
-            attachments.push({
-              name: p.split("/").pop() || p,
-              samplePath: p,
-              url: sampleOpenUrl(p),
-              extractedBy: slot,
-            });
-          }
-        } else if (slot === "sample_request_summarizer") {
-          attachments.push({
-            name: "AS LEATHER TOYS 6.3.25.xlsx",
-            samplePath: SAMPLE_PATHS.asSheet,
-            url: sampleOpenUrl(SAMPLE_PATHS.asSheet),
-            extractedBy: slot,
-          });
-        } else if (slot === "production_status_extractor") {
-          attachments.push({
-            name: "Inspection pictures Po-20719.pdf",
-            samplePath: SAMPLE_PATHS.inspection,
-            url: sampleOpenUrl(SAMPLE_PATHS.inspection),
-            extractedBy: slot,
-          });
-        } else if (slot === "payment_clock") {
-          attachments.push({
-            name: "SWASTIK SURRENDER(SFTL05271149).pdf",
-            samplePath: SAMPLE_PATHS.surrender,
-            url: sampleOpenUrl(SAMPLE_PATHS.surrender),
-            extractedBy: slot,
-          });
-        } else if (slot === "commission_checklist") {
-          attachments.push({
-            name: "SWASTIK SURRENDER(SFTL05271149).pdf",
-            samplePath: SAMPLE_PATHS.surrender,
-            url: sampleOpenUrl(SAMPLE_PATHS.surrender),
-            extractedBy: slot,
-          });
-        } else if (slot === "final_docs_pack_check") {
-          attachments.push({
-            name: "P L V3F 26 27 E 002.pdf",
-            samplePath: SAMPLE_PATHS.packingList,
-            url: sampleOpenUrl(SAMPLE_PATHS.packingList),
-            extractedBy: slot,
-          });
-        }
         addSource(deal.id, {
           kind,
           body: emailBody,
@@ -187,7 +111,7 @@ export default function PipelinePage() {
           from: emailBody.match(/^From:\s*(.+)$/im)?.[1]?.trim(),
           extractedBy: slot,
           extractedSummary: String(result.summary || "Completed"),
-          attachments,
+          attachments: [],
         });
       }
       addTimeline(deal.id, {
@@ -207,73 +131,11 @@ export default function PipelinePage() {
     }
   }
 
-  function seedGolden(stage: StageKey) {
-    if (!deal) return;
-    const patches: Record<StageKey, () => void> = {
-      artwork: () => {
-        updateDeal(deal.id, { artwork: GOLDEN_ARTWORK });
-        setStage(deal.id, "artwork");
-      },
-      samples: () => {
-        updateDeal(deal.id, { samples: GOLDEN_SAMPLES });
-        setStage(deal.id, "samples");
-      },
-      pi_po: () => {
-        updateDeal(deal.id, {
-          pi: GOLDEN_PI,
-          po: GOLDEN_PO,
-          discrepancy: GOLDEN_DISCREPANCY,
-        });
-        setStage(deal.id, "pi_po");
-      },
-      packaging: () => {
-        updateDeal(deal.id, {
-          upcMatch: GOLDEN_UPC,
-          packaging: GOLDEN_PACKAGING,
-        });
-        setStage(deal.id, "packaging");
-      },
-      production: () => {
-        updateDeal(deal.id, {
-          inspection: GOLDEN_INSPECTION,
-          production: GOLDEN_PRODUCTION,
-        });
-        setStage(deal.id, "production");
-      },
-      booking: () => {
-        updateDeal(deal.id, { booking: GOLDEN_BOOKING, cbm: GOLDEN_CBM });
-        setStage(deal.id, "booking");
-      },
-      docs_payment: () => {
-        updateDeal(deal.id, {
-          docsPack: GOLDEN_DOCS,
-          payment: GOLDEN_PAYMENT,
-          commission: GOLDEN_COMMISSION,
-        });
-        setStage(deal.id, "docs_payment");
-      },
-    };
-    patches[stage]();
-    toast.message("Loaded reference stage result");
-  }
-
   return (
     <div>
       <PageHeader
         title="Stage pipeline"
-        description="Run stage workers from artwork through docs & payment. Source emails stay on the deal; use Load stage data when you need a reference fill."
-        actions={
-          <Button
-            variant="secondary"
-            onClick={() => {
-              const d = loadShowcaseDeal();
-              setDealId(d.id);
-              toast.success(`Opened ${d.code}`);
-            }}
-          >
-            Open flagship deal
-          </Button>
-        }
+        description="Run stage workers from artwork through docs & payment against real mailbox deals. Source emails stay on the deal for audit."
       />
 
       <Card className="mb-4 p-4">
@@ -308,13 +170,7 @@ export default function PipelinePage() {
           <Button
             key={s.key}
             variant={tab === s.key ? "primary" : "secondary"}
-            onClick={() => {
-              setTab(s.key);
-              if (s.key === "artwork") setEmailText(ARTWORK_APPROVAL_EMAIL);
-              if (s.key === "samples") setEmailText(SAMPLE_DISPATCH_EMAIL);
-              if (s.key === "production") setEmailText(PRODUCTION_STATUS_EMAIL);
-              if (s.key === "docs_payment") setEmailText(PAYMENT_CLOCK_EMAIL);
-            }}
+            onClick={() => setTab(s.key)}
           >
             {s.label}
           </Button>
@@ -326,21 +182,13 @@ export default function PipelinePage() {
           <CardHeader
             title="Agent input"
             description="Email / notes for this stage — originals stay on the deal for audit"
-            action={
-              <Button
-                variant="secondary"
-                disabled={!deal || busy}
-                onClick={() => seedGolden(tab)}
-              >
-                Load stage data
-              </Button>
-            }
           />
           <div className="space-y-3 p-4">
             <Textarea
               rows={12}
               value={emailText}
               onChange={(e) => setEmailText(e.target.value)}
+              placeholder="Paste a real stage email or notes for this deal…"
             />
             {deal ? (
               <p className="text-[11px] text-zinc-500">
@@ -386,28 +234,31 @@ export default function PipelinePage() {
             {tab === "pi_po" ? (
               <div className="flex flex-wrap gap-2">
                 <Button
-                  disabled={busy || !deal}
+                  disabled={busy || !deal || (!deal?.pi && !deal?.po)}
                   onClick={() => {
-                    updateDeal(deal!.id, { pi: GOLDEN_PI, po: GOLDEN_PO });
+                    if (!deal?.pi || !deal?.po) {
+                      toast.error("Deal needs extracted PI and PO first");
+                      return;
+                    }
                     void runSlot(
                       "pi_po_discrepancy",
                       {
-                        pi_json: JSON.stringify(GOLDEN_PI),
-                        po_json: JSON.stringify(GOLDEN_PO),
+                        pi_json: JSON.stringify(deal.pi),
+                        po_json: JSON.stringify(deal.po),
                       },
                       (r, id) =>
-                        updateDeal(deal!.id, {
+                        updateDeal(deal.id, {
                           discrepancy: discrepancyFromWorker(r, id),
                         }),
                       "pi_po",
                     );
                   }}
                 >
-                  Run pi_po_discrepancy (on golden PI/PO)
+                  Run pi_po_discrepancy
                 </Button>
                 <p className="w-full text-[11px] text-zinc-500">
-                  Load stage data for PI/PO first, or extract from Vault uploads,
-                  then compare with the discrepancy agent.
+                  Uses this deal&apos;s extracted PI/PO from mailbox processing
+                  or Vault uploads.
                 </p>
               </div>
             ) : null}
@@ -420,8 +271,7 @@ export default function PipelinePage() {
                       "upc_barcode_matcher",
                       {
                         email_text: emailText,
-                        notes:
-                          "Neater Mats UPC master + barcode art",
+                        notes: "UPC master + barcode art from deal sources",
                       },
                       (r, id) =>
                         updateDeal(deal!.id, {
@@ -458,7 +308,7 @@ export default function PipelinePage() {
             {tab === "booking" ? (
               <p className="text-xs text-zinc-500">
                 booking_extractor / cbm_container_planner need a file URL from
-                Vault, or use Load stage data for a reference fill.
+                Vault or the deal&apos;s source attachments.
               </p>
             ) : null}
             {tab === "docs_payment" ? (
@@ -484,12 +334,11 @@ export default function PipelinePage() {
                 </Button>
                 <Button
                   variant="secondary"
-                  disabled={busy || !deal}
+                  disabled={busy || !deal || !emailText.trim()}
                   onClick={() => {
-                    setEmailText(COMMISSION_EMAIL);
                     void runSlot(
                       "commission_checklist",
-                      { email_text: COMMISSION_EMAIL },
+                      { email_text: emailText },
                       (r, id) =>
                         updateDeal(deal!.id, {
                           commission: commissionFromWorker(r, id),

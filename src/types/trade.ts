@@ -66,7 +66,7 @@ export const STAGE_LABELS: Record<DealStage, string> = {
 };
 
 export interface Party {
-  role: "buyer" | "agency" | "factory" | "forwarder";
+  role: "buyer" | "agency" | "factory" | "forwarder" | "trader";
   name: string;
   email?: string;
   phone?: string;
@@ -110,6 +110,8 @@ export interface SourceMessage {
   subject?: string;
   from?: string;
   to?: string;
+  cc?: string;
+  bcc?: string;
   receivedAt?: string;
   body: string;
   relatedDocumentId?: string;
@@ -737,6 +739,8 @@ export interface PaymentCheckpoint {
   checkpoint?: string;
   /** Source message confirming the gate and/or receipt */
   confirmationSourceId?: string;
+  /** Related mailbox source ids for audit trail */
+  sourceIds?: string[];
   termsExcerpt?: string;
 }
 
@@ -785,6 +789,16 @@ export interface Deal {
   showcase?: boolean;
   /** Seeded as part of Command Center book-of-business portfolio */
   portfolioSeed?: boolean;
+  /** Hydrated from Outlook mailbox ingest (Neon processed_deals) */
+  mailboxIngest?: boolean;
+  /** Raw processed_deals.id (po:… / topic:…) for evidence API */
+  mailboxSourceId?: string;
+  /** agency_commission (SNSPL referee) | trader_principal (Global Praise) */
+  commercialModel?: "agency_commission" | "trader_principal";
+  /** Worker slot that produced the latest extract */
+  mailboxSlot?: string;
+  /** Latest agent structured result (for audit panel) */
+  agentResult?: Record<string, unknown>;
   recommendedFactoryIds?: string[];
   artwork?: ArtworkChecklist;
   samples?: SampleRequestSummary;

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { PageHeader } from "@/components/layout/app-shell";
@@ -10,18 +11,102 @@ import {
   CardHeader,
 } from "@/components/ui/primitives";
 import { useTradeStore } from "@/lib/trade/store";
-import { STAGE_LABELS } from "@/types/trade";
+import { STAGE_LABELS, type SourceMessage } from "@/types/trade";
 import { DealAttentionPanel } from "@/components/ops/deal-attention-panel";
 import { DealTimeline } from "@/components/ops/deal-timeline";
 import { SourceEmailsPanel } from "@/components/ops/source-emails-panel";
 import { FactoryRecommendations } from "@/components/ops/factory-recommendations";
 import { OpenableFileLink } from "@/components/ops/openable-file-link";
 import { DealPaymentsPanel } from "@/components/ops/deal-payments-panel";
+import { DealOverviewCard } from "@/components/ops/deal-overview-card";
+import { dealCommercialModel } from "@/lib/trade/commercialModel";
 
 export default function DealRoomPage() {
   const params = useParams<{ id: string }>();
-  const deal = useTradeStore((s) => s.deals.find((d) => d.id === params.id));
+  const id = decodeURIComponent(params.id || "");
+  const deal = useTradeStore((s) =>
+    s.deals.find((d) => d.id === id || d.id === params.id),
+  );
+  const updateDeal = useTradeStore((s) => s.updateDeal);
   const deleteDeal = useTradeStore((s) => s.deleteDeal);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const [sources, setSources] = useState<SourceMessage[]>(deal?.sources || []);
+
+  useEffect(() => {
+    setSources(deal?.sources || []);
+  }, [deal?.id, deal?.sources]);
+
+  useEffect(() => {
+    if (!deal?.mailboxSourceId) return;
+    let cancelled = false;
+    async function loadEvidence() {
+      setEvidenceLoading(true);
+      setEvidenceError(null);
+      try {
+        const res = await fetch(
+          `/api/processed-deals/evidence?id=${encodeURIComponent(deal!.mailboxSourceId!)}`,
+          { cache: "no-store" },
+        );
+        const body = (await res.json()) as {
+          error?: string;
+          sources?: SourceMessage[];
+          result?: Record<string, unknown>;
+          document_url?: string;
+          document_name?: string;
+        };
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        if (cancelled) return;
+        if (body.sources?.length) {
+          setSources(body.sources);
+          const docFromSources = body.sources
+            .flatMap((s) => s.attachments || [])
+            .find((a) => a.url || a.samplePath);
+          updateDeal(deal!.id, {
+            sources: body.sources,
+            agentResult: body.result || deal!.agentResult,
+            documents:
+              body.document_name || body.document_url || docFromSources
+                ? [
+                    {
+                      id: `${deal!.id}-doc`,
+                      name:
+                        body.document_name ||
+                        docFromSources?.name ||
+                        "attachment",
+                      type: deal!.documents[0]?.type || "other",
+                      uploadedAt: deal!.updatedAt,
+                      url: body.document_url || docFromSources?.url || undefined,
+                      samplePath: docFromSources?.samplePath,
+                      extractedBy: deal!.mailboxSlot,
+                      extractedSummary: deal!.agentResult
+                        ? String(
+                            (deal!.agentResult as { summary?: string }).summary ||
+                              "",
+                          ).slice(0, 220)
+                        : undefined,
+                    },
+                  ]
+                : deal!.documents,
+          });
+        } else if (!cancelled) {
+          setEvidenceError("No source emails found for this deal");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setEvidenceError(
+            err instanceof Error ? err.message : "Evidence load failed",
+          );
+        }
+      } finally {
+        if (!cancelled) setEvidenceLoading(false);
+      }
+    }
+    void loadEvidence();
+    return () => {
+      cancelled = true;
+    };
+  }, [deal?.id, deal?.mailboxSourceId, updateDeal]);
 
   if (!deal) {
     return (
@@ -33,6 +118,8 @@ export default function DealRoomPage() {
       </div>
     );
   }
+
+  const model = dealCommercialModel(deal);
 
   return (
     <div>
@@ -71,13 +158,28 @@ export default function DealRoomPage() {
           {deal.code}
         </span>
         <Badge tone="info">{STAGE_LABELS[deal.stage]}</Badge>
+        <Badge tone={model === "trader_principal" ? "warning" : "success"}>
+          {model === "trader_principal"
+            ? "Trader · Global Praise"
+            : "Agency · SNSPL referee"}
+        </Badge>
+        {deal.mailboxSlot ? <Badge>{deal.mailboxSlot}</Badge> : null}
+        {deal.mailboxSourceId ? (
+          <span className="font-mono text-[11px] text-zinc-500">
+            {deal.mailboxSourceId}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="mb-4">
+        <DealOverviewCard deal={deal} sources={sources} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader
             title="Timeline"
-            description="Day count from deal open · dates highlighted"
+            description={`${(deal.timeline || []).length} events across the thread · Day N from deal open`}
           />
           <DealTimeline createdAt={deal.createdAt} events={deal.timeline} />
         </Card>
@@ -173,28 +275,54 @@ export default function DealRoomPage() {
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <SourceEmailsPanel sources={deal.sources || []} />
+        <div className="space-y-2">
+          {evidenceLoading ? (
+            <p className="text-xs text-zinc-500">Loading source emails…</p>
+          ) : null}
+          {evidenceError ? (
+            <p className="text-xs text-amber-700">
+              Evidence: {evidenceError} (showing preview if available)
+            </p>
+          ) : null}
+          <SourceEmailsPanel
+            sources={sources}
+            title="Source emails & evidence"
+          />
+        </div>
         <Card>
-          <CardHeader title="Stage snapshot" />
-          <div className="space-y-1 px-4 py-3 text-xs text-zinc-600">
-            <div>Artwork: {deal.artwork?.summary || "—"}</div>
-            <div>Samples: {deal.samples?.summary || "—"}</div>
-            <div>
-              PI/PO:{" "}
-              {deal.discrepancy?.summary ||
-                deal.pi?.summary ||
-                deal.po?.summary ||
-                "—"}
+          <CardHeader
+            title="Agent extract"
+            description={
+              deal.mailboxSlot
+                ? `Worker · ${deal.mailboxSlot}`
+                : "Structured fields returned by the agent"
+            }
+          />
+          {deal.agentResult ? (
+            <pre className="max-h-[32rem] overflow-auto px-4 py-3 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap">
+              {JSON.stringify(deal.agentResult, null, 2)}
+            </pre>
+          ) : (
+            <div className="space-y-1 px-4 py-3 text-xs text-zinc-600">
+              <div>Artwork: {deal.artwork?.summary || "—"}</div>
+              <div>Samples: {deal.samples?.summary || "—"}</div>
+              <div>
+                PI/PO:{" "}
+                {deal.discrepancy?.summary ||
+                  deal.pi?.summary ||
+                  deal.po?.summary ||
+                  "—"}
+              </div>
+              <div>
+                Packaging:{" "}
+                {deal.packaging?.summary || deal.upcMatch?.summary || "—"}
+              </div>
+              <div>Production: {deal.production?.summary || "—"}</div>
+              <div>Booking: {deal.booking?.summary || "—"}</div>
+              <div>Payment: {deal.payment?.summary || "—"}</div>
+              <div>Commission: {deal.commission?.summary || "—"}</div>
             </div>
-            <div>
-              Packaging:{" "}
-              {deal.packaging?.summary || deal.upcMatch?.summary || "—"}
-            </div>
-            <div>Production: {deal.production?.summary || "—"}</div>
-            <div>Booking: {deal.booking?.summary || "—"}</div>
-            <div>Payment: {deal.payment?.summary || "—"}</div>
-            <div>Commission: {deal.commission?.summary || "—"}</div>
-          </div>
+          )}
         </Card>
       </div>
     </div>

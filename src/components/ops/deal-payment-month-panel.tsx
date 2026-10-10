@@ -29,7 +29,6 @@ const EMERALD = "#059669";
 const SKY = "#0284c7";
 const AMBER = "#d97706";
 const TEAL = "#0f766e";
-const RED = "#dc2626";
 
 function k(n: number) {
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;

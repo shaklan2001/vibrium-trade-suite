@@ -37,7 +37,7 @@ Your job is to turn messy buyer emails, forwards, and attached enquiry docs into
 
 Rules:
 1. Extract every commercial signal that is present — do not invent prices, destinations, MOQs, or contacts.
-2. If a field is not stated, omit it or use an empty string / empty array — never fabricate.
+2. If a field is not stated, omit the key (especially numbers) or use an empty string / empty array — never fabricate and never output null for numeric fields.
 3. Treat "less than $X" / "under $X" / "max $X" as targetFactoryCost = X (numeric, no currency symbol).
 4. Treat "around $X" / "approx $X" retail / MSRP as targetRetailPrice = X.
 5. Capture ALL people and emails from From/To/Cc and signature blocks in buyerContacts (prefer "Name <email>" when both exist).

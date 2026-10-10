@@ -251,6 +251,155 @@ function FooterLaneRow({
 
 const SORT_CYCLE: FlowSideSort[] = ["default", "buyer", "factory"];
 
+type VisibleLaneId = FlowLaneKey;
+
+const LANE_OPTIONS: Array<{
+  id: VisibleLaneId;
+  label: string;
+  short: string;
+  tone: "rcv" | "pay" | "rcv-plan" | "pay-plan";
+  laneLabel: string;
+  headerClass: string;
+}> = [
+  {
+    id: "rcvPlan",
+    label: "Rcv · terms",
+    short: "Rcv · terms",
+    tone: "rcv-plan",
+    laneLabel: "RCV terms",
+    headerClass: "text-sky-700",
+  },
+  {
+    id: "rcv",
+    label: "Rcv",
+    short: "Rcv",
+    tone: "rcv",
+    laneLabel: "RCV",
+    headerClass: "text-slate-500",
+  },
+  {
+    id: "payPlan",
+    label: "Pay · terms",
+    short: "Pay · terms",
+    tone: "pay-plan",
+    laneLabel: "PAY terms",
+    headerClass: "text-amber-800",
+  },
+  {
+    id: "pay",
+    label: "Pay",
+    short: "Pay",
+    tone: "pay",
+    laneLabel: "PAY",
+    headerClass: "text-zinc-500",
+  },
+];
+
+const DEFAULT_VISIBLE: VisibleLaneId[] = [
+  "rcvPlan",
+  "rcv",
+  "payPlan",
+  "pay",
+];
+
+function LaneMultiselect({
+  selected,
+  onChange,
+}: {
+  selected: VisibleLaneId[];
+  onChange: (next: VisibleLaneId[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const summary =
+    selected.length === LANE_OPTIONS.length
+      ? "All lanes"
+      : selected.length === 0
+        ? "No lanes"
+        : selected
+            .map((id) => LANE_OPTIONS.find((o) => o.id === id)?.short)
+            .filter(Boolean)
+            .join(", ");
+
+  function toggle(id: VisibleLaneId) {
+    if (selected.includes(id)) {
+      // Keep at least one lane visible
+      if (selected.length === 1) return;
+      onChange(selected.filter((x) => x !== id));
+    } else {
+      onChange(
+        LANE_OPTIONS.map((o) => o.id).filter(
+          (x) => selected.includes(x) || x === id,
+        ),
+      );
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex min-w-[10rem] items-center justify-between gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:border-zinc-300"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="truncate">
+          <span className="text-zinc-500">Lanes · </span>
+          {summary}
+        </span>
+        <ChevronsUpDown className="h-3 w-3 shrink-0 text-zinc-400" />
+      </button>
+      {open ? (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-20 cursor-default"
+            aria-label="Close lane menu"
+            onClick={() => setOpen(false)}
+          />
+          <div
+            role="listbox"
+            aria-multiselectable
+            className="absolute right-0 z-30 mt-1 w-52 rounded-md border border-zinc-200 bg-white py-1 shadow-lg"
+          >
+            <div className="flex items-center justify-between border-b border-zinc-100 px-2.5 py-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                Show lanes
+              </span>
+              <button
+                type="button"
+                className="text-[10px] font-medium text-teal-700 hover:underline"
+                onClick={() => onChange([...DEFAULT_VISIBLE])}
+              >
+                All
+              </button>
+            </div>
+            {LANE_OPTIONS.map((opt) => {
+              const checked = selected.includes(opt.id);
+              return (
+                <label
+                  key={opt.id}
+                  className="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50"
+                >
+                  <input
+                    type="checkbox"
+                    className="rounded border-zinc-300"
+                    checked={checked}
+                    onChange={() => toggle(opt.id)}
+                  />
+                  <span className={cn("font-medium uppercase", opt.headerClass)}>
+                    {opt.label}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 export function OrderPaymentFlowGrid({
   orders,
   onSelectOrder,
@@ -264,7 +413,8 @@ export function OrderPaymentFlowGrid({
     subtitle?: string,
   ) => void;
 }) {
-  const [showTerms, setShowTerms] = useState(true);
+  const [visibleLanes, setVisibleLanes] =
+    useState<VisibleLaneId[]>(DEFAULT_VISIBLE);
   const [sideSort, setSideSort] = useState<FlowSideSort>("default");
   const flow = useMemo(() => buildOrderPaymentFlow(orders), [orders]);
   const rows = useMemo(
@@ -276,6 +426,11 @@ export function OrderPaymentFlowGrid({
     [rows, flow.months],
   );
 
+  const activeLanes = useMemo(
+    () => LANE_OPTIONS.filter((o) => visibleLanes.includes(o.id)),
+    [visibleLanes],
+  );
+
   if (!orders.length) {
     return (
       <p className="px-3 py-6 text-sm text-zinc-500">
@@ -284,7 +439,10 @@ export function OrderPaymentFlowGrid({
     );
   }
 
-  const rowSpan = showTerms ? 4 : 2;
+  const rowSpan = Math.max(activeLanes.length, 1);
+  const showTerms = visibleLanes.some(
+    (id) => id === "rcvPlan" || id === "payPlan",
+  );
   const sortLabel =
     sideSort === "buyer"
       ? "Buyer RCV ↓"
@@ -305,15 +463,7 @@ export function OrderPaymentFlowGrid({
             column totals · current month highlighted
           </p>
         </div>
-        <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700">
-          <input
-            type="checkbox"
-            className="rounded border-zinc-300"
-            checked={showTerms}
-            onChange={(e) => setShowTerms(e.target.checked)}
-          />
-          Show PO/PI terms rows
-        </label>
+        <LaneMultiselect selected={visibleLanes} onChange={setVisibleLanes} />
       </div>
       <table className="w-full min-w-[720px] border-collapse text-left">
         <thead>
@@ -367,148 +517,82 @@ export function OrderPaymentFlowGrid({
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ order, rcv, pay, rcvPlan, payPlan }) => (
-            <Fragment key={order.dealId}>
-              {showTerms ? (
-                <tr className="border-b border-zinc-50 align-middle">
-                  <td
-                    rowSpan={rowSpan}
-                    className="sticky left-0 z-10 border-r border-zinc-100 bg-white px-2 py-1 align-middle"
-                  >
-                    <button
-                      type="button"
-                      className="font-mono text-xs font-semibold text-teal-800 hover:underline"
-                      onClick={() => onSelectOrder(order)}
+          {rows.map((row) => {
+            const { order, rcv, pay, rcvPlan, payPlan } = row;
+            const cellsByLane: Record<VisibleLaneId, Record<string, FlowCell>> =
+              {
+                rcv,
+                pay,
+                rcvPlan,
+                payPlan,
+              };
+            return (
+              <Fragment key={order.dealId}>
+                {activeLanes.map((lane, laneIdx) => {
+                  const isLast = laneIdx === activeLanes.length - 1;
+                  const cells = cellsByLane[lane.id];
+                  return (
+                    <tr
+                      key={`${order.dealId}-${lane.id}`}
+                      className={cn(
+                        "align-middle",
+                        isLast
+                          ? "border-b border-zinc-200"
+                          : "border-b border-zinc-50",
+                      )}
                     >
-                      {order.dealCode}
-                    </button>
-                  </td>
-                  <td className="px-1 py-1 text-[10px] font-semibold uppercase text-sky-700">
-                    Rcv · terms
-                  </td>
-                  <LaneCells
-                    months={flow.months}
-                    cells={rcvPlan}
-                    tone="rcv-plan"
-                    dealCode={order.dealCode}
-                    laneLabel="RCV terms"
-                    order={order}
-                    rowTotal={sumLaneCells(rcvPlan, flow.months)}
-                    onSelectOrder={onSelectOrder}
-                    onSelectLines={onSelectLines}
-                  />
-                </tr>
-              ) : null}
+                      {laneIdx === 0 ? (
+                        <td
+                          rowSpan={rowSpan}
+                          className="sticky left-0 z-10 border-r border-zinc-100 bg-white px-2 py-1 align-middle"
+                        >
+                          <button
+                            type="button"
+                            className="font-mono text-xs font-semibold text-teal-800 hover:underline"
+                            onClick={() => onSelectOrder(order)}
+                          >
+                            {order.dealCode}
+                          </button>
+                        </td>
+                      ) : null}
+                      <td
+                        className={cn(
+                          "px-1 py-1 text-[10px] font-semibold uppercase",
+                          lane.headerClass,
+                        )}
+                      >
+                        {lane.label}
+                      </td>
+                      <LaneCells
+                        months={flow.months}
+                        cells={cells}
+                        tone={lane.tone}
+                        dealCode={order.dealCode}
+                        laneLabel={lane.laneLabel}
+                        order={order}
+                        rowTotal={sumLaneCells(cells, flow.months)}
+                        onSelectOrder={onSelectOrder}
+                        onSelectLines={onSelectLines}
+                      />
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            );
+          })}
 
-              <tr className="border-b border-zinc-50 align-middle">
-                {!showTerms ? (
-                  <td
-                    rowSpan={rowSpan}
-                    className="sticky left-0 z-10 border-r border-zinc-100 bg-white px-2 py-1 align-middle"
-                  >
-                    <button
-                      type="button"
-                      className="font-mono text-xs font-semibold text-teal-800 hover:underline"
-                      onClick={() => onSelectOrder(order)}
-                    >
-                      {order.dealCode}
-                    </button>
-                  </td>
-                ) : null}
-                <td className="px-1 py-1 text-[10px] font-semibold uppercase text-slate-500">
-                  Rcv
-                </td>
-                <LaneCells
-                  months={flow.months}
-                  cells={rcv}
-                  tone="rcv"
-                  dealCode={order.dealCode}
-                  laneLabel="RCV"
-                  order={order}
-                  rowTotal={sumLaneCells(rcv, flow.months)}
-                  onSelectOrder={onSelectOrder}
-                  onSelectLines={onSelectLines}
-                />
-              </tr>
-
-              {showTerms ? (
-                <tr className="border-b border-zinc-50 align-middle">
-                  <td className="px-1 py-1 text-[10px] font-semibold uppercase text-amber-800">
-                    Pay · terms
-                  </td>
-                  <LaneCells
-                    months={flow.months}
-                    cells={payPlan}
-                    tone="pay-plan"
-                    dealCode={order.dealCode}
-                    laneLabel="PAY terms"
-                    order={order}
-                    rowTotal={sumLaneCells(payPlan, flow.months)}
-                    onSelectOrder={onSelectOrder}
-                    onSelectLines={onSelectLines}
-                  />
-                </tr>
-              ) : null}
-
-              <tr className="border-b border-zinc-200 align-middle">
-                <td className="px-1 py-1 text-[10px] font-semibold uppercase text-zinc-500">
-                  Pay
-                </td>
-                <LaneCells
-                  months={flow.months}
-                  cells={pay}
-                  tone="pay"
-                  dealCode={order.dealCode}
-                  laneLabel="PAY"
-                  order={order}
-                  rowTotal={sumLaneCells(pay, flow.months)}
-                  onSelectOrder={onSelectOrder}
-                  onSelectLines={onSelectLines}
-                />
-              </tr>
-            </Fragment>
+          {activeLanes.map((lane, laneIdx) => (
+            <FooterLaneRow
+              key={`footer-${lane.id}`}
+              label={lane.label}
+              laneKey={lane.id}
+              tone={lane.tone}
+              months={flow.months}
+              colTotals={colTotals}
+              showOrderCell={laneIdx === 0}
+              rowSpan={rowSpan}
+            />
           ))}
-
-          {showTerms ? (
-            <FooterLaneRow
-              label="Rcv · terms"
-              laneKey="rcvPlan"
-              tone="rcv-plan"
-              months={flow.months}
-              colTotals={colTotals}
-              showOrderCell
-              rowSpan={rowSpan}
-            />
-          ) : null}
-          <FooterLaneRow
-            label="Rcv"
-            laneKey="rcv"
-            tone="rcv"
-            months={flow.months}
-            colTotals={colTotals}
-            showOrderCell={!showTerms}
-            rowSpan={rowSpan}
-          />
-          {showTerms ? (
-            <FooterLaneRow
-              label="Pay · terms"
-              laneKey="payPlan"
-              tone="pay-plan"
-              months={flow.months}
-              colTotals={colTotals}
-              showOrderCell={false}
-              rowSpan={rowSpan}
-            />
-          ) : null}
-          <FooterLaneRow
-            label="Pay"
-            laneKey="pay"
-            tone="pay"
-            months={flow.months}
-            colTotals={colTotals}
-            showOrderCell={false}
-            rowSpan={rowSpan}
-          />
         </tbody>
       </table>
     </div>

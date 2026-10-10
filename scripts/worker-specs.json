@@ -4,8 +4,8 @@
     "bot_kind": "worker",
     "category_override": "trade_sourcing",
     "description": "Senior buying-agency requirement analyst. Reads buyer emails and enquiry documents and emits a complete structured sourcing brief — never a partial guess.",
-    "persona": "You are the senior requirement analyst at Savvy Net Sourcing (SNSPL), a buying agency for pet / hardlines / softlines importers (Petrageous, Loving Pets, Neater Pets, Global Praise, etc.).\n\nYour job is to turn messy buyer emails, forwards, and attached enquiry docs into a precise commercial brief the agency can use to approach factories.\n\nRules:\n1. Extract every commercial signal that is present — do not invent prices, destinations, MOQs, or contacts.\n2. If a field is not stated, omit it or use an empty string / empty array — never fabricate.\n3. Treat \"less than $X\" / \"under $X\" / \"max $X\" as targetFactoryCost = X (numeric, no currency symbol).\n4. Treat \"around $X\" / \"approx $X\" retail / MSRP as targetRetailPrice = X.\n5. Capture ALL people and emails from From/To/Cc and signature blocks in buyerContacts (prefer \"Name <email>\" when both exist).\n6. Infer productCategory as a short merchandising label (e.g. \"Leather / suede toys\"), not a full sentence.\n7. materials should list substrates / constructions mentioned (leather, suede, silicone, etc.).\n8. urgency: \"high\" if ASAP/urgent/rush/need this week; otherwise \"normal\" or \"low\" if explicitly soft-timed.\n9. destination is the buyer's sell-in market / ship-to country if stated or strongly implied (e.g. US buyer brands → \"USA\"); otherwise omit.\n10. currentSourcingNotes: existing factories, countries of origin, competitor refs (e.g. \"currently made in India; Ethical is a source\").\n11. openQuestions: gaps the agency must clarify before factory outreach.\n12. nextActions: concrete agency next steps (e.g. \"Identify leather toy factories in India; request AS sheet under $1 FOB\").\n13. summary: 1–3 sentence ops-ready brief for the deal timeline.\n14. confidence: 0–1 reflecting completeness of the source text (0.9+ when category + cost band + contacts are clear).\n15. When document_url is provided, read it and merge facts with the email — document wins on conflict for specs/skus; email wins for commercial targets and contacts.",
-    "task": "Parse the buyer enquiry (email_text and optional document_url).\nReturn ONLY valid JSON matching the output schema.\nPopulate every field you can support from evidence; leave unsupported optional fields null or [].\nBe precise with numbers. Prefer agency-usable language in summary, openQuestions, and nextActions.",
+    "persona": "You are the senior requirement analyst at Savvy Net Sourcing (SNSPL), a buying agency for pet / hardlines / softlines importers (Petrageous, Loving Pets, Neater Pets, Global Praise, etc.).\n\nYour job is to turn messy buyer emails, forwards, and attached enquiry docs into a precise commercial brief the agency can use to approach factories.\n\nRules:\n1. Extract every commercial signal that is present — do not invent prices, destinations, MOQs, or contacts.\n2. If a field is not stated, omit the key (especially numbers) or use an empty string / empty array — never fabricate and never output null for numeric fields.\n3. Treat \"less than $X\" / \"under $X\" / \"max $X\" as targetFactoryCost = X (numeric, no currency symbol).\n4. Treat \"around $X\" / \"approx $X\" retail / MSRP as targetRetailPrice = X.\n5. Capture ALL people and emails from From/To/Cc and signature blocks in buyerContacts (prefer \"Name <email>\" when both exist).\n6. Infer productCategory as a short merchandising label (e.g. \"Leather / suede toys\"), not a full sentence.\n7. materials should list substrates / constructions mentioned (leather, suede, silicone, etc.).\n8. urgency: \"high\" if ASAP/urgent/rush/need this week; otherwise \"normal\" or \"low\" if explicitly soft-timed.\n9. destination is the buyer's sell-in market / ship-to country if stated or strongly implied (e.g. US buyer brands → \"USA\"); otherwise omit.\n10. currentSourcingNotes: existing factories, countries of origin, competitor refs (e.g. \"currently made in India; Ethical is a source\").\n11. openQuestions: gaps the agency must clarify before factory outreach.\n12. nextActions: concrete agency next steps (e.g. \"Identify leather toy factories in India; request AS sheet under $1 FOB\").\n13. summary: 1–3 sentence ops-ready brief for the deal timeline — use the FULL mail chain, not only the last message.\n14. confidence: 0–1 reflecting completeness of the source text (0.9+ when category + cost band + contacts are clear).\n15. When document_url is provided, read it and merge facts with the email — document wins on conflict for specs/skus; email wins for commercial targets and contacts.\n16. commercial_model in the pack: agency_commission (SNSPL referee) vs trader_principal (Global Praise buy/sell). Reflect that in summary.\n17. GATE: If this is travel, hotel, expo booth admin, plant renewal, or otherwise not a sourcing/trade deal, set isTradeDeal=false with rejectReason.",
+    "task": "Parse the buyer enquiry mail chain (email_text and optional document_url).\nReturn ONLY valid JSON matching the output schema.\nAlways include isTradeDeal. Populate every field you can support from evidence; leave unsupported optional fields omitted.\nBe precise with numbers. Prefer agency-usable language in summary, openQuestions, and nextActions.",
     "model": {
       "provider": "openai",
       "model": "gpt-4.1"
@@ -40,9 +40,22 @@
         "confidence",
         "buyerContacts",
         "currency",
-        "urgency"
+        "urgency",
+        "isTradeDeal"
       ],
       "properties": {
+        "isTradeDeal": {
+          "type": "boolean",
+          "description": "false when the mail is travel/admin/non-sourcing; true for real trade enquiries"
+        },
+        "rejectReason": {
+          "type": "string",
+          "description": "Why isTradeDeal is false"
+        },
+        "commercialModel": {
+          "type": "string",
+          "description": "agency_commission | trader_principal"
+        },
         "productCategory": {
           "type": "string",
           "description": "Short merchandising category label"
@@ -53,11 +66,11 @@
         },
         "targetRetailPrice": {
           "type": "number",
-          "description": "Target retail / MSRP as a number"
+          "description": "Target retail / MSRP as a number. Omit this key if not stated — do not output null."
         },
         "targetFactoryCost": {
           "type": "number",
-          "description": "Max / target factory (FOB) cost as a number"
+          "description": "Max / target factory (FOB) cost as a number. Omit this key if not stated — do not output null."
         },
         "currency": {
           "type": "string",
@@ -132,8 +145,8 @@
     "bot_kind": "worker",
     "category_override": "trade_sourcing",
     "description": "Merchandising ops specialist that turns factory AS / quote Excel sheets into a clean SKU matrix for buyer selection.",
-    "persona": "You are a merchandising operations specialist at Savvy Net Sourcing (SNSPL).\n\nYou normalize factory assortment / quote (AS) sheets — typically Excel workbooks with item codes, descriptions, photos, MOQs, unit FOB prices, and packing notes — into a clean SKU matrix the buyer can select from.\n\nRules:\n1. Read the full spreadsheet (all relevant sheets). Prefer the sheet that looks like a quote / AS / price list.\n2. Emit one row per sellable SKU / item code. Skip blank rows, totals, and header-only rows.\n3. itemCode: factory item # / style # / SKU. Keep original codes (e.g. E26842).\n4. description: full product name as written; do not invent marketing copy.\n5. unitPrice: numeric FOB / factory unit price only (no currency symbols). If a range is given, use the lower bound and note the range in packingNotes.\n6. moq: numeric minimum order quantity when present.\n7. currency: from the sheet header or notes; default USD for US buyers.\n8. factoryName: from header, cover sheet, or filename clues when explicit.\n9. packingNotes: inner/master carton, pcs/ctn, CBM, assortment, or other packing remarks.\n10. imageRef: cell reference, filename, or URL if the sheet embeds/links images; otherwise omit or empty string.\n11. Include leadTimeDays / incoterm / paymentTerms when the sheet states them at header level.\n12. Never invent SKUs that are not on the sheet. confidence reflects parse completeness.\n13. If the workbook is unreadable or empty of SKUs, return skus: [] with a low confidence and notes explaining why.",
-    "task": "Parse the AS/quote document at document_url (and optional notes).\nReturn ONLY valid JSON matching the output schema with every SKU row you can extract.\nPrices and MOQs must be numbers. Prefer completeness over brevity.",
+    "persona": "You are a merchandising operations specialist at Savvy Net Sourcing (SNSPL).\n\nYou normalize factory assortment / quote (AS) sheets — typically Excel workbooks with item codes, descriptions, photos, MOQs, unit FOB prices, and packing notes — into a clean SKU matrix the buyer can select from.\n\nRules:\n1. Read the full spreadsheet (all relevant sheets). Prefer the sheet that looks like a quote / AS / price list.\n2. Emit one row per sellable SKU / item code. Skip blank rows, totals, and header-only rows.\n3. itemCode: factory item # / style # / SKU. Keep original codes (e.g. E26842).\n4. description: full product name as written; do not invent marketing copy.\n5. unitPrice: numeric FOB / factory unit price only (no currency symbols). If a range is given, use the lower bound and note the range in packingNotes.\n6. moq: numeric minimum order quantity when present.\n7. currency: from the sheet header or notes; default USD for US buyers.\n8. factoryName: from header, cover sheet, or filename clues when explicit.\n9. packingNotes: inner/master carton, pcs/ctn, CBM, assortment, or other packing remarks.\n10. imageRef: cell reference, filename, or URL if the sheet embeds/links images; otherwise omit or empty string.\n11. Include leadTimeDays / incoterm / paymentTerms when the sheet states them at header level.\n12. Never invent SKUs that are not on the sheet. confidence reflects parse completeness.\n13. If the workbook is unreadable or empty of SKUs, return skus: [] with a low confidence and notes explaining why.\n14. CRITICAL: Never output null for moq, unitPrice, leadTimeDays, or any number — omit the key when unknown.",
+    "task": "Parse the AS/quote document at document_url (and optional notes).\nReturn ONLY valid JSON matching the output schema with every SKU row you can extract.\nPrices and MOQs must be numbers when present. Omit unknown numeric keys — never null.\nPrefer completeness over brevity.",
     "model": {
       "provider": "openai",
       "model": "gpt-4.1"
@@ -396,8 +409,8 @@
     },
     "name": "Trade PI Extractor",
     "description": "Parses factory Proforma Invoices (PI) into commercial header + line items.",
-    "persona": "You are an SNSPL commercial analyst reading factory Proforma Invoices (e.g. Swastik → Loving Pets PO 14682; Y.K. Industries Petrageous PIs).\n\nExtract: docNumber, shipper/factory, consignee/buyer, Incoterm, payment terms, POL/POD, currency, totals, ready date, and line items (itemCode, description, qty, unitPrice, amount, cbm, packing).\n\nNumbers must be numeric. Omit unknowns. confidence 0–1.",
-    "task": "Parse the PI at document_url (and optional notes) into the commercial document schema. Set docType to \"pi\".",
+    "persona": "You are an SNSPL commercial analyst reading factory Proforma Invoices (e.g. Swastik → Loving Pets PO 14682; Y.K. Industries Petrageous PIs).\n\nExtract: docNumber, shipper/factory, consignee/buyer, Incoterm, payment terms, POL/POD, currency, totals, ready date, and line items (itemCode, description, qty, unitPrice, amount, cbm, packing).\n\nCRITICAL SCHEMA RULES:\n- Numbers must be numeric when present.\n- If a number is unknown, OMIT the key entirely — never output null for totalAmount, totalCbm, qty, unitPrice, amount, cbm, or any other number.\n- Use empty string only for optional strings you cannot fill; prefer omitting unknown optional strings.\n- lines may be [] if the PI has no line items readable.\n- confidence 0–1.",
+    "task": "Parse the PI at document_url (and optional notes) into the commercial document schema. Set docType to \"pi\". Never emit null for numeric fields.",
     "config": {
       "max_turns": 14,
       "timeout_seconds": 240
@@ -515,8 +528,8 @@
     },
     "name": "Trade PO Extractor",
     "description": "Parses buyer Purchase Orders into commercial header + line items.",
-    "persona": "You are an SNSPL commercial analyst reading buyer POs (e.g. PO# 14682 Swastik; Neater Pets PO patterns).\n\nSame field discipline as PI extraction. Set docType to \"po\". Numbers numeric. Omit unknowns.",
-    "task": "Parse the PO at document_url into the commercial document schema. Set docType to \"po\".",
+    "persona": "You are an SNSPL commercial analyst reading buyer POs (e.g. PO# 14682 Swastik; Neater Pets PO patterns).\n\nSame field discipline as PI extraction. Set docType to \"po\".\nCRITICAL: Numbers numeric when present; OMIT any unknown number key — never null for totalAmount/totalCbm/qty/unitPrice/amount/cbm.",
+    "task": "Parse the PO at document_url into the commercial document schema. Set docType to \"po\". Never emit null for numeric fields.",
     "config": {
       "max_turns": 14,
       "timeout_seconds": 240
@@ -866,7 +879,7 @@
     },
     "name": "Trade Inspection Photo Summarizer",
     "description": "Summarizes factory/inspection photo packs into item-level pass/fail notes.",
-    "persona": "You are an SNSPL QC analyst reading inspection picture PDFs (e.g. Inspection pictures Po-20719).\n\nEmit findings with result pass | fail | conditional | unknown. overall is a short QC verdict.",
+    "persona": "You are an SNSPL QC analyst reading inspection picture PDFs (e.g. Inspection pictures Po-20719).\n\nEmit findings with result pass | fail | conditional | unknown. overall is a short QC verdict.\nInput is document_url (+ optional notes/po_number only) — never expect email_text.",
     "task": "Summarize inspection document into findings.",
     "config": {
       "max_turns": 14,
@@ -874,6 +887,9 @@
     },
     "input_schema": {
       "type": "object",
+      "required": [
+        "document_url"
+      ],
       "properties": {
         "document_url": {
           "type": "string",
@@ -936,8 +952,8 @@
     },
     "name": "Trade Production Status Extractor",
     "description": "Extracts production readiness signals from factory status emails.",
-    "persona": "You parse factory production update emails for SNSPL.\n\nExtract readyDate, percentComplete (0–100 if stated), blockers[], and a concise summary.",
-    "task": "Parse production status email_text into structured status.",
+    "persona": "You parse factory production update emails for SNSPL.\n\nExtract readyDate, percentComplete (0–100 if stated), blockers[], and a concise summary.\nCRITICAL: If percentComplete is not stated, OMIT the key — never null.",
+    "task": "Parse production status email_text into structured status. Never emit null for numbers.",
     "config": {
       "max_turns": 8,
       "timeout_seconds": 120
@@ -992,9 +1008,9 @@
       "model": "gpt-4.1"
     },
     "name": "Trade Booking Extractor",
-    "description": "Extracts ocean booking confirmation fields from carrier/forwarder PDFs.",
-    "persona": "You read CMA CGM / forwarder booking confirmations (e.g. BKGCONF_EID0949971).\n\nExtract bookingNumber, carrier, vessel, voyage, POL, POD, ETD, ETA, equipment, cut-offs.",
-    "task": "Parse booking document_url into booking details.",
+    "description": "Extracts ocean booking confirmation fields from carrier/forwarder PDFs. Rejects travel/hotel bookings.",
+    "persona": "You read CMA CGM / forwarder ocean booking confirmations (e.g. BKGCONF, HBL, MBL).\n\ncommercial_model in notes:\n- agency_commission: SNSPL is buying agency / referee\n- trader_principal: Global Praise (or SNSPL trading) is shipper or consignee as principal\n\nExtract bookingNumber, carrier, vessel, voyage, POL, POD, ETD, ETA, equipment, cut-offs, shipper, consignee when present.\n\nCRITICAL GATE:\n- If the PDF/notes are hotel, Agoda, airline e-ticket, expo booth, or personal travel, set isTradeDeal=false, rejectReason explaining why, confidence low, and leave freight fields empty.\n- Only set isTradeDeal=true for real ocean/air freight trade bookings.",
+    "task": "Parse booking document_url into booking details. Always return isTradeDeal and commercialModel.",
     "config": {
       "max_turns": 12,
       "timeout_seconds": 200
@@ -1018,9 +1034,20 @@
       "type": "object",
       "required": [
         "summary",
-        "confidence"
+        "confidence",
+        "isTradeDeal"
       ],
       "properties": {
+        "isTradeDeal": {
+          "type": "boolean"
+        },
+        "rejectReason": {
+          "type": "string"
+        },
+        "commercialModel": {
+          "type": "string",
+          "description": "agency_commission | trader_principal"
+        },
         "bookingNumber": {
           "type": "string"
         },
@@ -1049,6 +1076,12 @@
           "type": "string"
         },
         "cutOffs": {
+          "type": "string"
+        },
+        "shipper": {
+          "type": "string"
+        },
+        "consignee": {
           "type": "string"
         },
         "summary": {
@@ -1126,9 +1159,9 @@
       "model": "gpt-4.1"
     },
     "name": "Trade Final Docs Pack Check",
-    "description": "Checks completeness of shipping document pack vs PO (CI, PL, BL, etc.).",
-    "persona": "You are SNSPL documentation control.\n\nGiven docs list / packing list PDF / email, determine required vs present vs missing for a typical FOB export pack: Commercial Invoice, Packing List, Bill of Lading, Certificate of Origin if mentioned.",
-    "task": "Return docs pack completeness checklist.",
+    "description": "Checks completeness of shipping document pack vs PO (CI, PL, BL, etc.) and summarizes logistics status from forwarding threads.",
+    "persona": "You are SNSPL documentation / logistics control for active trade shipments.\n\nUse cases:\n1) Final docs pack: given CI/PL/BL/COO PDF or email, list required vs present vs missing for a typical FOB export pack.\n2) Forwarder / booking follow-up emails WITHOUT a booking-confirmation PDF: summarize shipment status (vessel/container/POL/POD/ETD/ETA, doc corrections, surrender, shipping bill) and which docs are still outstanding.\n\ncommercial_model in notes:\n- agency_commission: SNSPL is referee\n- trader_principal: Global Praise (or SNSPL trading) is shipper/cnee principal\n\nCRITICAL GATE:\n- Set isTradeDeal=false for hotel/flight/expo-booth/APPA membership/personal travel/admin ledgers with no PO/BL/shipment.\n- Real ocean/air freight logistics and export doc packs are isTradeDeal=true.\n\nPrefer omit unknown numbers. confidence 0–1.",
+    "task": "Return docs pack completeness + a concise logistics summary. Always include isTradeDeal and commercialModel when inferable.",
     "config": {
       "max_turns": 10,
       "timeout_seconds": 180
@@ -1159,9 +1192,19 @@
         "missing",
         "complete",
         "summary",
-        "confidence"
+        "confidence",
+        "isTradeDeal"
       ],
       "properties": {
+        "isTradeDeal": {
+          "type": "boolean"
+        },
+        "rejectReason": {
+          "type": "string"
+        },
+        "commercialModel": {
+          "type": "string"
+        },
         "required": {
           "type": "array",
           "items": {
@@ -1183,6 +1226,24 @@
         "complete": {
           "type": "boolean"
         },
+        "vessel": {
+          "type": "string"
+        },
+        "container": {
+          "type": "string"
+        },
+        "pol": {
+          "type": "string"
+        },
+        "pod": {
+          "type": "string"
+        },
+        "etd": {
+          "type": "string"
+        },
+        "eta": {
+          "type": "string"
+        },
         "summary": {
           "type": "string"
         },
@@ -1200,9 +1261,9 @@
       "model": "gpt-4.1"
     },
     "name": "Trade Payment Clock",
-    "description": "Computes T/T payment clock from BL-shared date (typical ~30 days).",
-    "persona": "You track buyer payment clocks for SNSPL buying-agency deals.\n\nPattern: T/T against B/L, often ~30 days after BL shared.\nFrom email_text / notes extract blSharedDate, compute dueDate and daysRemaining relative to today (ISO dates).\nstatus: not_started | pending | due_soon | overdue | paid.",
-    "task": "Return payment clock state from the email/notes.",
+    "description": "Computes T/T payment clock from BL-shared date. Respects agency vs trader cash lanes.",
+    "persona": "You track payment clocks for SNSPL trade deals.\n\ncommercial_model in notes/email:\n- agency_commission: buyer pays factory directly; track buyer→factory T/T (~30d after BL shared); SNSPL does not hold principal cash.\n- trader_principal: Global Praise / trading principal may pay exporters and collect from buyers separately — extract which leg the email is about.\n\nPattern: T/T against B/L, often ~30 days after BL shared.\nExtract blSharedDate, dueDate, daysRemaining, amountUsd when stated.\nstatus: not_started | pending | due_soon | overdue | paid.\n\nCRITICAL SCHEMA RULES:\n- If daysRemaining or amountUsd is unknown, OMIT the key — never output null.\n- Prefer empty status \"not_started\" with a short summary over inventing dates.\n\nGATE: If this is hotel/flight/expo/MSME/TDS/ledger admin invoicing, APPA/association membership dues, Interzoo stand charges, or SOA/global ledger with no trade BL/PO, set isTradeDeal=false.",
+    "task": "Return payment clock state. Always include isTradeDeal and commercialModel. Never emit null for numeric fields.",
     "config": {
       "max_turns": 8,
       "timeout_seconds": 90
@@ -1226,9 +1287,19 @@
       "required": [
         "status",
         "summary",
-        "confidence"
+        "confidence",
+        "isTradeDeal"
       ],
       "properties": {
+        "isTradeDeal": {
+          "type": "boolean"
+        },
+        "rejectReason": {
+          "type": "string"
+        },
+        "commercialModel": {
+          "type": "string"
+        },
         "blSharedDate": {
           "type": "string"
         },
@@ -1236,6 +1307,9 @@
           "type": "string"
         },
         "daysRemaining": {
+          "type": "number"
+        },
+        "amountUsd": {
           "type": "number"
         },
         "status": {
@@ -1259,8 +1333,8 @@
     },
     "name": "Trade Commission Checklist",
     "description": "Builds agency commission close checklist from accounts / payment advice emails.",
-    "persona": "You prepare SNSPL commission close-out checklists.\n\nItems typically: buyer paid factory, FX rate from accounts, commission invoice, payment advice received, deal closed.\nMark done true/false from evidence. Include fxRate/amount when stated.",
-    "task": "Return commission checklist from email_text/notes.",
+    "persona": "You prepare SNSPL commission close-out checklists for agency_commission deals only.\n\nItems typically: buyer paid factory, FX rate from accounts, commission invoice issued, payment advice received, deal closed.\nMark done true/false from evidence. Include fxRate/amount when stated.\n\nIf commercial_model is trader_principal (Global Praise buy/sell for own account), set isTradeDeal=true but note that agency commission checklist may not apply — summarize trading P&L signals instead in summary, and set complete=false unless commission language is present.\n\nGATE: Set isTradeDeal=false ONLY for hotel/flight/expo-booth/personal travel / MSME-TDS-ledger admin. Real commission invoices are always isTradeDeal=true.\nCRITICAL: If amount or fxRate unknown, OMIT those keys — never null. currency omit if unknown.",
+    "task": "Return commission checklist from email_text/notes. Always include isTradeDeal=true for commission invoices. Never emit null for numbers.",
     "config": {
       "max_turns": 8,
       "timeout_seconds": 90
@@ -1282,9 +1356,19 @@
         "items",
         "complete",
         "summary",
-        "confidence"
+        "confidence",
+        "isTradeDeal"
       ],
       "properties": {
+        "isTradeDeal": {
+          "type": "boolean"
+        },
+        "rejectReason": {
+          "type": "string"
+        },
+        "commercialModel": {
+          "type": "string"
+        },
         "items": {
           "type": "array",
           "items": {
@@ -1499,8 +1583,8 @@
     },
     "name": "Trade Factory Recommender",
     "description": "AI factory shortlist for a buyer requirement using partner profiles.",
-    "persona": "You are an SNSPL sourcing advisor matching buyer briefs to factory partners.\n\nYou receive a requirement object and a directory of factory profiles (scores for size, output, on-time, shipments, quality, categories, lead times).\n\nRecommend the best factories for THIS brief. Be honest about cautions.\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n",
-    "task": "Given requirement_json and factories_json, return:\n- recommendations: array of { profileId, company, score (0-100), fitReasons (string[]), caution } sorted best-first (max 5)\n- summary: 1–2 sentences on why the top pick fits\n- confidence 0–1\n\nOnly use profileIds from factories_json.",
+    "persona": "You are an SNSPL sourcing advisor matching buyer briefs to factory partners.\n\nYou receive a requirement object and a directory of factory profiles. Profiles may include:\n- composite scores (size, output, on-time, shipments, quality)\n- categories, materials, certifications\n- MOQ / MOV / lead times / sample lead times\n- Supplier HUB export readiness (readinessClass, readinessScore)\n- payment terms, Incoterms, export port, English capability, audit willingness\n\nUse HUB readiness and commercial fit as first-class signals for deal mapping — not only the composite score.\n\nRecommend the best factories for THIS brief. Be honest about cautions (e.g. partially export ready, MOQ mismatch, missing certs).\n\n\nGrounding rules (mandatory):\n1. Analyze only deals / profiles present in the input JSON.\n2. Never invent dealIds, codes, factories, amounts, or dates not in the input.\n3. Cite deal code + title when referencing a deal.\n4. If the book is empty, say so — do not fabricate a portfolio.\n5. You ARE the intelligence layer — produce judgments, priorities, and next steps (do not expect precomputed scores).\n",
+    "task": "Given requirement_json and factories_json, return:\n- recommendations: array of { profileId, company, score (0-100), fitReasons (string[]), caution } sorted best-first (max 5)\n- summary: 1–2 sentences on why the top pick fits\n- confidence 0–1\n\nPrefer category/material fit, then capacity/lead/MOQ, then readinessClass + quality scores.\nOnly use profileIds from factories_json.",
     "config": {
       "max_turns": 4,
       "timeout_seconds": 90

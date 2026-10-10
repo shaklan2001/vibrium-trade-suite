@@ -114,8 +114,13 @@ export const PI_EXTRACTOR_SPEC = base({
 
 Extract: docNumber, shipper/factory, consignee/buyer, Incoterm, payment terms, POL/POD, currency, totals, ready date, and line items (itemCode, description, qty, unitPrice, amount, cbm, packing).
 
-Numbers must be numeric. Omit unknowns. confidence 0–1.`,
-  task: `Parse the PI at document_url (and optional notes) into the commercial document schema. Set docType to "pi".`,
+CRITICAL SCHEMA RULES:
+- Numbers must be numeric when present.
+- If a number is unknown, OMIT the key entirely — never output null for totalAmount, totalCbm, qty, unitPrice, amount, cbm, or any other number.
+- Use empty string only for optional strings you cannot fill; prefer omitting unknown optional strings.
+- lines may be [] if the PI has no line items readable.
+- confidence 0–1.`,
+  task: `Parse the PI at document_url (and optional notes) into the commercial document schema. Set docType to "pi". Never emit null for numeric fields.`,
   config: { max_turns: 14, timeout_seconds: 240 },
   input_schema: {
     type: "object",
@@ -170,8 +175,9 @@ export const PO_EXTRACTOR_SPEC = base({
     "Parses buyer Purchase Orders into commercial header + line items.",
   persona: `You are an SNSPL commercial analyst reading buyer POs (e.g. PO# 14682 Swastik; Neater Pets PO patterns).
 
-Same field discipline as PI extraction. Set docType to "po". Numbers numeric. Omit unknowns.`,
-  task: `Parse the PO at document_url into the commercial document schema. Set docType to "po".`,
+Same field discipline as PI extraction. Set docType to "po".
+CRITICAL: Numbers numeric when present; OMIT any unknown number key — never null for totalAmount/totalCbm/qty/unitPrice/amount/cbm.`,
+  task: `Parse the PO at document_url into the commercial document schema. Set docType to "po". Never emit null for numeric fields.`,
   config: { max_turns: 14, timeout_seconds: 240 },
   input_schema: {
     type: "object",
@@ -357,11 +363,13 @@ export const INSPECTION_PHOTO_SPEC = base({
     "Summarizes factory/inspection photo packs into item-level pass/fail notes.",
   persona: `You are an SNSPL QC analyst reading inspection picture PDFs (e.g. Inspection pictures Po-20719).
 
-Emit findings with result pass | fail | conditional | unknown. overall is a short QC verdict.`,
+Emit findings with result pass | fail | conditional | unknown. overall is a short QC verdict.
+Input is document_url (+ optional notes/po_number only) — never expect email_text.`,
   task: `Summarize inspection document into findings.`,
   config: { max_turns: 14, timeout_seconds: 240 },
   input_schema: {
     type: "object",
+    required: ["document_url"],
     properties: {
       document_url: { type: "string", format: "document_url" },
       notes: { type: "string" },
@@ -397,8 +405,9 @@ export const PRODUCTION_STATUS_SPEC = base({
     "Extracts production readiness signals from factory status emails.",
   persona: `You parse factory production update emails for SNSPL.
 
-Extract readyDate, percentComplete (0–100 if stated), blockers[], and a concise summary.`,
-  task: `Parse production status email_text into structured status.`,
+Extract readyDate, percentComplete (0–100 if stated), blockers[], and a concise summary.
+CRITICAL: If percentComplete is not stated, OMIT the key — never null.`,
+  task: `Parse production status email_text into structured status. Never emit null for numbers.`,
   config: { max_turns: 8, timeout_seconds: 120 },
   input_schema: {
     type: "object",
@@ -424,11 +433,19 @@ Extract readyDate, percentComplete (0–100 if stated), blockers[], and a concis
 export const BOOKING_EXTRACTOR_SPEC = base({
   name: "Trade Booking Extractor",
   description:
-    "Extracts ocean booking confirmation fields from carrier/forwarder PDFs.",
-  persona: `You read CMA CGM / forwarder booking confirmations (e.g. BKGCONF_EID0949971).
+    "Extracts ocean booking confirmation fields from carrier/forwarder PDFs. Rejects travel/hotel bookings.",
+  persona: `You read CMA CGM / forwarder ocean booking confirmations (e.g. BKGCONF, HBL, MBL).
 
-Extract bookingNumber, carrier, vessel, voyage, POL, POD, ETD, ETA, equipment, cut-offs.`,
-  task: `Parse booking document_url into booking details.`,
+commercial_model in notes:
+- agency_commission: SNSPL is buying agency / referee
+- trader_principal: Global Praise (or SNSPL trading) is shipper or consignee as principal
+
+Extract bookingNumber, carrier, vessel, voyage, POL, POD, ETD, ETA, equipment, cut-offs, shipper, consignee when present.
+
+CRITICAL GATE:
+- If the PDF/notes are hotel, Agoda, airline e-ticket, expo booth, or personal travel, set isTradeDeal=false, rejectReason explaining why, confidence low, and leave freight fields empty.
+- Only set isTradeDeal=true for real ocean/air freight trade bookings.`,
+  task: `Parse booking document_url into booking details. Always return isTradeDeal and commercialModel.`,
   config: { max_turns: 12, timeout_seconds: 200 },
   input_schema: {
     type: "object",
@@ -440,8 +457,14 @@ Extract bookingNumber, carrier, vessel, voyage, POL, POD, ETD, ETA, equipment, c
   },
   output_schema: {
     type: "object",
-    required: ["summary", "confidence"],
+    required: ["summary", "confidence", "isTradeDeal"],
     properties: {
+      isTradeDeal: { type: "boolean" },
+      rejectReason: { type: "string" },
+      commercialModel: {
+        type: "string",
+        description: "agency_commission | trader_principal",
+      },
       bookingNumber: { type: "string" },
       carrier: { type: "string" },
       vessel: { type: "string" },
@@ -452,6 +475,8 @@ Extract bookingNumber, carrier, vessel, voyage, POL, POD, ETD, ETA, equipment, c
       eta: { type: "string" },
       equipment: { type: "string" },
       cutOffs: { type: "string" },
+      shipper: { type: "string" },
+      consignee: { type: "string" },
       summary: { type: "string" },
       confidence: { type: "number" },
     },
@@ -492,11 +517,23 @@ Return totalCbm, suggested containerType (e.g. 40HC), containersNeeded, utilizat
 export const FINAL_DOCS_PACK_SPEC = base({
   name: "Trade Final Docs Pack Check",
   description:
-    "Checks completeness of shipping document pack vs PO (CI, PL, BL, etc.).",
-  persona: `You are SNSPL documentation control.
+    "Checks completeness of shipping document pack vs PO (CI, PL, BL, etc.) and summarizes logistics status from forwarding threads.",
+  persona: `You are SNSPL documentation / logistics control for active trade shipments.
 
-Given docs list / packing list PDF / email, determine required vs present vs missing for a typical FOB export pack: Commercial Invoice, Packing List, Bill of Lading, Certificate of Origin if mentioned.`,
-  task: `Return docs pack completeness checklist.`,
+Use cases:
+1) Final docs pack: given CI/PL/BL/COO PDF or email, list required vs present vs missing for a typical FOB export pack.
+2) Forwarder / booking follow-up emails WITHOUT a booking-confirmation PDF: summarize shipment status (vessel/container/POL/POD/ETD/ETA, doc corrections, surrender, shipping bill) and which docs are still outstanding.
+
+commercial_model in notes:
+- agency_commission: SNSPL is referee
+- trader_principal: Global Praise (or SNSPL trading) is shipper/cnee principal
+
+CRITICAL GATE:
+- Set isTradeDeal=false for hotel/flight/expo-booth/APPA membership/personal travel/admin ledgers with no PO/BL/shipment.
+- Real ocean/air freight logistics and export doc packs are isTradeDeal=true.
+
+Prefer omit unknown numbers. confidence 0–1.`,
+  task: `Return docs pack completeness + a concise logistics summary. Always include isTradeDeal and commercialModel when inferable.`,
   config: { max_turns: 10, timeout_seconds: 180 },
   input_schema: {
     type: "object",
@@ -509,12 +546,21 @@ Given docs list / packing list PDF / email, determine required vs present vs mis
   },
   output_schema: {
     type: "object",
-    required: ["required", "present", "missing", "complete", "summary", "confidence"],
+    required: ["required", "present", "missing", "complete", "summary", "confidence", "isTradeDeal"],
     properties: {
+      isTradeDeal: { type: "boolean" },
+      rejectReason: { type: "string" },
+      commercialModel: { type: "string" },
       required: { type: "array", items: { type: "string" } },
       present: { type: "array", items: { type: "string" } },
       missing: { type: "array", items: { type: "string" } },
       complete: { type: "boolean" },
+      vessel: { type: "string" },
+      container: { type: "string" },
+      pol: { type: "string" },
+      pod: { type: "string" },
+      etd: { type: "string" },
+      eta: { type: "string" },
       summary: { type: "string" },
       confidence: { type: "number" },
     },
@@ -524,13 +570,23 @@ Given docs list / packing list PDF / email, determine required vs present vs mis
 export const PAYMENT_CLOCK_SPEC = base({
   name: "Trade Payment Clock",
   description:
-    "Computes T/T payment clock from BL-shared date (typical ~30 days).",
-  persona: `You track buyer payment clocks for SNSPL buying-agency deals.
+    "Computes T/T payment clock from BL-shared date. Respects agency vs trader cash lanes.",
+  persona: `You track payment clocks for SNSPL trade deals.
+
+commercial_model in notes/email:
+- agency_commission: buyer pays factory directly; track buyer→factory T/T (~30d after BL shared); SNSPL does not hold principal cash.
+- trader_principal: Global Praise / trading principal may pay exporters and collect from buyers separately — extract which leg the email is about.
 
 Pattern: T/T against B/L, often ~30 days after BL shared.
-From email_text / notes extract blSharedDate, compute dueDate and daysRemaining relative to today (ISO dates).
-status: not_started | pending | due_soon | overdue | paid.`,
-  task: `Return payment clock state from the email/notes.`,
+Extract blSharedDate, dueDate, daysRemaining, amountUsd when stated.
+status: not_started | pending | due_soon | overdue | paid.
+
+CRITICAL SCHEMA RULES:
+- If daysRemaining or amountUsd is unknown, OMIT the key — never output null.
+- Prefer empty status "not_started" with a short summary over inventing dates.
+
+GATE: If this is hotel/flight/expo/MSME/TDS/ledger admin invoicing, APPA/association membership dues, Interzoo stand charges, or SOA/global ledger with no trade BL/PO, set isTradeDeal=false.`,
+  task: `Return payment clock state. Always include isTradeDeal and commercialModel. Never emit null for numeric fields.`,
   config: { max_turns: 8, timeout_seconds: 90 },
   input_schema: {
     type: "object",
@@ -542,11 +598,15 @@ status: not_started | pending | due_soon | overdue | paid.`,
   },
   output_schema: {
     type: "object",
-    required: ["status", "summary", "confidence"],
+    required: ["status", "summary", "confidence", "isTradeDeal"],
     properties: {
+      isTradeDeal: { type: "boolean" },
+      rejectReason: { type: "string" },
+      commercialModel: { type: "string" },
       blSharedDate: { type: "string" },
       dueDate: { type: "string" },
       daysRemaining: { type: "number" },
+      amountUsd: { type: "number" },
       status: { type: "string" },
       summary: { type: "string" },
       confidence: { type: "number" },
@@ -558,11 +618,16 @@ export const COMMISSION_CHECKLIST_SPEC = base({
   name: "Trade Commission Checklist",
   description:
     "Builds agency commission close checklist from accounts / payment advice emails.",
-  persona: `You prepare SNSPL commission close-out checklists.
+  persona: `You prepare SNSPL commission close-out checklists for agency_commission deals only.
 
-Items typically: buyer paid factory, FX rate from accounts, commission invoice, payment advice received, deal closed.
-Mark done true/false from evidence. Include fxRate/amount when stated.`,
-  task: `Return commission checklist from email_text/notes.`,
+Items typically: buyer paid factory, FX rate from accounts, commission invoice issued, payment advice received, deal closed.
+Mark done true/false from evidence. Include fxRate/amount when stated.
+
+If commercial_model is trader_principal (Global Praise buy/sell for own account), set isTradeDeal=true but note that agency commission checklist may not apply — summarize trading P&L signals instead in summary, and set complete=false unless commission language is present.
+
+GATE: Set isTradeDeal=false ONLY for hotel/flight/expo-booth/personal travel / MSME-TDS-ledger admin. Real commission invoices are always isTradeDeal=true.
+CRITICAL: If amount or fxRate unknown, OMIT those keys — never null. currency omit if unknown.`,
+  task: `Return commission checklist from email_text/notes. Always include isTradeDeal=true for commission invoices. Never emit null for numbers.`,
   config: { max_turns: 8, timeout_seconds: 90 },
   input_schema: {
     type: "object",
@@ -573,8 +638,11 @@ Mark done true/false from evidence. Include fxRate/amount when stated.`,
   },
   output_schema: {
     type: "object",
-    required: ["items", "complete", "summary", "confidence"],
+    required: ["items", "complete", "summary", "confidence", "isTradeDeal"],
     properties: {
+      isTradeDeal: { type: "boolean" },
+      rejectReason: { type: "string" },
+      commercialModel: { type: "string" },
       items: {
         type: "array",
         items: {
