@@ -157,6 +157,26 @@ function scheduleSources(
   return cites;
 }
 
+/**
+ * Effective checkpoint status for KPIs / charts.
+ * Stored schedules often keep past-due open items as "upcoming"; reclassify
+ * by due date so Overdue tiles match the OPEN/+Nd styling in the flow grid.
+ */
+export function resolveCheckpointStatus(
+  cp: Pick<PaymentCheckpoint, "dueDate" | "status">,
+  asOf = new Date(),
+): PaymentCheckpointStatus {
+  if (cp.status === "received" || cp.status === "waived") return cp.status;
+  if (cp.status === "overdue") return "overdue";
+  if (!cp.dueDate) return cp.status === "due" ? "due" : "upcoming";
+  const due = Date.parse(`${cp.dueDate}T12:00:00`);
+  if (Number.isNaN(due)) return cp.status === "due" ? "due" : "upcoming";
+  const days = Math.round((asOf.getTime() - due) / 86400000);
+  if (days > 0) return "overdue";
+  if (days === 0) return "due";
+  return cp.status === "due" ? "due" : "upcoming";
+}
+
 /** Days late vs due date — positive means past due. */
 export function computeDaysLate(
   cp: Pick<PaymentCheckpoint, "dueDate" | "receivedAt" | "status">,
@@ -166,18 +186,16 @@ export function computeDaysLate(
   const due = Date.parse(`${cp.dueDate}T12:00:00`);
   if (Number.isNaN(due)) return undefined;
 
-  if (cp.status === "received" && cp.receivedAt) {
+  const status = resolveCheckpointStatus(cp, asOf);
+
+  if (status === "received" && cp.receivedAt) {
     const got = Date.parse(`${cp.receivedAt}T12:00:00`);
     if (Number.isNaN(got)) return undefined;
     const days = Math.round((got - due) / 86400000);
     return days > 0 ? days : undefined;
   }
 
-  if (
-    cp.status === "overdue" ||
-    cp.status === "due" ||
-    (cp.status === "upcoming" && due < asOf.getTime())
-  ) {
+  if (status === "overdue" || status === "due") {
     const days = Math.round((asOf.getTime() - due) / 86400000);
     return days > 0 ? days : days === 0 ? 0 : undefined;
   }
@@ -200,15 +218,16 @@ export function linesFromDeal(deal: Deal): PaymentLine[] {
   const schedule = ensurePaymentSchedule(deal);
   if (!schedule?.checkpoints?.length) return [];
   return schedule.checkpoints.map((cp) => {
-    const daysLate = computeDaysLate(cp);
+    const status = resolveCheckpointStatus(cp);
+    const daysLate = computeDaysLate({ ...cp, status });
     const notReceived =
-      cp.status === "overdue" ||
+      status === "overdue" ||
       (daysLate != null &&
         daysLate > 0 &&
-        cp.status !== "received" &&
-        cp.status !== "waived");
+        status !== "received" &&
+        status !== "waived");
     const anchor =
-      cp.status === "received" ? cp.receivedAt || cp.dueDate : cp.dueDate;
+      status === "received" ? cp.receivedAt || cp.dueDate : cp.dueDate;
     const key = monthKeyFromIso(anchor);
     return {
       dealId: deal.id,
@@ -218,7 +237,7 @@ export function linesFromDeal(deal: Deal): PaymentLine[] {
       side: cp.side,
       label: cp.label,
       amountUsd: cp.amountUsd,
-      status: cp.status,
+      status,
       dueDate: cp.dueDate,
       receivedAt: cp.receivedAt,
       checkpoint: cp.checkpoint,
@@ -227,7 +246,7 @@ export function linesFromDeal(deal: Deal): PaymentLine[] {
       termsExcerpt: cp.termsExcerpt,
       monthKey: key,
       monthLabel: monthLabel(key),
-      sources: scheduleSources(deal, schedule, cp),
+      sources: scheduleSources(deal, schedule, { ...cp, status }),
       href: `/deals/${deal.id}#payments`,
       buyerTerms: schedule.buyerTerms,
       factoryTerms: schedule.factoryTerms,
@@ -390,16 +409,27 @@ export function scheduleCashHints(deal: Deal): {
 } | null {
   const schedule = ensurePaymentSchedule(deal);
   if (!schedule?.checkpoints?.length) return null;
-  const factory = schedule.checkpoints.filter((c) => c.side === "factory");
-  const buyer = schedule.checkpoints.filter((c) => c.side === "buyer");
-  const cashDeployedUsd = factory
+  const asOf = new Date();
+  const factory = schedule.checkpoints.map((c) => ({
+    ...c,
+    status: resolveCheckpointStatus(c, asOf),
+  }));
+  const buyer = schedule.checkpoints
+    .filter((c) => c.side === "buyer")
+    .map((c) => ({ ...c, status: resolveCheckpointStatus(c, asOf) }));
+  const factoryOnly = factory.filter((c) => c.side === "factory");
+  const cashDeployedUsd = factoryOnly
     .filter((c) => c.status === "received")
     .reduce((a, c) => a + c.amountUsd, 0);
-  const cashStillRequiredUsd = factory
-    .filter((c) => c.status === "upcoming" || c.status === "due" || c.status === "overdue")
+  const cashStillRequiredUsd = factoryOnly
+    .filter(
+      (c) =>
+        c.status === "upcoming" || c.status === "due" || c.status === "overdue",
+    )
     .reduce((a, c) => a + c.amountUsd, 0);
   const openBuyer = buyer.filter(
-    (c) => c.status === "upcoming" || c.status === "due" || c.status === "overdue",
+    (c) =>
+      c.status === "upcoming" || c.status === "due" || c.status === "overdue",
   );
   const receivableExpectedUsd = openBuyer.reduce((a, c) => a + c.amountUsd, 0);
   const allBuyerReceived =

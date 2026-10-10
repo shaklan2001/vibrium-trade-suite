@@ -761,13 +761,24 @@ function inferSchedule(
   );
   // Only treat remittance as received when payment clock says paid or payment mail exists.
   // Do NOT mirror stage=booking into both sides — that was cloning buyer/factory totals incorrectly.
-  const buyerAdvanceStatus: "received" | "upcoming" =
-    paid || hasPaymentMail ? "received" : "upcoming";
-  const buyerBalanceStatus: "received" | "upcoming" | "overdue" = paid
+  // Past-due open installments must be "overdue" (not stuck as "upcoming") so Finance KPIs match the grid.
+  const openStatus = (
+    dueDate: string,
+  ): "upcoming" | "due" | "overdue" => {
+    const dueMs = Date.parse(`${dueDate}T12:00:00`);
+    if (Number.isNaN(dueMs)) {
+      return deal.payment?.status === "overdue" ? "overdue" : "upcoming";
+    }
+    const days = Math.round((Date.now() - dueMs) / 86400000);
+    if (days > 0 || deal.payment?.status === "overdue") return "overdue";
+    if (days === 0 || deal.payment?.status === "due_soon") return "due";
+    return "upcoming";
+  };
+  const buyerAdvanceStatus: "received" | "upcoming" | "due" | "overdue" =
+    paid || hasPaymentMail ? "received" : openStatus(start);
+  const buyerBalanceStatus: "received" | "upcoming" | "due" | "overdue" = paid
     ? "received"
-    : deal.payment?.status === "overdue"
-      ? "overdue"
-      : "upcoming";
+    : openStatus(due);
 
   const buyerAdvance = Math.round(buyerAmount * 0.3);
   const buyerBalance = Math.max(0, Math.round(buyerAmount - buyerAdvance));
@@ -818,14 +829,10 @@ function inferSchedule(
       Math.round(factoryAmount - factoryAdvance),
     );
     // Factory remittances are separate from buyer receipts (especially agency).
-    const factoryAdvanceStatus: "received" | "upcoming" = paid
-      ? "received"
-      : "upcoming";
-    const factoryBalanceStatus: "received" | "upcoming" | "overdue" = paid
-      ? "received"
-      : deal.payment?.status === "overdue"
-        ? "overdue"
-        : "upcoming";
+    const factoryAdvanceStatus: "received" | "upcoming" | "due" | "overdue" =
+      paid ? "received" : openStatus(start);
+    const factoryBalanceStatus: "received" | "upcoming" | "due" | "overdue" =
+      paid ? "received" : openStatus(due);
     checkpoints.unshift(
       {
         id: `${deal.id}-f1`,
