@@ -8,11 +8,6 @@ import {
 } from "@/lib/trade/mailboxHydrate";
 import { useTradeStore } from "@/lib/trade/store";
 
-function formatUsd(value: number) {
-  if (value >= 1) return `$${value.toFixed(2)}`;
-  return `$${value.toFixed(4)}`;
-}
-
 function waitForStoreHydration() {
   return new Promise<void>((resolve) => {
     if (useTradeStore.persist.hasHydrated()) {
@@ -28,6 +23,10 @@ function waitForStoreHydration() {
 
 export function MailboxHydrator() {
   const [meta, setMeta] = useState<MailboxHydrateResult | null>(null);
+  const status = useTradeStore((s) => s.mailboxBookStatus);
+  const dealCount = useTradeStore(
+    (s) => s.deals.filter((d) => d.mailboxIngest).length,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -48,8 +47,7 @@ export function MailboxHydrator() {
       }
     }
     void load();
-    // Slow poll — only useful while PST ingest is running. Fast polls were
-    // wiping evidence-loaded source emails every few seconds.
+    // Slow poll — only useful while PST ingest is running.
     const poll = window.setInterval(() => void load(), 30_000);
     return () => {
       cancelled = true;
@@ -57,19 +55,35 @@ export function MailboxHydrator() {
     };
   }, []);
 
-  if (!meta || meta.error) return null;
-  const running = Boolean(meta.progress?.running);
-  const target = meta.progress?.target || 0;
-  const done = (meta.progress?.completed || 0) + (meta.progress?.failed || 0);
+  if (meta?.error && status === "error") return null;
+
+  const running = Boolean(meta?.progress?.running);
+  const target = meta?.progress?.target || 0;
+  const done =
+    (meta?.progress?.completed || 0) + (meta?.progress?.failed || 0);
+  const count = meta?.count ?? dealCount;
+
+  let label = "Loading mailbox…";
+  if (status === "loading" && !count) label = "Loading mailbox…";
+  else if (running) label = `Ingest ${done}/${target || "?"}`;
+  else if (status === "ready" || count > 0) label = `Mailbox ${count} deals`;
 
   return (
     <Link
       href="/mailbox"
-      className="hidden max-w-xs truncate rounded-full border border-zinc-200 px-2.5 py-1 text-[11px] text-zinc-600 hover:border-teal-300 hover:text-teal-800 sm:inline-block"
+      className="hidden max-w-xs truncate rounded-full border border-zinc-200 px-2.5 py-1 text-[11px] text-zinc-600 transition hover:border-teal-300 hover:text-teal-800 sm:inline-block"
     >
-      {running
-        ? `Ingest ${done}/${target || "?"} · ${formatUsd(meta.progress?.cost_usd || 0)}`
-        : `Mailbox ${meta.count} deals · ${formatUsd(meta.spendUsd)}`}
+      {status === "loading" && !running ? (
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className="h-2.5 w-2.5 animate-spin rounded-full border border-zinc-300 border-t-teal-700"
+            aria-hidden
+          />
+          {label}
+        </span>
+      ) : (
+        label
+      )}
     </Link>
   );
 }

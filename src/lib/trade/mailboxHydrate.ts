@@ -38,6 +38,9 @@ export function friendlyMailboxError(error: string): string {
 const PAGE_SIZE = 400;
 
 export async function hydrateMailboxBook(): Promise<MailboxHydrateResult> {
+  const store = useTradeStore.getState();
+  store.setMailboxBookStatus("loading");
+
   const allRows: ProcessedDealRow[] = [];
   const seen = new Set<string>();
   let spendUsd = 0;
@@ -45,65 +48,78 @@ export async function hydrateMailboxBook(): Promise<MailboxHydrateResult> {
   let offset = 0;
   let totalHint = Number.POSITIVE_INFINITY;
 
-  while (offset < totalHint && offset < 20_000) {
-    const res = await fetch(
-      `/api/processed-deals?limit=${PAGE_SIZE}&offset=${offset}`,
-      { cache: "no-store" },
-    );
-    const body = (await res.json()) as {
-      error?: string;
-      deals?: ProcessedDealRow[];
-      counts?: { spendUsd?: number; total?: number };
-      progress?: MailboxProgress | null;
-    };
-    if (!res.ok) {
-      return {
-        count: 0,
-        spendUsd: 0,
-        progress: body.progress || null,
-        error: body.error || `HTTP ${res.status}`,
+  try {
+    while (offset < totalHint && offset < 20_000) {
+      const res = await fetch(
+        `/api/processed-deals?limit=${PAGE_SIZE}&offset=${offset}`,
+        { cache: "no-store" },
+      );
+      const body = (await res.json()) as {
+        error?: string;
+        deals?: ProcessedDealRow[];
+        counts?: { spendUsd?: number; total?: number };
+        progress?: MailboxProgress | null;
       };
+      if (!res.ok) {
+        const err = body.error || `HTTP ${res.status}`;
+        store.setMailboxBookStatus("error", err);
+        return {
+          count: 0,
+          spendUsd: 0,
+          progress: body.progress || null,
+          error: err,
+        };
+      }
+      const batch = body.deals || [];
+      let fresh = 0;
+      for (const row of batch) {
+        const id = row.id;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        allRows.push(row);
+        fresh += 1;
+      }
+      spendUsd = Number(body.counts?.spendUsd || spendUsd);
+      progress = body.progress || progress;
+      if (typeof body.counts?.total === "number") {
+        totalHint = body.counts.total;
+      }
+      // Stop when the page is short, empty, or offset is ignored by an old proxy.
+      if (batch.length < PAGE_SIZE || fresh === 0) break;
+      offset += PAGE_SIZE;
     }
-    const batch = body.deals || [];
-    let fresh = 0;
-    for (const row of batch) {
-      const id = row.id;
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      allRows.push(row);
-      fresh += 1;
+
+    const mapped = enrichMailboxDeals(
+      allRows
+        .filter((row) => row.status === "completed")
+        .filter((row) => {
+          const result = row.result_json as { isTradeDeal?: boolean } | null;
+          if (result && result.isTradeDeal === false) return false;
+          return true;
+        })
+        .map((row) => mapProcessedDeal(row))
+        .filter((deal): deal is NonNullable<typeof deal> => Boolean(deal)),
+    );
+
+    if (mapped.length > 0) {
+      // Real mailbox book replaces synthetic portfolio seeds.
+      store.mergeMailboxDeals(mapped);
     }
-    spendUsd = Number(body.counts?.spendUsd || spendUsd);
-    progress = body.progress || progress;
-    if (typeof body.counts?.total === "number") {
-      totalHint = body.counts.total;
-    }
-    // Stop when the page is short, empty, or offset is ignored by an old proxy.
-    if (batch.length < PAGE_SIZE || fresh === 0) break;
-    offset += PAGE_SIZE;
+    store.setMailboxBookStatus("ready");
+
+    return {
+      count: mapped.length,
+      spendUsd,
+      progress,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Mailbox load failed";
+    store.setMailboxBookStatus("error", message);
+    return {
+      count: 0,
+      spendUsd: 0,
+      progress: null,
+      error: message,
+    };
   }
-
-  const mapped = enrichMailboxDeals(
-    allRows
-      .filter((row) => row.status === "completed")
-      .filter((row) => {
-        const result = row.result_json as { isTradeDeal?: boolean } | null;
-        if (result && result.isTradeDeal === false) return false;
-        return true;
-      })
-      .map((row) => mapProcessedDeal(row))
-      .filter((deal): deal is NonNullable<typeof deal> => Boolean(deal)),
-  );
-
-  const store = useTradeStore.getState();
-  if (mapped.length > 0) {
-    // Real mailbox book replaces synthetic portfolio seeds.
-    store.mergeMailboxDeals(mapped);
-  }
-
-  return {
-    count: mapped.length,
-    spendUsd,
-    progress,
-  };
 }

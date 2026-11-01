@@ -74,17 +74,16 @@ export default function OperationsDashboardPage() {
   const setOpsIntel = useTradeStore((s) => s.setOpsIntel);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
-  const [hydrated, setHydrated] = useState(false);
+  const mailboxStatus = useTradeStore((s) => s.mailboxBookStatus);
   const [drill, setDrill] = useState<DrillPayload | null>(null);
 
   useEffect(() => {
-    setHydrated(true);
-  }, []);
-  useEffect(() => {
-    if (!hydrated) return;
-    void hydrateMailboxBook();
-  }, [hydrated]);
+    if (mailboxStatus === "idle") void hydrateMailboxBook();
+  }, [mailboxStatus]);
   useTradeStore((s) => s.displayCurrency);
+  const bookLoading =
+    mailboxStatus === "idle" || mailboxStatus === "loading";
+  const hydrated = mailboxStatus === "ready" || mailboxStatus === "error";
 
   const pulse = useMemo(() => companyPulse(deals), [deals]);
   const shipment = opsIntel.shipment || buildShipmentPulseFromDeals(deals);
@@ -234,10 +233,6 @@ export default function OperationsDashboardPage() {
     });
   }
 
-  if (!hydrated) {
-    return <PageHeader title="Operations" description="Loading…" />;
-  }
-
   return (
     <div>
       <PageHeader
@@ -255,7 +250,18 @@ export default function OperationsDashboardPage() {
         }
       />
 
-      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+      {bookLoading ? (
+        <div className="mb-4 flex flex-col items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-6 py-16 text-center shadow-sm">
+          <span className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-teal-700" />
+          <p className="text-sm font-medium text-zinc-700">
+            Loading operations book…
+          </p>
+        </div>
+      ) : null}
+
+      <div
+        className={`mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5 ${bookLoading ? "pointer-events-none opacity-40" : ""}`}
+      >
         <KpiTile size="lg" label="Open" value={pulse.openDeals} />
         <KpiTile
           size="lg"

@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Card, Stat } from "@/components/ui/primitives";
+import { LoadingBlock, ListSkeleton } from "@/components/ui/loading-block";
+import { PaginationBar } from "@/components/ui/pagination";
 
 type ProcessedDeal = {
   id: string;
@@ -26,16 +28,12 @@ type ProcessedDeal = {
   } | null;
   error: string | null;
   processed_at: string | null;
-  cost_usd?: number | null;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
 };
 
 type Counts = {
   total: number;
   byStage: Record<string, number>;
   byStatus: Record<string, number>;
-  spendUsd?: number;
 };
 
 type Progress = {
@@ -47,10 +45,6 @@ type Progress = {
   eta_s?: number | null;
   etd?: string | null;
   rate_per_min?: number;
-  cost_usd?: number;
-  input_tokens?: number;
-  output_tokens?: number;
-  cost_note?: string;
   current?: {
     n?: number;
     subject?: string;
@@ -79,6 +73,9 @@ const STAGE_FILTERS = [
   "other",
 ] as const;
 
+const PAGE_SIZE = 30;
+const FETCH_PAGE = 400;
+
 function stageLabel(stage: string | null | undefined) {
   if (!stage) return "—";
   return stage.replaceAll("_", " ");
@@ -100,12 +97,6 @@ function partyLine(parties: ProcessedDeal["parties_json"]) {
   return buyers || factories || "—";
 }
 
-function formatUsd(value: number | null | undefined) {
-  const n = Number(value || 0);
-  if (n >= 1) return `$${n.toFixed(2)}`;
-  return `$${n.toFixed(4)}`;
-}
-
 function formatDuration(seconds: number | null | undefined) {
   if (seconds == null || Number.isNaN(seconds)) return "—";
   const total = Math.max(0, Math.round(seconds));
@@ -124,6 +115,42 @@ function formatEtd(iso: string | null | undefined) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+async function fetchAllDeals(stage: string) {
+  const all: ProcessedDeal[] = [];
+  const seen = new Set<string>();
+  let offset = 0;
+  let counts: Counts = { total: 0, byStage: {}, byStatus: {} };
+  let progress: Progress | null = null;
+  let totalHint = Number.POSITIVE_INFINITY;
+
+  while (offset < totalHint && offset < 20_000) {
+    const params = new URLSearchParams({
+      limit: String(FETCH_PAGE),
+      offset: String(offset),
+    });
+    if (stage !== "all") params.set("stage", stage);
+    const res = await fetch(`/api/processed-deals?${params}`, {
+      cache: "no-store",
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    const batch = (body.deals || []) as ProcessedDeal[];
+    let fresh = 0;
+    for (const row of batch) {
+      if (!row.id || seen.has(row.id)) continue;
+      seen.add(row.id);
+      all.push(row);
+      fresh += 1;
+    }
+    counts = body.counts || counts;
+    progress = body.progress || progress;
+    if (typeof body.counts?.total === "number") totalHint = body.counts.total;
+    if (batch.length < FETCH_PAGE || fresh === 0) break;
+    offset += FETCH_PAGE;
+  }
+  return { deals: all, counts, progress };
+}
+
 export default function MailboxPage() {
   const [stage, setStage] = useState<(typeof STAGE_FILTERS)[number]>("all");
   const [deals, setDeals] = useState<ProcessedDeal[]>([]);
@@ -131,42 +158,38 @@ export default function MailboxPage() {
     total: 0,
     byStage: {},
     byStatus: {},
-    spendUsd: 0,
   });
   const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
   const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    setPage(1);
+  }, [stage]);
 
   useEffect(() => {
     let cancelled = false;
     async function load(first = false) {
-      const qs = stage === "all" ? "" : `?stage=${stage}`;
       try {
-        const res = await fetch(`/api/processed-deals${qs}`, {
-          cache: "no-store",
-        });
-        const body = await res.json();
+        if (first) setLoading(true);
+        const next = await fetchAllDeals(stage);
         if (cancelled) return;
-        if (!res.ok) {
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        setDeals(body.deals || []);
-        setCounts(
-          body.counts || { total: 0, byStage: {}, byStatus: {}, spendUsd: 0 },
-        );
-        setProgress(body.progress || null);
+        setDeals(next.deals);
+        setCounts(next.counts);
+        setProgress(next.progress);
         setError(null);
       } catch (err: unknown) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Failed to load");
       } finally {
-        if (!cancelled && first) setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
     void load(true);
-    const poll = window.setInterval(() => void load(false), 4000);
+    const poll = window.setInterval(() => void load(false), 30_000);
     const clock = window.setInterval(() => setNow(Date.now()), 1000);
     return () => {
       cancelled = true;
@@ -186,20 +209,24 @@ export default function MailboxPage() {
     progress?.updated_at &&
     now - new Date(progress.updated_at).getTime() > 90_000;
 
-  const rows = useMemo(
+  const pageCount = Math.max(1, Math.ceil(deals.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pageRows = useMemo(
     () =>
-      deals.map((deal) => {
-        const pos = Array.isArray(deal.po_numbers) ? deal.po_numbers : [];
-        return { deal, pos };
-      }),
-    [deals],
+      deals
+        .slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+        .map((deal) => ({
+          deal,
+          pos: Array.isArray(deal.po_numbers) ? deal.po_numbers : [],
+        })),
+    [deals, safePage],
   );
 
   return (
     <div>
       <PageHeader
         title="Mailbox book"
-        description="Shared Outlook ingest. Refresh this page anytime — progress, cost, and extracted deals come from Neon, not browser storage."
+        description="Shared Outlook ingest. Progress and extracted deals come from the live database."
       />
 
       {progress ? (
@@ -227,17 +254,11 @@ export default function MailboxPage() {
           </div>
           <div className="h-1.5 bg-zinc-100">
             <div
-              className="h-full bg-teal-700 transition-all"
+              className="h-full bg-teal-700 transition-all duration-500"
               style={{ width: `${pct}%` }}
             />
           </div>
-          <div className="grid gap-3 px-4 py-3 sm:grid-cols-4">
-            <div>
-              <div className="text-lg font-semibold tabular-nums">
-                {formatUsd(progress.cost_usd)}
-              </div>
-              <div className="text-xs text-zinc-500">This run (metered)</div>
-            </div>
+          <div className="grid gap-3 px-4 py-3 sm:grid-cols-3">
             <div>
               <div className="text-lg font-semibold tabular-nums">
                 {formatEtd(progress.etd)}
@@ -256,125 +277,127 @@ export default function MailboxPage() {
             </div>
             <div>
               <div className="text-lg font-semibold tabular-nums">
-                {(progress.input_tokens || 0).toLocaleString()} /{" "}
-                {(progress.output_tokens || 0).toLocaleString()}
+                {doneN}
               </div>
-              <div className="text-xs text-zinc-500">In / out tokens</div>
+              <div className="text-xs text-zinc-500">
+                Completed + failed this run
+              </div>
             </div>
           </div>
-          {progress.cost_note ? (
-            <p className="border-t border-zinc-100 px-4 py-2 text-[11px] text-zinc-500">
-              {progress.cost_note}
-            </p>
-          ) : null}
         </Card>
       ) : null}
 
-      <div className="mb-6 grid gap-3 sm:grid-cols-4">
-        <Stat label="Processed deals" value={counts.total} />
-        <Stat label="Completed" value={completed} />
-        <Stat label="Failed" value={failed} />
-        <Stat
-          label="Lifetime LLM cost"
-          value={formatUsd(counts.spendUsd)}
-        />
-      </div>
+      {loading ? (
+        <>
+          <LoadingBlock label="Loading mailbox book…" className="mb-4" />
+          <ListSkeleton rows={6} />
+        </>
+      ) : (
+        <>
+          <div className="mb-6 grid gap-3 sm:grid-cols-3">
+            <Stat label="Processed deals" value={counts.total} />
+            <Stat label="Completed" value={completed} />
+            <Stat label="Failed" value={failed} />
+          </div>
 
-      <div className="mb-4 flex flex-wrap gap-1.5">
-        {STAGE_FILTERS.map((id) => {
-          const active = stage === id;
-          const count =
-            id === "all" ? counts.total : (counts.byStage[id] ?? 0);
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setStage(id)}
-              className={
-                active
-                  ? "rounded-full bg-teal-700 px-3 py-1 text-xs font-medium text-white"
-                  : "rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs text-zinc-600 hover:bg-zinc-50"
-              }
-            >
-              {stageLabel(id)} {count}
-            </button>
-          );
-        })}
-      </div>
-
-      {error ? (
-        <Card className="px-4 py-6 text-sm text-red-700">{error}</Card>
-      ) : null}
-
-      {!error && !loading && deals.length === 0 ? (
-        <Card className="px-4 py-6 text-sm text-zinc-600">
-          No mailbox deals in Postgres yet. The ingest runner writes here as
-          each worker finishes.
-        </Card>
-      ) : null}
-
-      {!error && deals.length > 0 ? (
-        <Card>
-          <ul className="divide-y divide-zinc-100">
-            {rows.map(({ deal, pos }) => {
-              const open = openId === deal.id;
+          <div className="mb-4 flex flex-wrap gap-1.5">
+            {STAGE_FILTERS.map((id) => {
+              const active = stage === id;
+              const count =
+                id === "all" ? counts.total : (counts.byStage[id] ?? 0);
               return (
-                <li key={deal.id}>
-                  <button
-                    type="button"
-                    className="w-full px-4 py-3 text-left hover:bg-zinc-50"
-                    onClick={() => setOpenId(open ? null : deal.id)}
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-zinc-900">
-                          {deal.subject || deal.id}
-                        </div>
-                        <div className="mt-0.5 text-xs text-zinc-500">
-                          {partyLine(deal.parties_json)}
-                          {pos.length ? ` · PO ${pos.slice(0, 3).join(", ")}` : ""}
-                          {deal.date_end
-                            ? ` · ${deal.date_end.slice(0, 10)}`
-                            : ""}
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Badge>{stageLabel(deal.primary_stage)}</Badge>
-                        <Badge tone={statusTone(deal.status)}>
-                          {deal.status || "queued"}
-                        </Badge>
-                        {deal.cost_usd ? (
-                          <span className="text-[11px] tabular-nums text-zinc-500">
-                            {formatUsd(deal.cost_usd)}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                  </button>
-                  {open ? (
-                    <div className="space-y-1 border-t border-zinc-100 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
-                      <p>
-                        {deal.summary ||
-                          deal.error ||
-                          "No worker summary yet."}
-                      </p>
-                      <p className="text-xs text-zinc-500">
-                        {deal.message_count ?? 0} messages ·{" "}
-                        {deal.doc_count ?? 0} docs
-                        {deal.slot ? ` · ${deal.slot}` : ""}
-                        {deal.agent_id ? ` · ${deal.agent_id}` : ""}
-                        {deal.cost_usd != null
-                          ? ` · ${formatUsd(deal.cost_usd)}`
-                          : ""}
-                      </p>
-                    </div>
-                  ) : null}
-                </li>
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setStage(id)}
+                  className={
+                    active
+                      ? "rounded-full bg-teal-700 px-3 py-1 text-xs font-medium text-white transition"
+                      : "rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs text-zinc-600 transition hover:bg-zinc-50"
+                  }
+                >
+                  {stageLabel(id)} {count}
+                </button>
               );
             })}
-          </ul>
-        </Card>
-      ) : null}
+          </div>
+
+          {error ? (
+            <Card className="px-4 py-6 text-sm text-red-700">{error}</Card>
+          ) : null}
+
+          {!error && deals.length === 0 ? (
+            <Card className="px-4 py-6 text-sm text-zinc-600">
+              No mailbox deals in the live database yet.
+            </Card>
+          ) : null}
+
+          {!error && deals.length > 0 ? (
+            <Card className="animate-in fade-in duration-300">
+              <ul className="divide-y divide-zinc-100">
+                {pageRows.map(({ deal, pos }) => {
+                  const open = openId === deal.id;
+                  return (
+                    <li key={deal.id}>
+                      <button
+                        type="button"
+                        className="w-full px-4 py-3 text-left transition hover:bg-zinc-50"
+                        onClick={() => setOpenId(open ? null : deal.id)}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-zinc-900">
+                              {deal.subject || deal.id}
+                            </div>
+                            <div className="mt-0.5 text-xs text-zinc-500">
+                              {partyLine(deal.parties_json)}
+                              {pos.length
+                                ? ` · PO ${pos.slice(0, 3).join(", ")}`
+                                : ""}
+                              {deal.date_end
+                                ? ` · ${deal.date_end.slice(0, 10)}`
+                                : ""}
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge>{stageLabel(deal.primary_stage)}</Badge>
+                            <Badge tone={statusTone(deal.status)}>
+                              {deal.status || "queued"}
+                            </Badge>
+                          </div>
+                        </div>
+                      </button>
+                      {open ? (
+                        <div className="space-y-1 border-t border-zinc-100 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+                          <p>
+                            {deal.summary ||
+                              deal.error ||
+                              "No worker summary yet."}
+                          </p>
+                          <p className="text-xs text-zinc-500">
+                            {deal.message_count ?? 0} messages ·{" "}
+                            {deal.doc_count ?? 0} docs
+                            {deal.slot ? ` · ${deal.slot}` : ""}
+                            {deal.agent_id ? ` · ${deal.agent_id}` : ""}
+                          </p>
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="border-t border-zinc-100 px-4 pb-4">
+                <PaginationBar
+                  page={safePage}
+                  pageSize={PAGE_SIZE}
+                  total={deals.length}
+                  onPageChange={setPage}
+                />
+              </div>
+            </Card>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

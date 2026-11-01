@@ -30,6 +30,7 @@ import { setDisplayCurrency as applyDisplayCurrency } from "./currencyDisplay";
 
 export type StageFilter = "all" | DealStage;
 export type ProductionDueFilter = "all" | 15 | 30 | 45 | 60 | 90;
+export type MailboxBookStatus = "idle" | "loading" | "ready" | "error";
 
 interface TradeState {
   deals: Deal[];
@@ -50,6 +51,16 @@ interface TradeState {
   /** Production ready/due window (days) */
   productionDueFilter: ProductionDueFilter;
   setProductionDueFilter: (filter: ProductionDueFilter) => void;
+  /** Free-text search: deal name, parties, emails, team mailboxes */
+  dealsSearchQuery: string;
+  setDealsSearchQuery: (query: string) => void;
+  /** Live mailbox hydrate lifecycle — avoid flashing 0 KPIs before load */
+  mailboxBookStatus: MailboxBookStatus;
+  mailboxBookError: string | null;
+  setMailboxBookStatus: (
+    status: MailboxBookStatus,
+    error?: string | null,
+  ) => void;
   createDeal: (partial?: Partial<Deal>) => Deal;
   upsertDeal: (deal: Deal) => Deal;
   mergeMailboxDeals: (deals: Deal[]) => void;
@@ -200,6 +211,12 @@ export const useTradeStore = create<TradeState>()(
       productionDueFilter: "all" as ProductionDueFilter,
       setProductionDueFilter: (filter) =>
         set({ productionDueFilter: filter }),
+      dealsSearchQuery: "",
+      setDealsSearchQuery: (query) => set({ dealsSearchQuery: query }),
+      mailboxBookStatus: "idle" as MailboxBookStatus,
+      mailboxBookError: null as string | null,
+      setMailboxBookStatus: (status, error = null) =>
+        set({ mailboxBookStatus: status, mailboxBookError: error }),
 
       createDeal: (partial) => {
         const { code, nextSeq } = ensureCode(partial, get().dealCodeSeq);

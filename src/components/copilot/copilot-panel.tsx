@@ -7,7 +7,6 @@ import { MarkdownMessage } from "@/components/copilot/markdown-message";
 import { useTradeStore } from "@/lib/trade/store";
 import { buildAgentDealPack } from "@/lib/trade/agentDealPack";
 import { MessageSquare, X } from "lucide-react";
-import { useWorkspaceProcess } from "@/components/layout/workspace-process";
 
 function extractStreamPiece(payload: string): string {
   if (!payload || payload === "[DONE]") return "";
@@ -81,13 +80,29 @@ async function readStreamText(res: Response, onChunk: (t: string) => void) {
 }
 
 function buildDealContext(deal: NonNullable<ReturnType<typeof useTradeStore.getState>["deals"][0]>) {
+  const partyLine = deal.parties
+    .map((p) => `${p.role}:${p.company || p.name}${p.email ? `<${p.email}>` : ""}`)
+    .join("; ");
+  const mailPeople = [
+    ...new Set(
+      deal.sources
+        .flatMap((s) => [s.from, s.to, s.cc])
+        .filter(Boolean) as string[],
+    ),
+  ]
+    .slice(0, 12)
+    .join("; ");
   return `
 
-[Current deal context]
+[Current deal context — use these facts; do not invent]
+Id: ${deal.id}
+Code: ${deal.code}
 Title: ${deal.title}
 Stage: ${deal.stage}
-Flagship deal: ${deal.showcase ? "yes" : "no"}
-Parties: ${deal.parties.map((p) => `${p.role}:${p.company || p.name}`).join("; ")}
+Commercial model: ${deal.commercialModel || "—"}
+Parties: ${partyLine || "—"}
+Mailbox / mail people: ${mailPeople || "—"}
+PO numbers: ${(deal.mailboxPoNumbers || []).join(", ") || "—"}
 Requirement: ${JSON.stringify(deal.requirement || {})}
 Quote factory: ${deal.quote?.factoryName || "—"} · SKUs: ${deal.quote?.skus.length || 0} · selected: ${deal.quote?.skus.filter((s) => s.selected).length || 0}
 Artwork: ${deal.artwork?.summary || "—"}
@@ -106,26 +121,63 @@ Documents: ${deal.documents.map((d) => d.name).join(", ") || "none"}
 }
 
 function buildCompanyPulseContext(deals: ReturnType<typeof useTradeStore.getState>["deals"]) {
-  if (!deals.length) return "";
+  if (!deals.length) {
+    return `
+
+[Company book]
+No mailbox deals loaded yet. Tell the user to wait for Refresh data / mailbox hydrate.
+`;
+  }
   const pack = buildAgentDealPack(deals);
-  // Compact for chat context limits
+  // Cap payload for chat limits; prefer overdue / high-urgency first.
+  const ranked = [...pack.deals].sort((a, b) => {
+    const ua = a.urgency === "critical" ? 0 : a.urgency === "high" ? 1 : 2;
+    const ub = b.urgency === "critical" ? 0 : b.urgency === "high" ? 1 : 2;
+    return ua - ub;
+  });
+  const slice = ranked.slice(0, 180);
   const compact = {
     asOf: pack.asOf,
-    deals: pack.deals.map((d) => ({
-      id: d.id,
-      code: d.code,
-      title: d.title,
-      stage: d.stage,
-      payment: d.payment?.status,
-      docsMissing: d.docsPack?.missing,
-      productionBlockers: d.production?.blockers,
-      discrepancyAligned: d.discrepancyAligned,
-      urgency: d.urgency,
-    })),
+    dealCount: pack.deals.length,
+    includedInSnapshot: slice.length,
+    note:
+      slice.length < pack.deals.length
+        ? `Snapshot includes top ${slice.length} of ${pack.deals.length} by urgency; ask to filter by person/email for the rest.`
+        : undefined,
+    deals: slice.map((d) => {
+      const full = deals.find((x) => x.id === d.id);
+      const emails = [
+        ...new Set(
+          [
+            ...(full?.parties || []).map((p) => p.email).filter(Boolean),
+            ...(full?.sources || [])
+              .flatMap((s) => [s.from, s.to])
+              .filter(Boolean),
+          ].filter(Boolean) as string[],
+        ),
+      ].slice(0, 6);
+      return {
+        id: d.id,
+        code: d.code,
+        title: d.title,
+        stage: d.stage,
+        commercialModel: full?.commercialModel,
+        parties: (full?.parties || [])
+          .map((p) => `${p.role}:${p.company || p.name}`)
+          .slice(0, 4),
+        emails,
+        payment: d.payment?.status,
+        paymentDue: full?.payment?.dueDate,
+        outstanding: full?.payment?.amountUsd,
+        docsMissing: d.docsPack?.missing,
+        productionBlockers: d.production?.blockers,
+        urgency: d.urgency,
+      };
+    }),
   };
   return `
 
-[Company book — raw deal snapshots for grounding]
+[Company book — ${compact.dealCount} live mailbox deals. Answer only from this data.]
 ${JSON.stringify(compact)}
 `;
 }
@@ -210,16 +262,19 @@ export function CopilotPanel({
       }
     >
       <CardHeader
-        title="Ops Copilot · Savvy"
-        description={`Trade Suite guide (${botId}) — Command Center pulse, deals, stages, agents`}
+        title="Trade Copilot · Savvy"
+        description={`Live mailbox book (${botId}) — dashboards, deals, finance & ops`}
       />
       <div className="flex-1 space-y-3 overflow-auto p-4">
         {messages.length === 0 ? (
           <div className="space-y-2 text-sm text-zinc-500">
-            <p>Ask about attention items, today&apos;s todos, or a deal stage.</p>
+            <p>
+              Ask about the live book — overdue payments, a teammate&apos;s
+              deals (e.g. kalpana), or what needs attention.
+            </p>
             <p className="text-xs">
-              Try: “What needs my attention today?”, “What is this platform?”,
-              “What’s next on this deal?”
+              Try: “How many open deals?”, “Show kalpana deals”, “What is
+              overdue?”, “What’s next on this deal?”
             </p>
           </div>
         ) : null}
@@ -269,17 +324,16 @@ export function CopilotPanel({
 
 export function FloatingCopilot() {
   const [open, setOpen] = useState(false);
-  const { processId } = useWorkspaceProcess();
-  if (processId !== "ops") return null;
 
   return (
     <div className="fixed bottom-4 right-4 z-40">
       {open ? (
-        <div className="mb-2 w-[360px]">
+        <div className="mb-2 w-[min(100vw-2rem,380px)] animate-in fade-in slide-in-from-bottom-2 duration-200">
           <div className="mb-1 flex justify-end">
             <button
-              className="rounded-full border border-zinc-200 bg-white p-1 shadow"
+              className="rounded-full border border-zinc-200 bg-white p-1 shadow transition hover:bg-zinc-50"
               onClick={() => setOpen(false)}
+              aria-label="Close copilot"
             >
               <X className="h-4 w-4" />
             </button>
@@ -289,7 +343,7 @@ export function FloatingCopilot() {
       ) : (
         <button
           onClick={() => setOpen(true)}
-          className="flex items-center gap-2 rounded-full bg-teal-700 px-4 py-2.5 text-sm font-medium text-white shadow-lg hover:bg-teal-800"
+          className="flex items-center gap-2 rounded-full bg-teal-700 px-4 py-2.5 text-sm font-medium text-white shadow-lg transition hover:bg-teal-800"
         >
           <MessageSquare className="h-4 w-4" />
           Copilot

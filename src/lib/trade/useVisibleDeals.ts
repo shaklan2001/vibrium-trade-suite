@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useTradeStore } from "@/lib/trade/store";
 import { filterDealsByCommercialModel } from "@/lib/trade/commercialModel";
 import { filterDealsByCommissionCurrency } from "@/lib/trade/commissionCurrency";
+import { dealMatchesSearch } from "@/lib/trade/dealSearch";
 import type { Deal } from "@/types/trade";
 
 function withinProductionDueWindow(deal: Deal, days: number): boolean {
@@ -20,13 +21,14 @@ function withinProductionDueWindow(deal: Deal, days: number): boolean {
   return delta <= days;
 }
 
-/** Deals visible under Agency/Trader, commission currency, stage, and production due filters. */
+/** Deals visible under Agency/Trader, currency, stage, due, and text search filters. */
 export function useVisibleDeals(): Deal[] {
   const deals = useTradeStore((s) => s.deals);
   const filter = useTradeStore((s) => s.commercialModelFilter);
   const commissionCurrency = useTradeStore((s) => s.displayCurrency);
   const stageFilter = useTradeStore((s) => s.stageFilter);
   const productionDueFilter = useTradeStore((s) => s.productionDueFilter);
+  const dealsSearchQuery = useTradeStore((s) => s.dealsSearchQuery);
 
   return useMemo(() => {
     let list = filterDealsByCommercialModel(deals, filter).filter(
@@ -43,6 +45,16 @@ export function useVisibleDeals(): Deal[] {
           withinProductionDueWindow(d, productionDueFilter),
       );
     }
+    if (dealsSearchQuery.trim()) {
+      list = list.filter((d) => dealMatchesSearch(d, dealsSearchQuery));
+    }
     return list;
-  }, [deals, filter, commissionCurrency, stageFilter, productionDueFilter]);
+  }, [
+    deals,
+    filter,
+    commissionCurrency,
+    stageFilter,
+    productionDueFilter,
+    dealsSearchQuery,
+  ]);
 }

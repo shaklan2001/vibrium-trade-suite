@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import Link from "next/link";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Button, Card } from "@/components/ui/primitives";
@@ -22,15 +22,11 @@ function k(n: number) {
 
 export default function ShipmentsMapPage() {
   const deals = useVisibleDeals();
-  const [hydrated, setHydrated] = useState(false);
+  const mailboxStatus = useTradeStore((s) => s.mailboxBookStatus);
 
   useEffect(() => {
-    setHydrated(true);
-  }, []);
-  useEffect(() => {
-    if (!hydrated) return;
-    void hydrateMailboxBook();
-  }, [hydrated]);
+    if (mailboxStatus === "idle") void hydrateMailboxBook();
+  }, [mailboxStatus]);
   useTradeStore((s) => s.displayCurrency);
 
   const shipments = useMemo(
@@ -47,10 +43,8 @@ export default function ShipmentsMapPage() {
     (a, b) =>
       b.congestionLevel - a.congestionLevel || b.avgWaitDays - a.avgWaitDays,
   )[0];
-
-  if (!hydrated) {
-    return <PageHeader title="Shipments" description="Loading…" />;
-  }
+  const bookLoading =
+    mailboxStatus === "idle" || mailboxStatus === "loading";
 
   return (
     <div>
@@ -58,8 +52,12 @@ export default function ShipmentsMapPage() {
         title="Shipment map"
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="info">{onWater.length} on water</Badge>
-            <Badge tone="warning">{delayed.length} delayed</Badge>
+            <Badge tone="info">
+              {bookLoading ? "…" : onWater.length} on water
+            </Badge>
+            <Badge tone="warning">
+              {bookLoading ? "…" : delayed.length} delayed
+            </Badge>
             <Badge>{ports.length} ports</Badge>
             <Link href="/operations">
               <Button variant="ghost">Operations</Button>
@@ -67,6 +65,14 @@ export default function ShipmentsMapPage() {
           </div>
         }
       />
+      {bookLoading ? (
+        <div className="mb-4 flex flex-col items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-6 py-16 text-center shadow-sm">
+          <span className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-teal-700" />
+          <p className="text-sm font-medium text-zinc-700">
+            Loading shipments…
+          </p>
+        </div>
+      ) : null}
 
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <Card className="p-4">

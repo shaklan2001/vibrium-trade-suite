@@ -85,7 +85,7 @@ export default function FinanceDashboardPage() {
   const rates = useAgencyCommissionStore((s) => s.rates);
   const upsertRate = useAgencyCommissionStore((s) => s.upsertRate);
   const agencyMode = filter === "agency_commission";
-  const [hydrated, setHydrated] = useState(false);
+  const mailboxStatus = useTradeStore((s) => s.mailboxBookStatus);
   const [drill, setDrill] = useState<DrillPayload | null>(null);
   const [dealFocus, setDealFocus] = useState<DealMonthFocus | null>(null);
   const [fxByDeal, setFxByDeal] = useState<Record<string, DealFxRate>>({});
@@ -94,13 +94,11 @@ export default function FinanceDashboardPage() {
   >({});
 
   useEffect(() => {
-    setHydrated(true);
-  }, []);
-  useEffect(() => {
-    if (!hydrated) return;
-    void hydrateMailboxBook();
-  }, [hydrated]);
+    if (mailboxStatus === "idle") void hydrateMailboxBook();
+  }, [mailboxStatus]);
   const commissionCurrencyFilter = useTradeStore((s) => s.displayCurrency);
+  const bookLoading =
+    mailboxStatus === "idle" || mailboxStatus === "loading";
   const inrCommissionView = commissionCurrencyFilter === "INR";
 
   // Persist default 5% for any Agency buyer missing a saved rate.
@@ -372,10 +370,6 @@ export default function FinanceDashboardPage() {
     setDealFocus({ order });
   }
 
-  if (!hydrated) {
-    return <PageHeader title="Finance" description="Loading…" />;
-  }
-
   return (
     <div>
       <PageHeader
@@ -412,6 +406,19 @@ export default function FinanceDashboardPage() {
           </div>
         }
       />
+
+      {bookLoading ? (
+        <div className="mb-4">
+          <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-6 py-16 text-center shadow-sm">
+            <span className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-teal-700" />
+            <p className="text-sm font-medium text-zinc-700">
+              Loading finance book…
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      <div className={bookLoading ? "pointer-events-none opacity-40" : undefined}>
 
       <BookInsightsStrip insights={insights} bookRate={bookRate} />
 
@@ -1321,6 +1328,8 @@ export default function FinanceDashboardPage() {
           </Card>
         </div>
       )}
+
+      </div>
 
       <DealPaymentMonthPanel
         focus={dealFocus}
