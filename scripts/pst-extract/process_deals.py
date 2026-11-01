@@ -189,16 +189,19 @@ def write_progress(payload: dict[str, Any], pg=None) -> None:
         return
     from psycopg.types.json import Jsonb
 
-    pg.execute(
-        """
-        INSERT INTO ingest_progress (id, payload, updated_at)
-        VALUES ('current', %s, now())
-        ON CONFLICT (id) DO UPDATE SET
-          payload = EXCLUDED.payload,
-          updated_at = now()
-        """,
-        (Jsonb(payload),),
-    )
+    try:
+        pg.execute(
+            """
+            INSERT INTO ingest_progress (id, payload, updated_at)
+            VALUES ('current', %s, now())
+            ON CONFLICT (id) DO UPDATE SET
+              payload = EXCLUDED.payload,
+              updated_at = now()
+            """,
+            (Jsonb(payload),),
+        )
+    except Exception as exc:
+        print(f"Neon progress skipped — {type(exc).__name__}")
 
 
 def count_pending(
@@ -206,8 +209,9 @@ def count_pending(
     stage: str | None,
     limit: int | None,
     with_docs: bool = False,
+    source: Path | None = None,
 ) -> int:
-    path = DEALS_PATH if with_docs else (INDEX_PATH if INDEX_PATH.exists() else DEALS_PATH)
+    path = source or (DEALS_PATH if with_docs else (INDEX_PATH if INDEX_PATH.exists() else DEALS_PATH))
     n = 0
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -285,13 +289,26 @@ def api_json(token: str, method: str, path: str, body: Any = None) -> Any:
         },
         method=method,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as res:
-            raw = res.read().decode()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode()[:500]
-        raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
-    return json.loads(raw) if raw else {}
+    last_error: Exception | None = None
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as res:
+                raw = res.read().decode()
+            return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode()[:500]
+            last_error = RuntimeError(f"{method} {path} -> {exc.code}: {detail}")
+            if exc.code in {429, 502, 503, 504} and attempt < 3:
+                time.sleep(3 * (attempt + 1))
+                continue
+            raise last_error from exc
+        except (TimeoutError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt < 3:
+                time.sleep(3 * (attempt + 1))
+                continue
+            raise
+    raise last_error or RuntimeError(f"{method} {path} failed")
 
 
 def unwrap(payload: Any) -> Any:
@@ -567,7 +584,11 @@ def connect_pg():
     except ImportError:
         print("psycopg not installed; skipping Neon write")
         return None
-    return psycopg.connect(url, autocommit=True)
+    try:
+        return psycopg.connect(url, autocommit=True, connect_timeout=8)
+    except Exception as exc:
+        print(f"Neon skipped — {type(exc).__name__}")
+        return None
 
 
 def ensure_pg_schema(pg) -> None:
@@ -712,7 +733,8 @@ def save_result(conn: sqlite3.Connection, row: dict[str, Any], pg=None) -> None:
         return
     from psycopg.types.json import Jsonb
 
-    pg.execute(
+    try:
+        pg.execute(
         """
         INSERT INTO processed_deals (
           id, po_numbers, subject, primary_stage, slot, agent_id, execution_id,
@@ -781,6 +803,8 @@ def save_result(conn: sqlite3.Connection, row: dict[str, Any], pg=None) -> None:
             row.get("document_url"),
         ),
     )
+    except Exception as exc:
+        print(f"Neon write skipped — {type(exc).__name__}")
 
 
 def s3_bucket() -> str:
@@ -1243,6 +1267,11 @@ def process_deal(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--deals",
+        type=Path,
+        help="Deal pack to process instead of data/pst_extract/relevant/deals.jsonl",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--stage", help="Only this primary_stage")
     parser.add_argument(
@@ -1264,8 +1293,9 @@ def main() -> int:
         help="Only deals with a pickable local attachment (newest first).",
     )
     args = parser.parse_args()
-    if not DEALS_PATH.exists():
-        raise SystemExit(f"Missing {DEALS_PATH}; run build_relevant_deals.py first")
+    deals_path = args.deals or DEALS_PATH
+    if not deals_path.exists():
+        raise SystemExit(f"Missing {deals_path}; run build_relevant_deals.py first")
 
     load_env()
     pg = connect_pg()
@@ -1295,7 +1325,9 @@ def main() -> int:
             line = line.strip()
             if line and not line.startswith("#"):
                 want_ids.add(line)
-    target = count_pending(done, args.stage, args.limit, with_docs=args.with_docs)
+    target = count_pending(
+        done, args.stage, args.limit, with_docs=args.with_docs, source=deals_path if args.deals else None
+    )
     if want_ids:
         target = min(target if not args.force else len(want_ids), len(want_ids))
         if args.force:
@@ -1368,7 +1400,7 @@ def main() -> int:
         write_progress(progress, pg)
 
     try:
-        with DEALS_PATH.open(encoding="utf-8") as handle:
+        with deals_path.open(encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
                     continue
@@ -1384,6 +1416,15 @@ def main() -> int:
                 if args.limit is not None and processed + failed >= args.limit:
                     break
                 n = processed + failed + 1
+                # Vibrium bearer tokens expire mid-run; refresh periodically.
+                if (
+                    not args.dry_run
+                    and token
+                    and (processed + failed) > 0
+                    and (processed + failed) % 15 == 0
+                ):
+                    token = mint_token()
+                    log("Vibrium token refreshed")
                 subject = (deal.get("subject") or deal.get("id") or "")[:70]
                 slot = choose_slot(deal)
                 deal_t0 = time.time()
@@ -1401,21 +1442,51 @@ def main() -> int:
                 try:
                     row = process_deal(token or "", ids, cache, deal, args.dry_run)
                 except Exception as exc:
-                    row = {
-                        "id": deal.get("id"),
-                        "subject": deal.get("subject"),
-                        "primary_stage": deal.get("primary_stage"),
-                        "slot": slot,
-                        "status": "failed",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "processed_at": datetime.now(timezone.utc).isoformat(),
-                        "po_numbers": deal.get("po_numbers") or [],
-                        "parties": deal.get("parties") or {},
-                        "message_count": deal.get("message_count"),
-                        "doc_count": deal.get("doc_count"),
-                        "date_start": deal.get("date_start"),
-                        "date_end": deal.get("date_end"),
-                    }
+                    err_text = f"{type(exc).__name__}: {exc}"
+                    if (
+                        not args.dry_run
+                        and token
+                        and ("403" in err_text or "Forbidden" in err_text)
+                    ):
+                        try:
+                            token = mint_token()
+                            log("Vibrium token refreshed after 403; retrying deal")
+                            row = process_deal(token, ids, cache, deal, args.dry_run)
+                        except Exception as retry_exc:
+                            err_text = f"{type(retry_exc).__name__}: {retry_exc}"
+                            row = {
+                                "id": deal.get("id"),
+                                "subject": deal.get("subject"),
+                                "primary_stage": deal.get("primary_stage"),
+                                "slot": slot,
+                                "status": "failed",
+                                "error": err_text,
+                                "processed_at": datetime.now(timezone.utc).isoformat(),
+                                "po_numbers": deal.get("po_numbers") or [],
+                                "parties": deal.get("parties") or {},
+                                "message_count": deal.get("message_count"),
+                                "doc_count": deal.get("doc_count"),
+                                "date_start": deal.get("date_start"),
+                                "date_end": deal.get("date_end"),
+                            }
+                        else:
+                            err_text = ""
+                    if err_text:
+                        row = {
+                            "id": deal.get("id"),
+                            "subject": deal.get("subject"),
+                            "primary_stage": deal.get("primary_stage"),
+                            "slot": slot,
+                            "status": "failed",
+                            "error": err_text,
+                            "processed_at": datetime.now(timezone.utc).isoformat(),
+                            "po_numbers": deal.get("po_numbers") or [],
+                            "parties": deal.get("parties") or {},
+                            "message_count": deal.get("message_count"),
+                            "doc_count": deal.get("doc_count"),
+                            "date_start": deal.get("date_start"),
+                            "date_end": deal.get("date_end"),
+                        }
                 if not args.dry_run:
                     save_result(conn, row, pg)
                 deal_cost = float(row.get("cost_usd") or 0)

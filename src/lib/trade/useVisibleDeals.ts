@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { useTradeStore } from "@/lib/trade/store";
 import { filterDealsByCommercialModel } from "@/lib/trade/commercialModel";
+import { filterDealsByCommissionCurrency } from "@/lib/trade/commissionCurrency";
 import type { Deal } from "@/types/trade";
 
 function withinProductionDueWindow(deal: Deal, days: number): boolean {
@@ -19,10 +20,11 @@ function withinProductionDueWindow(deal: Deal, days: number): boolean {
   return delta <= days;
 }
 
-/** Deals visible under Agency/Trader, stage, and production due filters. */
+/** Deals visible under Agency/Trader, commission currency, stage, and production due filters. */
 export function useVisibleDeals(): Deal[] {
   const deals = useTradeStore((s) => s.deals);
   const filter = useTradeStore((s) => s.commercialModelFilter);
+  const commissionCurrency = useTradeStore((s) => s.displayCurrency);
   const stageFilter = useTradeStore((s) => s.stageFilter);
   const productionDueFilter = useTradeStore((s) => s.productionDueFilter);
 
@@ -30,6 +32,7 @@ export function useVisibleDeals(): Deal[] {
     let list = filterDealsByCommercialModel(deals, filter).filter(
       (d) => !d.portfolioSeed && !d.showcase && !d.id.startsWith("bob-"),
     );
+    list = filterDealsByCommissionCurrency(list, commissionCurrency);
     if (stageFilter !== "all") {
       list = list.filter((d) => d.stage === stageFilter);
     }
@@ -41,5 +44,5 @@ export function useVisibleDeals(): Deal[] {
       );
     }
     return list;
-  }, [deals, filter, stageFilter, productionDueFilter]);
+  }, [deals, filter, commissionCurrency, stageFilter, productionDueFilter]);
 }

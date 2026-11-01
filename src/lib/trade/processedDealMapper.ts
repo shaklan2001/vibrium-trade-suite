@@ -12,6 +12,7 @@ import type {
   SourceMessageKind,
 } from "@/types/trade";
 import { ingestFileOpenUrl } from "./ingestFiles";
+import { isLocalChargesNarrative } from "./localCharges";
 
 export type ProcessedDealRow = {
   id: string;
@@ -149,23 +150,218 @@ function num(value: unknown): number | undefined {
   return undefined;
 }
 
+/** Shared display FX — keep ingest convert aligned with Finance INR formatting. */
+const MAPPER_USD_INR = Number(process.env.NEXT_PUBLIC_USD_INR_RATE || 96);
+
 function toUsd(amount: number, currency?: string): number {
-  const c = (currency || "USD").toUpperCase();
-  if (c === "INR") return amount / 83;
+  const c = (currency || "").toUpperCase();
+  if (!c || c === "USD" || c === "US$") return amount;
+  if (c === "INR" || c === "RS" || c === "₹") return amount / MAPPER_USD_INR;
   if (c === "EUR") return amount * 1.08;
   if (c === "GBP") return amount * 1.27;
+  // Unknown currency — do not invent USD (caller should supply currency)
   return amount;
 }
 
-function moneyFromText(text: string): number | undefined {
-  const match = text.match(
-    /\b(USD|INR|EUR|GBP|\$)\s*([\d,]+(?:\.\d+)?)/i,
+function normalizeMoneyCur(raw: string): string {
+  let cur = String(raw || "USD").toUpperCase();
+  if (cur === "$" || cur === "US$") cur = "USD";
+  if (cur === "₹" || cur === "RS" || cur === "RS.") cur = "INR";
+  return cur;
+}
+
+/**
+ * Expand abbreviated thousand ranges: "USD 30–35,000" → 30000..35000
+ * (not 30..35000).
+ */
+function expandAbbreviatedRange(a: number, aRaw: string, b: number): number {
+  if (!(a > 0 && b > a) || aRaw.includes(",")) return a;
+  if (a >= 1000 || b < 10_000) return a;
+  const mag = Math.floor(Math.log10(b)) - Math.floor(Math.log10(a));
+  if (mag < 2) return a;
+  return a * Math.pow(10, mag);
+}
+
+/**
+ * Extract commercial money from free text. Prefers amounts near
+ * outstanding/invoice language; avoids first-token traps and agent
+ * confusion like "USD 1,319,048 (in INR, but stated as USD 30–35,000)".
+ */
+function moneyFromText(
+  text: string,
+): { amountUsd: number; currency: string } | undefined {
+  if (!text?.trim()) return undefined;
+
+  // Prefer explicit USD/INR ranges (take midpoint of additionally-required band)
+  const range = text.match(
+    /\b(?:USD|US\$|\$)\s*([\d,]+)\s*[–—-]\s*([\d,]+)/i,
   );
-  if (!match) return undefined;
-  const amount = Number(match[2].replace(/,/g, ""));
-  if (!Number.isFinite(amount)) return undefined;
-  const cur = match[1] === "$" ? "USD" : match[1].toUpperCase();
-  return toUsd(amount, cur);
+  if (range && /additional|required|another|extra|about|approx/i.test(text)) {
+    let a = Number(range[1].replace(/,/g, ""));
+    const b = Number(range[2].replace(/,/g, ""));
+    if (Number.isFinite(a) && Number.isFinite(b)) {
+      a = expandAbbreviatedRange(a, range[1], b);
+      const mid = (a + b) / 2;
+      return { amountUsd: mid, currency: "USD" };
+    }
+  }
+
+  const hits: { amount: number; currency: string; index: number; score: number }[] =
+    [];
+  const push = (curRaw: string, amtRaw: string, index: number) => {
+    const amount = Number(String(amtRaw).replace(/,/g, ""));
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const currency = normalizeMoneyCur(curRaw);
+    const window = text.slice(Math.max(0, index - 48), index + 64);
+    let score = 0;
+    if (/\b(outstanding|pending|invoice|receivable|due)\b/i.test(window))
+      score += 6;
+    if (/\b(total\s+referenced|balance|owes?)\b/i.test(window)) score += 4;
+    if (/\b(additionally\s+required|extra|another)\b/i.test(window)) score += 5;
+    if (/\bin\s+INR\b/i.test(window) && currency === "USD") score -= 8;
+    if (amount >= 1_000_000) score -= 2; // large round figures often aggregates
+    hits.push({ amount, currency, index, score });
+  };
+
+  // ₹ and $ are not word characters, so a leading \b never matches "₹16,176".
+  const re1 =
+    /(?<![\w])(USD|INR|EUR|GBP|\$|₹|Rs\.?)\s*([\d,]+(?:\.\d+)?)/gi;
+  const re2 = /\b([\d,]+(?:\.\d+)?)\s*(USD|INR|EUR|GBP|Rs\.?)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re1.exec(text))) push(m[1], m[2], m.index);
+  while ((m = re2.exec(text))) push(m[2], m[1], m.index);
+
+  if (!hits.length) return undefined;
+  hits.sort((a, b) => b.score - a.score || a.amount - b.amount);
+  const best = hits[0]!;
+  // If top score is weak and a much smaller high-score alternative exists, prefer smaller
+  const alt = hits.find(
+    (h) => h.score >= best.score - 1 && h.amount < best.amount / 5,
+  );
+  const chosen = alt && best.amount >= 500_000 ? alt : best;
+  return {
+    amountUsd: toUsd(chosen.amount, chosen.currency),
+    currency: chosen.currency,
+  };
+}
+
+const REMITTANCE_RE =
+  /\b(payment\s+received|funds\s+received|remittance\s+confirmed|tt\s+received|paid\s+in\s+full|amount\s+credited|complete\s+payment|fully\s+settled|receipt\s+confirmed)\b/i;
+
+/** Payment advice attached is not confirmation the exporter received the money. */
+function adviceWithoutReceipt(summary: string): boolean {
+  return (
+    /\bpayment\s+advice\b/i.test(summary) && !REMITTANCE_RE.test(summary)
+  );
+}
+
+function looseDateToIso(raw: string): string | undefined {
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const dmy = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+  if (!dmy) return undefined;
+  const day = dmy[1].padStart(2, "0");
+  const month = dmy[2].padStart(2, "0");
+  let year = dmy[3];
+  if (year.length === 2) year = Number(year) > 50 ? `19${year}` : `20${year}`;
+  const monthNum = Number(month);
+  const dayNum = Number(day);
+  if (monthNum < 1 || monthNum > 12 || dayNum < 1 || dayNum > 31) return undefined;
+  return `${year}-${month}-${day}`;
+}
+
+/** Invoice / "dated 17.05.2024" anchor. Ignores a later advice timestamp. */
+function extractDatedIso(summary: string): string | undefined {
+  const labeled = summary.match(
+    /(?:invoice\s+date|dated|due(?:\s+date)?)\s*[^\d]{0,16}(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}-\d{2}-\d{2})/i,
+  );
+  if (labeled) {
+    const iso = looseDateToIso(labeled[1]);
+    if (iso) return iso;
+  }
+  return summary.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1];
+}
+
+const GLOBAL_PRAISE_RE = /global\s*praise/i;
+
+function textIsGlobalPraise(value: unknown): boolean {
+  if (typeof value === "string") return GLOBAL_PRAISE_RE.test(value);
+  if (Array.isArray(value)) return value.some(textIsGlobalPraise);
+  return false;
+}
+
+function partyIsGlobalPraise(
+  row: ProcessedDealRow,
+  result: Record<string, unknown>,
+): boolean {
+  const json = row.parties_json || {};
+  return (
+    textIsGlobalPraise(result.factory) ||
+    textIsGlobalPraise(result.shipper) ||
+    textIsGlobalPraise(result.buyer) ||
+    textIsGlobalPraise(result.consignee) ||
+    textIsGlobalPraise(result.buyerCompany) ||
+    textIsGlobalPraise(json.buyers) ||
+    textIsGlobalPraise(json.buyer) ||
+    textIsGlobalPraise(json.factories) ||
+    textIsGlobalPraise(json.factory) ||
+    textIsGlobalPraise(json.traders) ||
+    textIsGlobalPraise(json.trader)
+  );
+}
+
+type StatedSplit = { advance: number; balance: number; blDeferred: boolean };
+
+/**
+ * Percents actually written on the order. "100% TT 30 days from B/L" is one
+ * payment, not the 30/70 visibility default.
+ */
+function statedBuyerSplit(deal: Deal): StatedSplit | null {
+  const text = [
+    deal.po?.paymentTerms,
+    deal.pi?.paymentTerms,
+    deal.payment?.summary,
+    deal.po?.summary,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (!text.trim()) return null;
+  if (!/\b(payment|t\/?t|advance|balance|b\/?l|bill of lading)\b/i.test(text)) {
+    return null;
+  }
+  const slash = text.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})\b/);
+  let advance: number | null = null;
+  let balance: number | null = null;
+  if (slash) {
+    const a = Number(slash[1]);
+    const b = Number(slash[2]);
+    if (a + b === 100 && a > 0 && b > 0) {
+      advance = a;
+      balance = b;
+    }
+  }
+  if (advance == null) {
+    const percents = [...text.matchAll(/(\d{1,3})\s*%/g)]
+      .map((m) => Number(m[1]))
+      .filter((n) => n > 0 && n <= 100);
+    if (percents.length >= 2 && percents[0]! + percents[1]! === 100) {
+      advance = percents[0]!;
+      balance = percents[1]!;
+    } else if (percents.includes(100) && percents.every((n) => n === 100)) {
+      advance = 0;
+      balance = 100;
+    } else if (percents.length === 1 && percents[0]! < 100) {
+      advance = percents[0]!;
+      balance = 100 - percents[0]!;
+    }
+  }
+  if (advance == null || balance == null) return null;
+  const blDeferred =
+    /\b(\d{1,3})\s*days\b[\s\S]{0,40}\b(?:b\/?l|bill of lading)\b/i.test(text) ||
+    /\b(?:from|after|upon|against)\b[\s\S]{0,40}\b(?:b\/?l|bill of lading|documents?)\b/i.test(
+      text,
+    );
+  return { advance, balance, blDeferred };
 }
 
 function slugId(id: string) {
@@ -187,15 +383,15 @@ function dealCode(row: ProcessedDealRow): string {
   return `MB-${slug || "DEAL"}`;
 }
 
-function parties(row: ProcessedDealRow, result: Record<string, unknown>): Party[] {
+function parties(
+  row: ProcessedDealRow,
+  result: Record<string, unknown>,
+  model: string,
+): Party[] {
   const json = row.parties_json || {};
   const buyers = json.buyers || json.buyer || [];
   const factories = json.factories || json.factory || [];
   const traders = json.traders || json.trader || [];
-  const model =
-    row.commercial_model ||
-    str(result.commercialModel) ||
-    "agency_commission";
   const out: Party[] = [
     {
       role: model === "trader_principal" ? "trader" : "agency",
@@ -403,7 +599,8 @@ function commercialFrom(
   docType: "pi" | "po",
   executionId?: string,
 ): CommercialDocument {
-  const currency = str(result.currency) || "USD";
+  const summaryCur = moneyFromText(str(result.summary) || "")?.currency;
+  const currency = str(result.currency) || summaryCur || "USD";
   const total = num(result.totalAmount);
   const lines = Array.isArray(result.lines)
     ? result.lines.map((line) => {
@@ -455,13 +652,41 @@ export function mapProcessedDeal(
     str(row.summary) || str(result.summary) || row.subject || "Mailbox deal";
   const executionId = row.agent_id || undefined;
   const kind = SOURCE_KIND[slot] || "other";
-  const currency = str(result.currency);
-  const extractedAmount =
+  const currencyFromResult = str(result.currency);
+  const moneyHit = moneyFromText(summary);
+  const summaryHasUsd = /(?:\bUSD\b|US\$|(?<![\w])\$)\s*[\d,]/i.test(summary);
+  const summaryHasInr = /(?:\bINR\b|₹|\bRs\.?)\s*[\d,]/i.test(summary);
+  // Agent often omits result.currency while summary says "Origin charges INR …"
+  const currencyHint =
+    currencyFromResult ||
+    moneyHit?.currency ||
+    (summaryHasInr && !summaryHasUsd ? "INR" : undefined);
+  let extractedAmount =
     num(result.amountUsd) ??
     (num(result.totalAmount) != null
-      ? toUsd(num(result.totalAmount)!, currency)
+      ? toUsd(num(result.totalAmount)!, currencyHint)
       : undefined) ??
-    moneyFromText(summary);
+    moneyHit?.amountUsd;
+  let settlementCurrency =
+    (currencyFromResult || moneyHit?.currency || currencyHint || "").toUpperCase() ||
+    undefined;
+  // amountUsd is often a private FX conversion of a rupee invoice
+  // (Henlo ₹16,176 stored as $194). Keep the rupee figure at the display FX.
+  if (summaryHasInr && !summaryHasUsd && moneyHit?.currency === "INR") {
+    extractedAmount = moneyHit.amountUsd;
+    settlementCurrency = "INR";
+  }
+  const storedModel =
+    row.commercial_model === "trader_principal" ||
+    (row.commercial_model !== "agency_commission" &&
+      str(result.commercialModel) === "trader_principal")
+      ? "trader_principal"
+      : "agency_commission";
+  const gpOverride =
+    storedModel !== "trader_principal" && partyIsGlobalPraise(row, result);
+  const commercialModel = gpOverride ? "trader_principal" : storedModel;
+  /** Local freight / origin-charges extracts are not trade order value. */
+  const localChargesOnly = isLocalChargesNarrative(summary);
 
   const evidence = evidenceFrom(row);
   const sources = buildSources(
@@ -485,17 +710,13 @@ export function mapProcessedDeal(
     updatedAt: updated,
     mailboxIngest: true,
     mailboxSourceId: row.id,
+    mailboxPoNumbers: (row.po_numbers || [])
+      .map((p) => String(p).trim())
+      .filter(Boolean),
     mailboxSlot: slot || undefined,
-    commercialModel:
-      row.commercial_model === "trader_principal"
-        ? "trader_principal"
-        : row.commercial_model === "agency_commission"
-          ? "agency_commission"
-          : str(result.commercialModel) === "trader_principal"
-            ? "trader_principal"
-            : "agency_commission",
+    commercialModel,
     agentResult: Object.keys(result).length ? result : undefined,
-    parties: parties(row, result),
+    parties: parties(row, result, commercialModel),
     documents:
       evidence.document_name ||
       row.document_name ||
@@ -662,23 +883,42 @@ export function mapProcessedDeal(
 
   if (slot === "payment_clock") {
     const rawStatus = str(result.status)?.toLowerCase() || "pending";
-    const status = PAYMENT_STATUS.has(rawStatus as PaymentClock["status"])
+    let status = PAYMENT_STATUS.has(rawStatus as PaymentClock["status"])
       ? (rawStatus as PaymentClock["status"])
       : "pending";
+    // Outstanding / unpaid language → overdue when not paid
+    if (
+      status !== "paid" &&
+      /\b(outstanding|pending\s+payment|payment\s+confirmation\s+is\s+pending|awaits?\s+payment|not\s+yet\s+paid)\b/i.test(
+        summary,
+      )
+    ) {
+      status = "overdue";
+    }
+    // Invoice date in summary as due anchor when agent omitted dueDate.
+    // Dotted Indian dates (17.05.2024) are the invoice, not the later advice day.
+    const invoiceDate =
+      looseDateToIso(str(result.dueDate) || "") || extractDatedIso(summary);
+    // A payment advice is not receipt. Henlo TPD/2024-25/04 stayed outstanding.
+    if (adviceWithoutReceipt(summary)) {
+      const dueMs = invoiceDate ? Date.parse(`${invoiceDate}T12:00:00Z`) : NaN;
+      status =
+        !Number.isNaN(dueMs) && dueMs > Date.now() ? "pending" : "overdue";
+    }
     deal.payment = {
       blSharedDate: str(result.blSharedDate),
-      dueDate: str(result.dueDate),
+      dueDate: invoiceDate,
       daysRemaining: num(result.daysRemaining),
       status,
       amountUsd: extractedAmount,
-      currency: str(result.currency) || "USD",
+      currency: settlementCurrency || "USD",
       summary,
       confidence: num(result.confidence),
       executionId,
     };
   }
 
-  if (extractedAmount && extractedAmount > 0) {
+  if (extractedAmount && extractedAmount > 0 && !localChargesOnly) {
     const paid = deal.payment?.status === "paid";
     deal.economics = {
       commercialValueUsd: extractedAmount,
@@ -697,7 +937,10 @@ export function mapProcessedDeal(
       sources: [],
       summary,
     };
-    deal.paymentSchedule = inferSchedule(deal, extractedAmount, paid);
+    deal.paymentSchedule = inferSchedule(deal, extractedAmount, paid, {
+      // Relabeling Global Praise as principal must not invent an 88% factory bill.
+      factoryEstimate: !gpOverride,
+    });
     const deployed =
       paid || deal.stage === "docs_payment" || deal.stage === "booking"
         ? extractedAmount
@@ -723,6 +966,26 @@ export function mapProcessedDeal(
             : "vendor",
       sources: [],
     };
+  } else if (localChargesOnly && extractedAmount && extractedAmount > 0) {
+    // Keep ops visibility of freight/GST extracts without treating them as
+    // trade order value (avoids phantom buyer overdue / commission).
+    deal.economics = {
+      commercialValueUsd: 0,
+      agencyCommissionUsd: 0,
+      cycleDaysTypical: 60,
+      cycleDaysElapsed: Math.max(
+        1,
+        Math.floor((Date.now() - Date.parse(created)) / 86400000),
+      ),
+      commercialCashAtRiskUsd: 0,
+      agencyCashAtRiskUsd: 0,
+      agencyInflowNext14dUsd: 0,
+      riskRewardRatio: 1,
+      affordability: "comfortable",
+      liquidityNote: `Local charges only (not trade commercial) · ${summary.slice(0, 120)}`,
+      sources: [],
+      summary,
+    };
   }
 
   return deal;
@@ -739,29 +1002,31 @@ function inferSchedule(
   deal: Deal,
   amount: number,
   paid: boolean,
+  opts?: { factoryEstimate?: boolean },
 ): Deal["paymentSchedule"] {
   const model = deal.commercialModel || "agency_commission";
   const buyerAmount = deal.po?.totalAmount || amount;
   const factoryAmount =
     deal.pi?.totalAmount ||
-    (model === "trader_principal" ? Math.round(amount * 0.88) : undefined);
-  const buyerTerms =
-    deal.po?.paymentTerms ||
-    "30% on PO acknowledgement · 70% T/T against B/L (default when PO terms blank)";
-  const factoryTerms = deal.pi?.paymentTerms
-    ? deal.pi.paymentTerms
-    : factoryAmount != null
-      ? "30% advance on PI · 70% against shipping docs (default when PI terms blank)"
-      : "Factory PI not extracted yet — payable unknown (agency uses buyer PO for commercial reference only)";
+    (model === "trader_principal" && opts?.factoryEstimate !== false
+      ? Math.round(amount * 0.88)
+      : undefined);
+  const currency =
+    deal.payment?.currency ||
+    deal.po?.currency ||
+    deal.pi?.currency ||
+    "USD";
 
-  const start = isoDay(deal.createdAt);
-  const due = isoDay(deal.payment?.dueDate, deal.updatedAt);
-  const hasPaymentMail = (deal.sources || []).some((s) =>
-    ["payment", "commission"].includes(s.kind),
+  const due = isoDay(
+    deal.payment?.dueDate,
+    deal.booking?.etd || deal.updatedAt,
   );
-  // Only treat remittance as received when payment clock says paid or payment mail exists.
-  // Do NOT mirror stage=booking into both sides — that was cloning buyer/factory totals incorrectly.
-  // Past-due open installments must be "overdue" (not stuck as "upcoming") so Finance KPIs match the grid.
+  const remittanceConfirmed =
+    (paid ||
+      REMITTANCE_RE.test(
+        deal.payment?.summary || deal.economics?.summary || "",
+      )) &&
+    !adviceWithoutReceipt(deal.payment?.summary || "");
   const openStatus = (
     dueDate: string,
   ): "upcoming" | "due" | "overdue" => {
@@ -774,25 +1039,105 @@ function inferSchedule(
     if (days === 0 || deal.payment?.status === "due_soon") return "due";
     return "upcoming";
   };
+
+  const summary = deal.payment?.summary || deal.economics?.summary || "";
+  const outstandingOnly =
+    deal.mailboxSlot === "payment_clock" ||
+    (!deal.po?.totalAmount &&
+      /\b(outstanding|pending\s+payment|awaits?\s+payment)\b/i.test(summary));
+
+  // Single outstanding invoice line — do not invent fake 30/70 splits.
+  if (outstandingOnly) {
+    const status: "received" | "upcoming" | "due" | "overdue" =
+      remittanceConfirmed ? "received" : openStatus(due);
+    return {
+      buyerTerms:
+        deal.po?.paymentTerms ||
+        "Outstanding invoice from payment mailbox thread",
+      factoryTerms:
+        deal.pi?.paymentTerms ||
+        "Factory payable not extracted on this payment thread",
+      currency,
+      orderValueUsd: buyerAmount,
+      checkpoints: [
+        {
+          id: `${deal.id}-out`,
+          side: "buyer",
+          label: "Outstanding invoice",
+          percent: 100,
+          amountUsd: Math.round(buyerAmount * 100) / 100,
+          dueDate: due,
+          status,
+          receivedAt: status === "received" ? due : undefined,
+          checkpoint: "Payment clock / invoice",
+          confirmationSourceId: (deal.sources || []).find((s) =>
+            ["payment", "commission"].includes(s.kind),
+          )?.id,
+          sourceIds: (deal.sources || [])
+            .filter((s) => ["payment", "commission", "po"].includes(s.kind))
+            .map((s) => s.id)
+            .slice(0, 4),
+          termsExcerpt: summary.slice(0, 180),
+        },
+      ],
+    };
+  }
+
+  const stated = statedBuyerSplit(deal);
+  const advancePct = stated?.advance ?? 30;
+  const balancePct = stated?.balance ?? 70;
+  const blKnown = Boolean(deal.payment?.blSharedDate || deal.booking?.etd);
+  // "100% TT 30 days from B/L" is not due until a B/L date exists.
+  const blDeferred = Boolean(stated?.blDeferred && !blKnown);
+  const buyerTerms =
+    deal.po?.paymentTerms ||
+    deal.pi?.paymentTerms ||
+    (stated
+      ? "Payment terms stated on the order"
+      : "30% on PO acknowledgement · 70% T/T against B/L (inferred default)");
+  const factoryTerms = deal.pi?.paymentTerms
+    ? deal.pi.paymentTerms
+    : factoryAmount != null
+      ? "30% advance on PI · 70% against shipping docs (inferred default)"
+      : "Factory PI not extracted — agency book uses buyer commercial only";
+
+  // Advance due: prefer explicit payment due / ETD — never createdAt (that
+  // made every historic advance look years overdue).
+  const advanceDue = isoDay(
+    deal.payment?.dueDate,
+    deal.booking?.etd || deal.updatedAt,
+  );
+  const balanceDue = due;
+
   const buyerAdvanceStatus: "received" | "upcoming" | "due" | "overdue" =
-    paid || hasPaymentMail ? "received" : openStatus(start);
-  const buyerBalanceStatus: "received" | "upcoming" | "due" | "overdue" = paid
-    ? "received"
-    : openStatus(due);
+    remittanceConfirmed
+      ? "received"
+      : blDeferred
+        ? "upcoming"
+        : openStatus(advanceDue);
+  const buyerBalanceStatus: "received" | "upcoming" | "due" | "overdue" =
+    remittanceConfirmed
+      ? "received"
+      : blDeferred
+        ? "upcoming"
+        : openStatus(balanceDue);
 
-  const buyerAdvance = Math.round(buyerAmount * 0.3);
+  const buyerAdvance = Math.round((buyerAmount * advancePct) / 100);
   const buyerBalance = Math.max(0, Math.round(buyerAmount - buyerAdvance));
+  const buyerDue = (when: string | undefined) =>
+    blDeferred ? undefined : when;
 
-  const checkpoints: NonNullable<Deal["paymentSchedule"]>["checkpoints"] = [
-    {
+  const checkpoints: NonNullable<Deal["paymentSchedule"]>["checkpoints"] = [];
+  if (advancePct > 0) {
+    checkpoints.push({
       id: `${deal.id}-b1`,
       side: "buyer",
-      label: "Buyer advance 30%",
-      percent: 30,
+      label: `Buyer advance ${advancePct}%`,
+      percent: advancePct,
       amountUsd: buyerAdvance,
-      dueDate: start,
+      dueDate: buyerDue(advanceDue),
       status: buyerAdvanceStatus,
-      receivedAt: buyerAdvanceStatus === "received" ? start : undefined,
+      receivedAt: buyerAdvanceStatus === "received" ? advanceDue : undefined,
       checkpoint: "PO acknowledgement",
       confirmationSourceId: (deal.sources || []).find((s) =>
         ["po", "payment"].includes(s.kind),
@@ -801,38 +1146,52 @@ function inferSchedule(
         .filter((s) => ["po", "payment"].includes(s.kind))
         .map((s) => s.id)
         .slice(0, 4),
-    },
-    {
-      id: `${deal.id}-b2`,
-      side: "buyer",
-      label: "Buyer balance 70%",
-      percent: 70,
-      amountUsd: buyerBalance,
-      dueDate: due,
-      status: buyerBalanceStatus,
-      receivedAt: buyerBalanceStatus === "received" ? due : undefined,
-      checkpoint: "BL copy / payment clock",
-      confirmationSourceId: (deal.sources || []).find((s) =>
-        ["payment", "booking"].includes(s.kind),
-      )?.id,
-      sourceIds: (deal.sources || [])
-        .filter((s) => ["payment", "booking"].includes(s.kind))
-        .map((s) => s.id)
-        .slice(0, 4),
-    },
-  ];
+      termsExcerpt: buyerTerms.slice(0, 180),
+    });
+  }
+  checkpoints.push({
+    id: `${deal.id}-b2`,
+    side: "buyer",
+    label:
+      advancePct === 0 && balancePct === 100
+        ? "Buyer payment 100%"
+        : `Buyer balance ${balancePct}%`,
+    percent: balancePct,
+    amountUsd: buyerBalance,
+    dueDate: buyerDue(balanceDue),
+    status: buyerBalanceStatus,
+    receivedAt: buyerBalanceStatus === "received" ? balanceDue : undefined,
+    checkpoint: blDeferred
+      ? /\bb\/?l\b|bill of lading/i.test(buyerTerms)
+        ? "Awaiting B/L"
+        : "Per stated terms"
+      : "BL copy / payment clock",
+    confirmationSourceId: (deal.sources || []).find((s) =>
+      ["payment", "booking"].includes(s.kind),
+    )?.id,
+    sourceIds: (deal.sources || [])
+      .filter((s) => ["payment", "booking"].includes(s.kind))
+      .map((s) => s.id)
+      .slice(0, 4),
+    termsExcerpt: buyerTerms.slice(0, 180),
+  });
 
+  // Factory legs only when we have PI amount (or trader principal estimate).
+  // Never mark factory paid just because buyer remittance confirmed (agency).
   if (factoryAmount != null && factoryAmount > 0) {
     const factoryAdvance = Math.round(factoryAmount * 0.3);
     const factoryBalance = Math.max(
       0,
       Math.round(factoryAmount - factoryAdvance),
     );
-    // Factory remittances are separate from buyer receipts (especially agency).
+    const factoryPaid =
+      model === "trader_principal" && remittanceConfirmed
+        ? false // still require explicit factory pay evidence
+        : false;
     const factoryAdvanceStatus: "received" | "upcoming" | "due" | "overdue" =
-      paid ? "received" : openStatus(start);
+      factoryPaid ? "received" : openStatus(advanceDue);
     const factoryBalanceStatus: "received" | "upcoming" | "due" | "overdue" =
-      paid ? "received" : openStatus(due);
+      factoryPaid ? "received" : openStatus(balanceDue);
     checkpoints.unshift(
       {
         id: `${deal.id}-f1`,
@@ -840,9 +1199,10 @@ function inferSchedule(
         label: "Factory advance 30%",
         percent: 30,
         amountUsd: factoryAdvance,
-        dueDate: start,
+        dueDate: advanceDue,
         status: factoryAdvanceStatus,
-        receivedAt: factoryAdvanceStatus === "received" ? start : undefined,
+        receivedAt:
+          factoryAdvanceStatus === "received" ? advanceDue : undefined,
         checkpoint: "PI locked",
         confirmationSourceId: (deal.sources || []).find((s) =>
           ["pi", "payment"].includes(s.kind),
@@ -858,9 +1218,10 @@ function inferSchedule(
         label: "Factory balance 70%",
         percent: 70,
         amountUsd: factoryBalance,
-        dueDate: due,
+        dueDate: balanceDue,
         status: factoryBalanceStatus,
-        receivedAt: factoryBalanceStatus === "received" ? due : undefined,
+        receivedAt:
+          factoryBalanceStatus === "received" ? balanceDue : undefined,
         checkpoint: "Shipping docs / BL",
         confirmationSourceId: (deal.sources || []).find((s) =>
           ["payment", "booking"].includes(s.kind),
@@ -876,11 +1237,7 @@ function inferSchedule(
   return {
     buyerTerms,
     factoryTerms,
-    currency:
-      deal.payment?.currency ||
-      deal.po?.currency ||
-      deal.pi?.currency ||
-      "USD",
+    currency,
     orderValueUsd: buyerAmount,
     checkpoints,
   };

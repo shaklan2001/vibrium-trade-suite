@@ -190,7 +190,7 @@ export const useTradeStore = create<TradeState>()(
       commercialModelFilter: "all" as CommercialModelFilter,
       setCommercialModelFilter: (filter) =>
         set({ commercialModelFilter: filter }),
-      displayCurrency: "USD" as DisplayCurrency,
+      displayCurrency: "all" as DisplayCurrency,
       setDisplayCurrency: (currency) => {
         applyDisplayCurrency(currency);
         set({ displayCurrency: currency });
@@ -324,11 +324,18 @@ export const useTradeStore = create<TradeState>()(
                   (prev.timeline?.length || 0) >= (d.timeline?.length || 0)
                     ? prev.timeline
                     : d.timeline,
-                agentResult: prev.agentResult || d.agentResult,
-                paymentSchedule: prev.paymentSchedule || d.paymentSchedule,
-                payment: prev.payment || d.payment,
-                booking: prev.booking || d.booking,
-                commission: prev.commission || d.commission,
+                agentResult: d.agentResult || prev.agentResult,
+                // Always prefer freshly mapped schedules/payment so KPI fixes land on refresh
+                paymentSchedule: d.paymentSchedule || prev.paymentSchedule,
+                payment: d.payment
+                  ? { ...prev.payment, ...d.payment }
+                  : prev.payment,
+                booking: d.booking
+                  ? { ...prev.booking, ...d.booking }
+                  : prev.booking,
+                commission: d.commission || prev.commission,
+                cashExposure: d.cashExposure || prev.cashExposure,
+                economics: d.economics || prev.economics,
               };
             });
           const keep = s.deals.filter(
@@ -656,6 +663,13 @@ export const useTradeStore = create<TradeState>()(
               DEFAULT_ROUTING[k as keyof typeof DEFAULT_ROUTING];
           }
         }
+        // Bots that lived only on the shared Vibrium org.
+        if (
+          mergedRouting.ops_copilot === "VB00000323" ||
+          mergedRouting.ops_copilot === "VB00000268"
+        ) {
+          mergedRouting.ops_copilot = DEFAULT_ROUTING.ops_copilot;
+        }
         const deals = (p.deals || current.deals)
           .filter((d) => !isSyntheticDeal(d))
           .map((d) => ({
@@ -687,7 +701,9 @@ export const useTradeStore = create<TradeState>()(
               ? p.commercialModelFilter
               : current.commercialModelFilter,
           displayCurrency:
-            p.displayCurrency === "INR" || p.displayCurrency === "USD"
+            p.displayCurrency === "INR" ||
+            p.displayCurrency === "USD" ||
+            p.displayCurrency === "all"
               ? p.displayCurrency
               : current.displayCurrency,
           stageFilter: (p.stageFilter as StageFilter) || current.stageFilter,

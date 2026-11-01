@@ -793,6 +793,8 @@ export interface Deal {
   mailboxIngest?: boolean;
   /** Raw processed_deals.id (po:… / topic:…) for evidence API */
   mailboxSourceId?: string;
+  /** PO numbers from mailbox row — used to link booking ↔ commercial extracts */
+  mailboxPoNumbers?: string[];
   /** agency_commission (SNSPL referee) | trader_principal (Global Praise) */
   commercialModel?: "agency_commission" | "trader_principal";
   /** Worker slot that produced the latest extract */
@@ -1129,7 +1131,7 @@ export const DEFAULT_ROUTING: AgentRoutingMap = {
   ops_copilot:
     process.env.NEXT_PUBLIC_BOT_OPS_COPILOT ||
     process.env.VIBRIUM_OPS_COPILOT_BOT_ID ||
-    "VB00000323",
+    "VB00000001",
   wf_factory_outreach: process.env.NEXT_PUBLIC_WF_FACTORY_OUTREACH || "",
   wf_buyer_selection_chase:
     process.env.NEXT_PUBLIC_WF_BUYER_SELECTION_CHASE || "",

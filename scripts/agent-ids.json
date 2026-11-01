@@ -15,7 +15,7 @@
   "final_docs_pack_check": "AA00000038",
   "payment_clock": "AA00000039",
   "commission_checklist": "AA00000040",
-  "ops_copilot": "VB00000323",
+  "ops_copilot": "VB00000001",
   "ops_risk_scanner": "AA00000055",
   "ops_priority_ranker": "AA00000056",
   "ops_daily_brief": "AA00000057",

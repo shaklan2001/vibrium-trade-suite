@@ -16,8 +16,10 @@ const PATTERNS: RegExp[] = [
   /(?:usd\s*[\/\s]*inr|inr\s*[\/\s]*usd|\$\s*\/\s*₹|rs\.?\s*\/\s*usd)\s*[:=@]?\s*(\d{2}(?:\.\d{1,4})?)/i,
   /(?:1\s*(?:usd|us\$|\$)\s*=\s*)(\d{2}(?:\.\d{1,4})?)\s*(?:inr|rs\.?|₹)/i,
   /(\d{2}(?:\.\d{1,4})?)\s*(?:inr|rs\.?|₹)\s*(?:per|=|\/)\s*(?:usd|us\$|\$|dollar)/i,
-  /(?:fx|exchange)\s*(?:rate)?\s*[:=]?\s*(\d{2}(?:\.\d{1,4})?)\s*(?:inr|rs\.?)?/i,
+  /(?:fx|exchange|conversion)\s*(?:rate)?\s*[:=]?\s*(\d{2}(?:\.\d{1,4})?)\s*(?:inr|rs\.?)?/i,
   /(\d{2}\.\d{2,4})\s*(?:inr\s*\/\s*usd|rs\s*\/\s*usd)/i,
+  /(?:agreed|decided|fixed|apply(?:ing)?)\s+(?:fx|rate|conversion)[^\d]{0,24}(\d{2}(?:\.\d{1,4})?)/i,
+  /(?:commission|invoice)\s+(?:at|@)\s*(?:rs\.?|₹|inr)?\s*(\d{2}(?:\.\d{1,4})?)/i,
 ];
 
 function plausibleRate(n: number): boolean {

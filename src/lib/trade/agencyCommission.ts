@@ -5,6 +5,7 @@
 import type { Deal } from "@/types/trade";
 import { ensureDealEconomics } from "./commandCenterMetrics";
 import { dealCommercialModel } from "./commercialModel";
+import { isLocalChargesNarrative } from "./localCharges";
 
 /** Default Agency commission when buyer has no saved rate. */
 export const DEFAULT_AGENCY_COMMISSION_PCT = 5;
@@ -54,8 +55,13 @@ export function resolveDealBuyer(deal: Deal): { key: string; name: string } {
 
 export function commercialValueUsd(deal: Deal): number {
   const econ = ensureDealEconomics(deal);
+  if (deal.payment?.amountUsd) return deal.payment.amountUsd;
+  const blob = `${deal.pi?.summary || ""} ${deal.po?.summary || ""} ${deal.economics?.summary || ""} ${deal.economics?.liquidityNote || ""}`;
+  // Origin charges / forwarder GST invoices are not buyer order value.
+  if (isLocalChargesNarrative(blob)) {
+    return econ.commercialValueUsd > 0 ? econ.commercialValueUsd : 0;
+  }
   return (
-    deal.payment?.amountUsd ||
     deal.pi?.totalAmount ||
     deal.po?.totalAmount ||
     econ.commercialValueUsd ||

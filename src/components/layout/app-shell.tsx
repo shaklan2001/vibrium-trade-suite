@@ -57,13 +57,14 @@ function CurrencyToggle() {
   return (
     <label className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-sm">
       <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-        Currency
+        Comm. currency
       </span>
       <select
         className="bg-transparent text-sm font-medium text-zinc-900 outline-none"
         value={currency}
         onChange={(e) => setCurrency(e.target.value as DisplayCurrency)}
-        aria-label="Display currency"
+        aria-label="Filter by commission payment currency"
+        title="Filters deals by the currency commission is paid in — not a book-wide FX convert"
       >
         {DISPLAY_CURRENCY_OPTIONS.map((opt) => (
           <option key={opt.id} value={opt.id}>

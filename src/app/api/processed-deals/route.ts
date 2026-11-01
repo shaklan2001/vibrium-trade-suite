@@ -26,6 +26,10 @@ export async function GET(request: Request) {
   if (stage && !STAGES.has(stage)) {
     return NextResponse.json({ error: "Unknown stage" }, { status: 400 });
   }
+  const limitRaw = Number(searchParams.get("limit") || 400);
+  const offsetRaw = Number(searchParams.get("offset") || 0);
+  const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 400, 1), 500);
+  const offset = Math.max(Number.isFinite(offsetRaw) ? offsetRaw : 0, 0);
 
   // Preferred path for Aurora: VPC Lambda proxy (schema trade_suite only)
   if (isRdsProxyEnabled()) {
@@ -33,7 +37,8 @@ export async function GET(request: Request) {
       const res = await invokeTradeSuiteRds<ProcessedDealRow[]>({
         action: "list_deals",
         stage: stage || undefined,
-        limit: 500,
+        limit,
+        offset,
       });
       if (!res.success) {
         return NextResponse.json(
@@ -101,7 +106,7 @@ export async function GET(request: Request) {
           FROM processed_deals
           WHERE primary_stage = ${stage}
           ORDER BY date_end DESC NULLS LAST
-          LIMIT 500
+          LIMIT ${limit} OFFSET ${offset}
         `
       : await sql`
           SELECT
@@ -112,7 +117,7 @@ export async function GET(request: Request) {
             commercial_model, evidence_json, document_name, document_url
           FROM processed_deals
           ORDER BY date_end DESC NULLS LAST
-          LIMIT 500
+          LIMIT ${limit} OFFSET ${offset}
         `;
 
     const stageRows = asRows<{ stage: string | null; count: number }>(

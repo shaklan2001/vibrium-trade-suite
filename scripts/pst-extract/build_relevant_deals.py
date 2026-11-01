@@ -233,23 +233,41 @@ def resolve_commercial_model(
     return "agency_commission"
 
 
-def mailbox_dirs() -> list[Path]:
+def mailbox_dirs(only: list[str] | None = None) -> list[Path]:
+    wanted = {name.strip() for name in (only or []) if name.strip()}
     return sorted(
         p
         for p in OUTPUT.iterdir()
         if p.is_dir()
         and p.name != "relevant"
+        and (not wanted or p.name in wanted)
         and (p / "threads.jsonl").exists()
         and (p / "messages.jsonl").exists()
     )
 
 
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mailbox",
+        action="append",
+        default=[],
+        help="Only this extracted mailbox directory name. Repeatable.",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="Directory for deals.jsonl. Default: data/pst_extract/relevant",
+    )
+    args = parser.parse_args()
+    out_dir = args.out or RELEVANT_DIR
     started = time.time()
     print("Relevant deal extract v2 (reply chains + commercial model)")
     threads: list[dict[str, Any]] = []
     messages_by_id: dict[str, dict[str, Any]] = {}
-    for mailbox_dir in mailbox_dirs():
+    for mailbox_dir in mailbox_dirs(args.mailbox):
         print(f"  loading {mailbox_dir.name}…")
         threads.extend(load_jsonl(mailbox_dir / "threads.jsonl"))
         for row in load_jsonl(mailbox_dir / "messages.jsonl"):
@@ -265,9 +283,9 @@ def main() -> int:
     for thread in kept_threads:
         groups[deal_id_for(thread)].append(thread)
 
-    RELEVANT_DIR.mkdir(parents=True, exist_ok=True)
-    deals_path = RELEVANT_DIR / "deals.jsonl"
-    index_path = RELEVANT_DIR / "deals-index.jsonl"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    deals_path = out_dir / "deals.jsonl"
+    index_path = out_dir / "deals-index.jsonl"
     deals = []
     stages = Counter()
     models = Counter()
@@ -297,6 +315,16 @@ def main() -> int:
                 if row:
                     packed.append(compact_message(row))
             packed.sort(key=lambda m: m.get("date") or "")
+            # The same internet message is often copied across Kalpana, Sanchita, and Radha.
+            unique_packed = []
+            seen_internet: set[str] = set()
+            for msg in packed:
+                key = (msg.get("message_id") or "").strip() or str(msg.get("id") or "")
+                if not key or key in seen_internet:
+                    continue
+                seen_internet.add(key)
+                unique_packed.append(msg)
+            packed = unique_packed
 
             # Drop topic-keyed single-mail junk unless strong PO/doc signal
             if (
@@ -457,7 +485,7 @@ def main() -> int:
         },
         "note": "v2: reply-graph clusters, travel denylist, agency vs trader (Global Praise).",
     }
-    (RELEVANT_DIR / "summary.json").write_text(
+    (out_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     print(f"\n  deals {len(deals):,}  messages {msg_total:,}  documents {doc_total:,}")

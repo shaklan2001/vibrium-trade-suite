@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/layout/app-shell";
 import { useWorkspaceProcess } from "@/components/layout/workspace-process";
 import { Button, Card } from "@/components/ui/primitives";
 import { KpiTile } from "@/components/ops/command-center-ui";
+import { BookInsightsStrip } from "@/components/ops/book-insights-strip";
 import { useTradeStore } from "@/lib/trade/store";
 import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { companyPulse } from "@/lib/trade/opsIntelligence";
@@ -20,14 +21,31 @@ import {
   buildShipmentPulseFromDeals,
   usd,
 } from "@/lib/trade/commandCenterMetrics";
+import { useAgencyCommissionStore } from "@/lib/trade/agencyCommissionStore";
+import { buildBookInsights } from "@/lib/trade/bookInsights";
+import {
+  formatMoneyWithRate,
+  getDisplayCurrency,
+  USD_TO_INR,
+} from "@/lib/trade/currencyDisplay";
 
 function k(n: number) {
+  const cur = getDisplayCurrency();
+  if (cur === "INR") {
+    const inr = n * USD_TO_INR;
+    if (Math.abs(inr) >= 100_000) return `₹${(inr / 100_000).toFixed(1)}L`;
+    if (Math.abs(inr) >= 1000) return `₹${(inr / 1000).toFixed(1)}k`;
+    return formatMoneyWithRate(n, "INR", USD_TO_INR);
+  }
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
   return usd(n);
 }
 
 export default function CommandCenterHubPage() {
   const deals = useVisibleDeals();
+  const filter = useTradeStore((s) => s.commercialModelFilter);
+  const agencyMode = filter === "agency_commission";
+  const rates = useAgencyCommissionStore((s) => s.rates);
   const opsIntel = useTradeStore((s) => s.opsIntel);
   const { setProcessId } = useWorkspaceProcess();
   const [hydrated, setHydrated] = useState(false);
@@ -41,12 +59,18 @@ export default function CommandCenterHubPage() {
     void hydrateMailboxBook();
   }, [hydrated]);
 
-  // Re-render money when currency toggles
   useTradeStore((s) => s.displayCurrency);
 
   const pulse = useMemo(() => companyPulse(deals), [deals]);
-  const cash = useMemo(() => buildCashExposureReport(deals), [deals]);
+  const cash = useMemo(
+    () => buildCashExposureReport(deals, { agencyMode, rates }),
+    [deals, agencyMode, rates],
+  );
   const ship = useMemo(() => buildShipmentPulseFromDeals(deals), [deals]);
+  const insights = useMemo(
+    () => buildBookInsights(deals, rates),
+    [deals, rates],
+  );
   const alerts = (opsIntel.attention || []).filter(
     (a) => a.severity === "critical" || a.severity === "warning",
   ).length;
@@ -59,7 +83,7 @@ export default function CommandCenterHubPage() {
     <div>
       <PageHeader
         title="Command Center"
-        description="Company pulse from the Outlook mailbox ingest — switch process in the header to focus the workspace."
+        description="Mailbox book visibility — Finance and Ops share one truth. Switch process in the header to focus."
         actions={
           <Button
             variant="secondary"
@@ -79,27 +103,58 @@ export default function CommandCenterHubPage() {
         }
       />
 
-      <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KpiTile label="Open deals" value={pulse.openDeals} size="lg" />
-        <KpiTile
-          label="Cash deployed"
-          value={k(cash.cashDeployedUsd)}
-          tone="info"
-          size="lg"
-        />
-        <KpiTile
-          label="Funding still due"
-          value={k(cash.cashStillRequiredUsd)}
-          tone="warning"
-          size="lg"
-        />
-        <KpiTile
-          label="Ops alerts"
-          value={alerts}
-          tone={alerts ? "danger" : "success"}
-          size="lg"
-        />
+        {agencyMode ? (
+          <>
+            <KpiTile
+              label="Commission due"
+              value={k(insights.agency?.outstandingUsd || 0)}
+              tone="warning"
+              size="lg"
+            />
+            <KpiTile
+              label="Commission overdue"
+              value={k(insights.agency?.overdueUsd || 0)}
+              tone="danger"
+              size="lg"
+            />
+            <KpiTile
+              label="Collection %"
+              value={`${insights.agency?.collectionPct ?? 0}%`}
+              tone={
+                (insights.agency?.collectionPct || 0) >= 50
+                  ? "success"
+                  : "neutral"
+              }
+              size="lg"
+            />
+          </>
+        ) : (
+          <>
+            <KpiTile
+              label="Cash deployed"
+              value={k(cash.cashDeployedUsd)}
+              tone="info"
+              size="lg"
+            />
+            <KpiTile
+              label="Funding still due"
+              value={k(cash.cashStillRequiredUsd)}
+              tone="warning"
+              size="lg"
+            />
+            <KpiTile
+              label="Ops alerts"
+              value={alerts}
+              tone={alerts ? "danger" : "success"}
+              size="lg"
+            />
+          </>
+        )}
       </div>
+
+      <BookInsightsStrip insights={insights} />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Link
@@ -120,22 +175,27 @@ export default function CommandCenterHubPage() {
                   <ArrowRight className="h-4 w-4 text-teal-700 opacity-0 transition group-hover:opacity-100" />
                 </div>
                 <p className="mt-1 text-sm text-zinc-600">
-                  Live cash exposure and forecast — capital deployed, funding
-                  still required, recovery outlook, blocked cash, and
-                  commission settlement status.
+                  {agencyMode
+                    ? "Agency commission book — due after shipment, collected vs overdue, INR/USD settlement filter."
+                    : "Payment checkpoints, cash exposure, recoveries, and order-wise remittance flow."}
                 </p>
                 <div className="mt-4 grid grid-cols-3 gap-2">
                   <KpiTile
-                    label="Recoveries due"
-                    value={k(cash.expectedRecoveriesUsd)}
+                    label="Overdue"
+                    value={k(insights.overdueTotalUsd)}
+                    tone="danger"
                   />
                   <KpiTile
-                    label="Avg pay gap"
-                    value={`${cash.avgPayGapDays}d`}
+                    label="INR deals"
+                    value={insights.inrSettlementCount}
                   />
                   <KpiTile
-                    label="Commission open"
-                    value={k(cash.commissionChasingUsd)}
+                    label={agencyMode ? "Not yet due" : "Recoveries"}
+                    value={
+                      agencyMode
+                        ? k(insights.agency?.notYetDueUsd || 0)
+                        : k(cash.expectedRecoveriesUsd)
+                    }
                     tone="warning"
                   />
                 </div>
@@ -162,8 +222,8 @@ export default function CommandCenterHubPage() {
                   <ArrowRight className="h-4 w-4 text-teal-700 opacity-0 transition group-hover:opacity-100" />
                 </div>
                 <p className="mt-1 text-sm text-zinc-600">
-                  Sourcing execution — daily brief, risk radar, work queue,
-                  pipeline by stage, and shipment posture across the book.
+                  Sourcing execution — risk, work queue, pipeline by stage, and
+                  shipment posture across the mailbox book.
                 </p>
                 <div className="mt-4 grid grid-cols-3 gap-2">
                   <KpiTile
@@ -189,8 +249,8 @@ export default function CommandCenterHubPage() {
       </div>
 
       <p className="mt-6 text-xs text-zinc-500">
-        Command Center reads the shared mailbox book. Open Mailbox book for
-        ingest progress and LLM cost.
+        Visibility layer over the Outlook mailbox ingest. Open Mailbox book for
+        ingest progress. Hard-refresh after deploy so schedules recompute.
       </p>
     </div>
   );

@@ -169,7 +169,9 @@ def _health(conn: pg8000.native.Connection) -> dict:
 
 def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
     stage = (payload.get("stage") or "").strip()
-    limit = min(int(payload.get("limit") or 500), 500)
+    # Page size capped for Lambda response size; callers should paginate via offset.
+    limit = min(max(int(payload.get("limit") or 400), 1), 500)
+    offset = max(int(payload.get("offset") or 0), 0)
     if stage and not IDENTIFIER_RE.match(stage):
         return _err("invalid stage")
     # list_deals omits evidence_json (can be multi-MB) — fetch via get_evidence.
@@ -185,10 +187,11 @@ def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
             FROM {SCHEMA}.processed_deals
             WHERE primary_stage = :stage
             ORDER BY date_end DESC NULLS LAST
-            LIMIT :limit
+            LIMIT :limit OFFSET :offset
             """,
             stage=stage,
             limit=limit,
+            offset=offset,
         )
     else:
         rows = conn.run(
@@ -201,9 +204,10 @@ def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
                    (evidence_json IS NOT NULL) AS has_evidence
             FROM {SCHEMA}.processed_deals
             ORDER BY date_end DESC NULLS LAST
-            LIMIT :limit
+            LIMIT :limit OFFSET :offset
             """,
             limit=limit,
+            offset=offset,
         )
     cols = [
         "id",

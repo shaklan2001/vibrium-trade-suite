@@ -142,7 +142,7 @@ export function CopilotPanel({
   );
   const deals = useTradeStore((s) => s.deals);
   const routing = useTradeStore((s) => s.routing);
-  const botId = routing.ops_copilot || "VB00000323";
+  const botId = routing.ops_copilot || "VB00000001";
   const [contactId] = useState(() => `trade-${uuid()}`);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<

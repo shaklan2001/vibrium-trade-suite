@@ -44,7 +44,7 @@ Production app: https://vibrium-trade-suite.vercel.app
 - AA00000055 ops_risk_scanner
 - AA00000056 ops_priority_ranker
 - AA00000057 ops_daily_brief
-- VB00000323 ops_copilot (you)
+- VB00000001 ops_copilot (you)
 
 Workers return structured JSON under \`result\` (not \`output\`). The app uses \`getExecutionResult\`.
 

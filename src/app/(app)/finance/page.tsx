@@ -54,6 +54,10 @@ import {
   extractFxFromDeal,
   type DealFxRate,
 } from "@/lib/trade/fxFromEvidence";
+import { buildAgencyCommissionBook } from "@/lib/trade/commissionSettlement";
+import { resolveCommissionPaymentCurrency } from "@/lib/trade/commissionCurrency";
+import { buildBookInsights } from "@/lib/trade/bookInsights";
+import { BookInsightsStrip } from "@/components/ops/book-insights-strip";
 
 const TEAL = "#0f766e";
 const AMBER = "#d97706";
@@ -62,6 +66,7 @@ const SKY = "#0284c7";
 const EMERALD = "#059669";
 const ZINC = "#3f3f46";
 
+/** Format commission amounts. INR filter uses deal/book FX — not a book-wide convert of all deals. */
 function k(n: number, rate = USD_TO_INR) {
   const currency = getDisplayCurrency();
   if (currency === "INR") {
@@ -84,6 +89,9 @@ export default function FinanceDashboardPage() {
   const [drill, setDrill] = useState<DrillPayload | null>(null);
   const [dealFocus, setDealFocus] = useState<DealMonthFocus | null>(null);
   const [fxByDeal, setFxByDeal] = useState<Record<string, DealFxRate>>({});
+  const [marketFxByDeal, setMarketFxByDeal] = useState<
+    Record<string, DealFxRate>
+  >({});
 
   useEffect(() => {
     setHydrated(true);
@@ -92,7 +100,8 @@ export default function FinanceDashboardPage() {
     if (!hydrated) return;
     void hydrateMailboxBook();
   }, [hydrated]);
-  useTradeStore((s) => s.displayCurrency);
+  const commissionCurrencyFilter = useTradeStore((s) => s.displayCurrency);
+  const inrCommissionView = commissionCurrencyFilter === "INR";
 
   // Persist default 5% for any Agency buyer missing a saved rate.
   useEffect(() => {
@@ -108,24 +117,36 @@ export default function FinanceDashboardPage() {
     () => buildPaymentScheduleReport(deals, { agencyMode, rates }),
     [deals, agencyMode, rates],
   );
+  const agencyBook = useMemo(
+    () => (agencyMode ? buildAgencyCommissionBook(deals, rates) : null),
+    [agencyMode, deals, rates],
+  );
+  const insights = useMemo(
+    () => buildBookInsights(deals, rates),
+    [deals, rates],
+  );
 
-  // Resolve FX: email first, then internet historical fallback (Agency INR view).
+  // Agreed FX from email + market FX for comparison (INR commission deals).
   useEffect(() => {
-    if (!agencyMode || !deals.length) return;
+    if (!deals.length) return;
     let cancelled = false;
     async function resolve() {
-      const next: Record<string, DealFxRate> = {};
-      const needNet: { id: string; date: string }[] = [];
+      const agreed: Record<string, DealFxRate> = {};
+      const market: Record<string, DealFxRate> = {};
+      const needMarket: { id: string; date: string }[] = [];
+
       for (const d of deals) {
+        const isInr =
+          resolveCommissionPaymentCurrency(d) === "INR" || inrCommissionView;
+        if (!isInr && !agencyMode) continue;
+
         const fromMail = extractFxFromDeal(d);
-        if (fromMail) {
-          next[d.id] = fromMail;
-        } else {
-          needNet.push({ id: d.id, date: dealFxAsOfDate(d) });
-        }
+        if (fromMail) agreed[d.id] = fromMail;
+        needMarket.push({ id: d.id, date: dealFxAsOfDate(d) });
       }
+
       await Promise.all(
-        needNet.slice(0, 40).map(async ({ id, date }) => {
+        needMarket.slice(0, 60).map(async ({ id, date }) => {
           try {
             const res = await fetch(
               `/api/fx/usd-inr?date=${encodeURIComponent(date)}`,
@@ -137,53 +158,93 @@ export default function FinanceDashboardPage() {
               warning?: string;
             };
             if (res.ok && body.rate) {
-              next[id] = {
+              market[id] = {
                 rate: body.rate,
                 source: "internet",
                 asOfDate: body.date || date,
                 excerpt: body.warning,
               };
-            } else {
-              next[id] = {
+              if (!agreed[id]) {
+                agreed[id] = {
+                  rate: body.rate,
+                  source: "internet",
+                  asOfDate: body.date || date,
+                  excerpt: body.warning,
+                };
+              }
+            } else if (!agreed[id]) {
+              agreed[id] = {
                 rate: USD_TO_INR,
                 source: "default",
                 asOfDate: date,
               };
             }
           } catch {
-            next[id] = {
-              rate: USD_TO_INR,
-              source: "default",
-              asOfDate: date,
-            };
+            if (!agreed[id]) {
+              agreed[id] = {
+                rate: USD_TO_INR,
+                source: "default",
+                asOfDate: date,
+              };
+            }
           }
         }),
       );
-      if (!cancelled) setFxByDeal(next);
+      if (!cancelled) {
+        setFxByDeal(agreed);
+        setMarketFxByDeal(market);
+      }
     }
     void resolve();
     return () => {
       cancelled = true;
     };
-  }, [agencyMode, deals]);
+  }, [agencyMode, deals, inrCommissionView]);
 
   const bookRate = useMemo(() => {
-    const vals = Object.values(fxByDeal).map((f) => f.rate);
+    const emailRates = Object.values(fxByDeal)
+      .filter((f) => f.source === "email")
+      .map((f) => f.rate);
+    const vals = emailRates.length
+      ? emailRates
+      : Object.values(fxByDeal).map((f) => f.rate);
     if (!vals.length) return USD_TO_INR;
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   }, [fxByDeal]);
 
-  const fxWarningCount = useMemo(
-    () =>
-      Object.values(fxByDeal).filter(
-        (f) => f.source === "internet" || f.source === "default",
-      ).length,
-    [fxByDeal],
-  );
   const fxEmailCount = useMemo(
     () => Object.values(fxByDeal).filter((f) => f.source === "email").length,
     [fxByDeal],
   );
+
+  const fxCompareRows = useMemo(() => {
+    return deals
+      .filter((d) => resolveCommissionPaymentCurrency(d) === "INR")
+      .map((d) => {
+        const agreed = fxByDeal[d.id];
+        const market = marketFxByDeal[d.id];
+        const agreedRate = agreed?.source === "email" ? agreed.rate : undefined;
+        const marketRate = market?.rate;
+        const deltaPct =
+          agreedRate && marketRate
+            ? Math.round(((agreedRate - marketRate) / marketRate) * 1000) / 10
+            : undefined;
+        return {
+          dealId: d.id,
+          dealCode: d.code,
+          title: d.title,
+          agreedRate,
+          marketRate,
+          deltaPct,
+          excerpt: agreed?.excerpt,
+          costly:
+            deltaPct != null ? deltaPct > 0.5 : false /* agreed > market */,
+          cheaper: deltaPct != null ? deltaPct < -0.5 : false,
+        };
+      })
+      .filter((r) => r.agreedRate != null || r.marketRate != null)
+      .slice(0, 24);
+  }, [deals, fxByDeal, marketFxByDeal]);
 
   const rollingData = cash.rolling.map((r) => ({
     label: `${r.horizonDays}d`,
@@ -197,44 +258,31 @@ export default function FinanceDashboardPage() {
     deals: b.deals,
   }));
 
-  // Agency CXO book: one definition of received/outstanding from payment checkpoints
-  // (buyer remittance × commission %). Do not mix with deal.commission.complete flags.
-  const agencyCollectedUsd = pay.buyerReceivedUsd;
-  const agencyOutstandingUsd = pay.buyerUpcomingUsd + pay.buyerOverdueUsd;
-  const agencyOverdueUsd = pay.buyerOverdueUsd;
-  const agencyBookUsd =
-    cash.agencyCommissionBookUsd ||
-    agencyCollectedUsd + agencyOutstandingUsd;
-  const agencyCollectionPct =
-    agencyBookUsd > 0
-      ? Math.round((agencyCollectedUsd / agencyBookUsd) * 1000) / 10
-      : 0;
+  // Agency CXO book: commission becomes due when shipment is done (last lifecycle step).
+  const agencyCollectedUsd = agencyBook?.collectedUsd || 0;
+  const agencyOutstandingUsd = agencyBook?.outstandingUsd || 0;
+  const agencyOverdueUsd = agencyBook?.overdueUsd || 0;
+  const agencyBookUsd = agencyBook?.bookUsd || 0;
+  const agencyNotYetDueUsd = agencyBook?.notYetDueUsd || 0;
+  const agencyCollectionPct = agencyBook?.collectionPct || 0;
 
   const agencyStatusChart = [
     {
       label: "Collected",
       Amount: agencyCollectedUsd,
-      deals: pay.lines
-        .filter((l) => l.side === "buyer" && l.status === "received")
-        .map(paymentLineToDrill),
+      deals: agencyBook?.collectedLines || [],
     },
     {
-      label: "Upcoming",
-      Amount: pay.buyerUpcomingUsd,
-      deals: pay.lines
-        .filter(
-          (l) =>
-            l.side === "buyer" &&
-            (l.status === "upcoming" || l.status === "due"),
-        )
-        .map(paymentLineToDrill),
+      label: "Due",
+      Amount: Math.max(0, agencyOutstandingUsd - agencyOverdueUsd),
+      deals: (agencyBook?.outstandingLines || []).filter(
+        (l) => l.lifecycle === "due",
+      ),
     },
     {
       label: "Overdue",
       Amount: agencyOverdueUsd,
-      deals: pay.lines
-        .filter((l) => l.side === "buyer" && l.status === "overdue")
-        .map(paymentLineToDrill),
+      deals: agencyBook?.overdueLines || [],
     },
   ];
 
@@ -365,14 +413,18 @@ export default function FinanceDashboardPage() {
         }
       />
 
+      <BookInsightsStrip insights={insights} bookRate={bookRate} />
+
       {agencyMode ? (
         <div className="mb-4 space-y-2">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
             Agency commission book
           </div>
           <p className="text-[11px] text-zinc-500">
-            Collected / outstanding come from payment checkpoints × buyer
-            commission % — one definition only.
+            Commission is the last lifecycle step — it becomes{" "}
+            <span className="font-medium text-zinc-700">due once shipment is done</span>
+            . Use Comm. currency to filter deals by how commission is paid (USD vs
+            INR), not to convert the whole book.
           </p>
           <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
             <button
@@ -380,9 +432,10 @@ export default function FinanceDashboardPage() {
               className="text-left"
               onClick={() =>
                 openDrill(
-                  "Commission book",
-                  cash.commissionLines,
-                  "Deal commercial value × buyer commission %",
+                  "Commission book (shipped)",
+                  agencyBook?.lines.filter((l) => l.lifecycle !== "not_due") ||
+                    [],
+                  "Shipped deals × buyer commission %",
                 )
               }
             >
@@ -397,12 +450,10 @@ export default function FinanceDashboardPage() {
               type="button"
               className="text-left"
               onClick={() =>
-                openPaymentLines(
+                openDrill(
                   "Commission collected",
-                  pay.lines.filter(
-                    (l) => l.side === "buyer" && l.status === "received",
-                  ),
-                  "Buyer remittances confirmed × commission %",
+                  agencyBook?.collectedLines || [],
+                  "Commission marked received / complete",
                 )
               }
             >
@@ -417,16 +468,10 @@ export default function FinanceDashboardPage() {
               type="button"
               className="text-left"
               onClick={() =>
-                openPaymentLines(
+                openDrill(
                   "Commission outstanding",
-                  pay.lines.filter(
-                    (l) =>
-                      l.side === "buyer" &&
-                      (l.status === "upcoming" ||
-                        l.status === "due" ||
-                        l.status === "overdue"),
-                  ),
-                  "Upcoming + overdue buyer installments × commission %",
+                  agencyBook?.outstandingLines || [],
+                  "Shipped · commission not yet received",
                 )
               }
             >
@@ -441,12 +486,10 @@ export default function FinanceDashboardPage() {
               type="button"
               className="text-left"
               onClick={() =>
-                openPaymentLines(
+                openDrill(
                   "Commission overdue",
-                  pay.lines.filter(
-                    (l) => l.side === "buyer" && l.status === "overdue",
-                  ),
-                  "Past-due buyer installments × commission %",
+                  agencyBook?.overdueLines || [],
+                  "Shipped · unpaid beyond typical post-shipment window",
                 )
               }
             >
@@ -466,15 +509,25 @@ export default function FinanceDashboardPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
             <span>
+              Not yet due (pre-shipment): {k(agencyNotYetDueUsd, bookRate)}
+            </span>
+            <span>
               Underlying trade size:{" "}
-              {k(cash.agencyCommercialFootnoteUsd || 0, bookRate)}
+              {k(
+                agencyBook?.commercialFootnoteUsd ||
+                  cash.agencyCommercialFootnoteUsd ||
+                  0,
+                bookRate,
+              )}
             </span>
             {fxEmailCount > 0 ? (
-              <Badge tone="success">FX from email · {fxEmailCount}</Badge>
+              <Badge tone="success">
+                Agreed FX from email · {fxEmailCount}
+              </Badge>
             ) : null}
-            {fxWarningCount > 0 ? (
-              <Badge tone="warning">
-                Internet FX · not from email · {fxWarningCount}
+            {commissionCurrencyFilter !== "all" ? (
+              <Badge tone="info">
+                Filtered · commission in {commissionCurrencyFilter}
               </Badge>
             ) : null}
             <Link
@@ -491,6 +544,11 @@ export default function FinanceDashboardPage() {
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
             Payment terms · checkpoints
           </div>
+          <p className="mb-2 text-[11px] text-zinc-500">
+            Installments inferred from PO/PI when present; outstanding payment
+            threads use a single invoice line. Comm. currency filters by
+            settlement currency (not a book-wide FX convert).
+          </p>
           <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-3 xl:grid-cols-6">
             <button
               type="button"
@@ -918,79 +976,174 @@ export default function FinanceDashboardPage() {
       ) : null}
 
       {agencyMode ? (
-        <div className="mb-4 grid gap-3 lg:grid-cols-2">
-          <Card className="p-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Collected · upcoming · overdue
-            </div>
-            <p className="mb-2 text-[11px] text-zinc-500">
-              Same checkpoint definition as the KPI strip — no second received
-              number
-            </p>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={agencyStatusChart}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-                  <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                  <YAxis
-                    tickFormatter={(v) => k(Number(v), bookRate)}
-                    tick={{ fontSize: 10 }}
-                    width={48}
-                  />
-                  <Tooltip
-                    formatter={(v: number) =>
-                      formatMoneyWithRate(v, getDisplayCurrency(), bookRate)
-                    }
-                  />
-                  <Bar
-                    dataKey="Amount"
-                    radius={[4, 4, 0, 0]}
-                    cursor="pointer"
-                    onClick={(_d, index) => {
-                      const row = agencyStatusChart[index];
-                      if (row)
-                        openDrill(`Commission · ${row.label}`, row.deals);
-                    }}
-                  >
-                    <Cell fill={EMERALD} />
-                    <Cell fill={SKY} />
-                    <Cell fill={RED} />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </Card>
-          <Card className="p-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Book health
-            </div>
-            <ul className="space-y-3 px-1 py-2 text-sm text-zinc-700">
-              <li className="flex items-baseline justify-between gap-3">
-                <span className="text-zinc-500">Commission book</span>
-                <span className="font-semibold tabular-nums">
-                  {k(agencyBookUsd, bookRate)}
-                </span>
-              </li>
-              <li className="flex items-baseline justify-between gap-3">
-                <span className="text-zinc-500">Collected</span>
-                <span className="font-semibold tabular-nums text-emerald-700">
-                  {k(agencyCollectedUsd, bookRate)} · {agencyCollectionPct}%
-                </span>
-              </li>
-              <li className="flex items-baseline justify-between gap-3">
-                <span className="text-zinc-500">Still to collect</span>
-                <span className="font-semibold tabular-nums text-amber-700">
-                  {k(agencyOutstandingUsd, bookRate)}
-                </span>
-              </li>
-              <li className="flex items-baseline justify-between gap-3">
-                <span className="text-zinc-500">Overdue — chase now</span>
-                <span className="font-semibold tabular-nums text-red-700">
-                  {k(agencyOverdueUsd, bookRate)}
-                </span>
-              </li>
-            </ul>
-          </Card>
+        <div className="mb-4 space-y-3">
+          <div className="grid gap-3 lg:grid-cols-2">
+            <Card className="p-3">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                Collected · due · overdue
+              </div>
+              <p className="mb-2 text-[11px] text-zinc-500">
+                Post-shipment commission only — same definition as the KPI strip
+              </p>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={agencyStatusChart}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
+                    <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                    <YAxis
+                      tickFormatter={(v) => k(Number(v), bookRate)}
+                      tick={{ fontSize: 10 }}
+                      width={48}
+                    />
+                    <Tooltip
+                      formatter={(v: number) =>
+                        formatMoneyWithRate(
+                          v,
+                          getDisplayCurrency() === "INR" ? "INR" : "USD",
+                          bookRate,
+                        )
+                      }
+                    />
+                    <Bar
+                      dataKey="Amount"
+                      radius={[4, 4, 0, 0]}
+                      cursor="pointer"
+                      onClick={(_d, index) => {
+                        const row = agencyStatusChart[index];
+                        if (row)
+                          openDrill(`Commission · ${row.label}`, row.deals);
+                      }}
+                    >
+                      <Cell fill={EMERALD} />
+                      <Cell fill={SKY} />
+                      <Cell fill={RED} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+            <Card className="p-3">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                Book health
+              </div>
+              <ul className="space-y-3 px-1 py-2 text-sm text-zinc-700">
+                <li className="flex items-baseline justify-between gap-3">
+                  <span className="text-zinc-500">
+                    Commission book (shipped)
+                  </span>
+                  <span className="font-semibold tabular-nums">
+                    {k(agencyBookUsd, bookRate)}
+                  </span>
+                </li>
+                <li className="flex items-baseline justify-between gap-3">
+                  <span className="text-zinc-500">Collected</span>
+                  <span className="font-semibold tabular-nums text-emerald-700">
+                    {k(agencyCollectedUsd, bookRate)} · {agencyCollectionPct}%
+                  </span>
+                </li>
+                <li className="flex items-baseline justify-between gap-3">
+                  <span className="text-zinc-500">Still to collect</span>
+                  <span className="font-semibold tabular-nums text-amber-700">
+                    {k(agencyOutstandingUsd, bookRate)}
+                  </span>
+                </li>
+                <li className="flex items-baseline justify-between gap-3">
+                  <span className="text-zinc-500">Overdue — chase now</span>
+                  <span className="font-semibold tabular-nums text-red-700">
+                    {k(agencyOverdueUsd, bookRate)}
+                  </span>
+                </li>
+                <li className="flex items-baseline justify-between gap-3">
+                  <span className="text-zinc-500">Not yet due</span>
+                  <span className="font-semibold tabular-nums text-zinc-500">
+                    {k(agencyNotYetDueUsd, bookRate)}
+                  </span>
+                </li>
+              </ul>
+            </Card>
+          </div>
+
+          {fxCompareRows.length > 0 ? (
+            <Card className="p-3">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                Agreed FX vs market (INR commission deals)
+              </div>
+              <p className="mb-3 text-[11px] text-zinc-500">
+                Agreed USD→INR from email vs internet market rate on the deal
+                date. Positive delta = agreed rate higher than market (costlier
+                INR per USD).
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-200 text-[10px] uppercase tracking-wider text-zinc-500">
+                      <th className="py-2 pr-3 font-semibold">Deal</th>
+                      <th className="py-2 pr-3 font-semibold">Agreed</th>
+                      <th className="py-2 pr-3 font-semibold">Market</th>
+                      <th className="py-2 pr-3 font-semibold">Δ vs market</th>
+                      <th className="py-2 font-semibold">Mail excerpt</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fxCompareRows.map((row) => (
+                      <tr
+                        key={row.dealId}
+                        className="border-b border-zinc-100 align-top"
+                      >
+                        <td className="py-2 pr-3">
+                          <Link
+                            href={`/deals/${row.dealId}`}
+                            className="font-medium text-teal-800 hover:underline"
+                          >
+                            {row.dealCode}
+                          </Link>
+                          <div className="text-[11px] text-zinc-500 line-clamp-1">
+                            {row.title}
+                          </div>
+                        </td>
+                        <td className="py-2 pr-3 tabular-nums">
+                          {row.agreedRate != null
+                            ? row.agreedRate.toFixed(2)
+                            : "—"}
+                        </td>
+                        <td className="py-2 pr-3 tabular-nums text-zinc-600">
+                          {row.marketRate != null
+                            ? row.marketRate.toFixed(2)
+                            : "—"}
+                        </td>
+                        <td className="py-2 pr-3">
+                          {row.deltaPct == null ? (
+                            <span className="text-zinc-400">—</span>
+                          ) : (
+                            <span
+                              className={
+                                row.costly
+                                  ? "font-semibold text-red-700"
+                                  : row.cheaper
+                                    ? "font-semibold text-emerald-700"
+                                    : "tabular-nums text-zinc-700"
+                              }
+                            >
+                              {row.deltaPct > 0 ? "+" : ""}
+                              {row.deltaPct}%
+                              {row.costly
+                                ? " · costly"
+                                : row.cheaper
+                                  ? " · better"
+                                  : ""}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 text-[11px] text-zinc-500 line-clamp-2 max-w-xs">
+                          {row.excerpt || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          ) : null}
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">

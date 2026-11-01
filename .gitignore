@@ -62,13 +62,56 @@ agent-transcripts/
 # Turbo
 .turbo
 
-# Local PST extraction (mail bodies + attachments are PII)
+# ---------------------------------------------------------------------------
+# Local mailbox ingest — never publish to git / Vercel (PII + multi-GB)
+# ---------------------------------------------------------------------------
 /data/
+**/pst_extract/
+**/new_psts/
+**/pst_files/
+docs/pst_files/
+
+# Outlook archives and extract dumps
+*.pst
+*.ost
+*.mbox
+*.eml
+*.msg
+
+# Ingest / agent run artefacts (keep small app JSON like package.json tracked)
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
+!scripts/agent-ids.json
+!scripts/worker-specs.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!vercel.json
+!skills-lock.json
+!public/**/*.json
+
+# Large local archives / takeouts
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+Archive.zip
+
+# Python venv and caches for PST tooling
 scripts/pst-extract/.venv/
-scripts/pst-extract/__pycache__/
+scripts/pst-extract/**/__pycache__/
 **/__pycache__/
 *.pyc
 .neon
+
+# Local scratch /tmp dumps sometimes copied into the repo
+/tmp/
+**/deals.json
+**/deals-dump*.json
 
 # Packaged Lambda zip (rebuild via infra/*/deploy.sh)
 infra/**/function.zip

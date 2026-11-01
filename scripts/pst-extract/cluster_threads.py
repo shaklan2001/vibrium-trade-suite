@@ -64,6 +64,8 @@ BUYER_DOMAINS = {
     "hut.com.mx": "HUT Internacional",
     "neaterpets.com": "Neater",
     "shetler.com": "Shetler",
+    "waldos.com": "Waldos",
+    "grupovizion.com.mx": "Grupo Vizion",
 }
 
 FACTORY_DOMAINS = {
@@ -71,6 +73,14 @@ FACTORY_DOMAINS = {
     "swastikimpex.org": "Swastik",
     "aditiartswares@yahoo.co.in": "Aditi Arts",
     "allana.com": "Allana",
+    "rajaryanexport.com": "Raj Aryan",
+    "ruparelindia.com": "Ruparel",
+    "centuryfilaments.com": "New Century",
+    "riexports.com": "RI Exports",
+    "snbenterprises.com": "SNB",
+    "ykindustries.co.in": "YK Industries",
+    "protectools.cn": "Protectools",
+    "agrofoods.net": "Agro Foods",
 }
 
 FORWARDER_DOMAINS = {
@@ -79,6 +89,13 @@ FORWARDER_DOMAINS = {
     "mentor-freight.com": "Mentor Freight",
     "wacbangladesh.com": "WAC Logistics",
     "c-air.com": "C-Air",
+    "expeditors.com": "Expeditors",
+    "britindia.com": "Brit India",
+    "cardinalgl.com": "Cardinal",
+    "deigratialogistics.com": "Dei Gratia",
+    "avmcargo.com": "AVM Cargo",
+    "in-asgroup.com": "AS Group",
+    "pfmlindia.com": "PFML",
 }
 
 # Global Praise = trader principal (not SNSPL agency commission book)

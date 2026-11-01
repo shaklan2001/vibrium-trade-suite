@@ -1,13 +1,45 @@
+# Keep Vercel uploads to website/app code only — no mailbox extracts or PII.
+
 # Local PST extract and mail attachments (PII, multi-GB)
 /data
+**/pst_extract/
+**/new_psts/
+**/pst_files/
 /docs/**
 !/docs/samples/
 !/docs/samples/**
+
+# Outlook / mail archives
+*.pst
+*.ost
+*.mbox
+*.eml
+*.msg
+
+# Ingest dumps and local DBs
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+Archive.zip
 
 # Python venv and caches
 scripts/pst-extract/.venv
 **/__pycache__
 **/*.pyc
+.neon
+
+# Local tooling / audits not needed at runtime
+scripts/audit-*.ts
+scripts/pst-extract/
+infra/**/function.zip
+/tmp/
 
 # Env and editor
 .env*
@@ -15,3 +47,4 @@ scripts/pst-extract/.venv
 .cursor
 agent-transcripts
 .DS_Store
+.vercel

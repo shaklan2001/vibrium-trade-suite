@@ -18,6 +18,7 @@ import {
   agencyCommissionForDeal,
   toAgencyShareUsd,
 } from "./agencyCommission";
+import { commissionLifecycleStatus } from "./commissionSettlement";
 
 export type { CashBlockLocation };
 
@@ -358,38 +359,61 @@ export function buildCashExposureReport(
       );
     }
 
-    // Commission settlement lines — prefer configured overlay in Agency mode
+    // Commission settlement lines — Agency: due only after shipment (last lifecycle step).
+    // Trader/All: only count when a real commission checklist/invoice exists (no phantom 5%).
     const overlay = agencyMode
       ? agencyCommissionForDeal(d, rates)
       : null;
     const comm = agencyMode
       ? overlay?.commissionUsd || 0
-      : c.commissionInvoiceUsd || 0;
+      : d.commission || c.commissionStatus
+        ? c.commissionInvoiceUsd || 0
+        : 0;
     if (comm > 0) {
-      const status = c.commissionStatus;
-      const pctNote =
-        overlay?.pct != null ? ` · ${overlay.pct}%` : "";
-      if (status === "received" || (agencyMode && d.commission?.complete)) {
-        commissionReceivedUsd += comm;
-        commissionLines.push(
-          drill(d, comm, `Commission received${pctNote}`),
-        );
-      } else if (status === "chasing" || (agencyMode && d.stage === "closed")) {
-        commissionChasingUsd += comm;
-        commissionLines.push(
-          drill(d, comm, `Chasing commission${pctNote}`),
-        );
+      const pctNote = overlay?.pct != null ? ` · ${overlay.pct}%` : "";
+      if (agencyMode) {
+        const life = commissionLifecycleStatus(d);
+        if (life === "received") {
+          commissionReceivedUsd += comm;
+          commissionLines.push(
+            drill(d, comm, `Commission received${pctNote}`),
+          );
+        } else if (life === "overdue") {
+          commissionChasingUsd += comm;
+          commissionLines.push(
+            drill(d, comm, `Commission overdue · post-shipment${pctNote}`),
+          );
+        } else if (life === "due") {
+          commissionAwaitingUsd += comm;
+          commissionLines.push(
+            drill(d, comm, `Commission due · shipment done${pctNote}`),
+          );
+        }
+        // not_due: omit from awaiting/received/chasing totals
       } else {
-        commissionAwaitingUsd += comm;
-        commissionLines.push(
-          drill(
-            d,
-            comm,
-            status === "awaiting_fx"
-              ? `Awaiting FX${pctNote}`
-              : `Commission due${pctNote}`,
-          ),
-        );
+        const status = c.commissionStatus;
+        if (status === "received") {
+          commissionReceivedUsd += comm;
+          commissionLines.push(
+            drill(d, comm, `Commission received${pctNote}`),
+          );
+        } else if (status === "chasing") {
+          commissionChasingUsd += comm;
+          commissionLines.push(
+            drill(d, comm, `Chasing commission${pctNote}`),
+          );
+        } else {
+          commissionAwaitingUsd += comm;
+          commissionLines.push(
+            drill(
+              d,
+              comm,
+              status === "awaiting_fx"
+                ? `Awaiting FX${pctNote}`
+                : `Commission due${pctNote}`,
+            ),
+          );
+        }
       }
     } else if (agencyMode && overlay && !overlay.configured) {
       commissionLines.push(
