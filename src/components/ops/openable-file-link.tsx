@@ -16,9 +16,10 @@ export function OpenableFileLink({
   url?: string;
   className?: string;
 }) {
+  // Prefer digest-based ingest open (re-signs S3) over stale stored URLs.
   const href =
-    url ||
     ingestFileOpenUrl({ path: samplePath, name, url }) ||
+    url ||
     (samplePath && !digestFromIngestPath(samplePath)
       ? sampleOpenUrl(samplePath)
       : undefined);

@@ -481,10 +481,19 @@ function resolveAttachmentUrl(
   primaryUrl?: string,
   primaryName?: string,
 ): string | undefined {
+  // Prefer digest → /api/ingest-files (fresh sign). Stored presigns expire ~7d.
+  const viaDigest = ingestFileOpenUrl({
+    path: a.path,
+    name: a.name,
+    url: a.url,
+  });
+  if (viaDigest) return viaDigest;
   if (a.url) return a.url;
   const isPrimary = Boolean(primaryName) && a.name === primaryName;
-  if (isPrimary && primaryUrl) return primaryUrl;
-  return ingestFileOpenUrl({ path: a.path, name: a.name, url: a.url });
+  if (isPrimary && primaryUrl) {
+    return ingestFileOpenUrl({ name: primaryName, url: primaryUrl }) || primaryUrl;
+  }
+  return undefined;
 }
 
 function buildSources(

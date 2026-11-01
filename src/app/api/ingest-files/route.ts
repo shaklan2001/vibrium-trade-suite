@@ -44,7 +44,23 @@ export async function GET(request: NextRequest) {
         MaxKeys: 20,
       }),
     );
-    const objects = (listed.Contents || []).filter((o) => o.Key && !o.Key.endsWith("/"));
+    let objects = (listed.Contents || []).filter(
+      (o) => o.Key && !o.Key.endsWith("/"),
+    );
+    if (!objects.length) {
+      // Fallback: object may live as trade/pst-ingest/{digest}.ext (no folder).
+      const flat = await s3().send(
+        new ListObjectsV2Command({
+          Bucket: BUCKET,
+          Prefix: `${PREFIX}/${digest}`,
+          MaxKeys: 20,
+        }),
+      );
+      objects = (flat.Contents || []).filter(
+        (o) => o.Key && !o.Key.endsWith("/"),
+      );
+    }
+
     if (!objects.length) {
       // Prefer a readable page when the link is opened in a browser tab.
       const accept = request.headers.get("accept") || "";
@@ -53,7 +69,7 @@ export async function GET(request: NextRequest) {
           `<!doctype html><meta charset="utf-8"/><title>Attachment missing</title>
            <body style="font:14px/1.45 system-ui;padding:2rem;max-width:40rem">
            <h1>Attachment not in cloud storage</h1>
-           <p>This file was referenced in a mailbox deal but has not been uploaded to the ingest bucket yet.</p>
+           <p>This file was referenced in a mailbox deal but is not in the ingest bucket yet. If you just refreshed the book, wait for attachment sync to finish, then try again.</p>
            <p><code>${digest}</code></p>
            </body>`,
           {

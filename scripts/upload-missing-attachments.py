@@ -1,32 +1,26 @@
 #!/usr/bin/env python3
-"""Upload PST attachment digests referenced by processed deals to S3 ingest.
+"""Upload PST attachment digests to S3 ingest (trade/pst-ingest/{sha256}/…).
 
-Skips digests already in upload-cache.json. Updates the cache as it goes.
+Scans all data/pst_extract/*/attachments trees. Skips digests already in
+upload-cache.json or already present in S3. Updates the cache as it goes.
 
-  AWS_BIN=/tmp/awscli-venv/bin/aws \\
-    scripts/pst-extract/.venv/bin/python scripts/upload-missing-attachments.py
+  scripts/pst-extract/.venv/bin/python scripts/upload-missing-attachments.py
+  scripts/pst-extract/.venv/bin/python scripts/upload-missing-attachments.py --only f22be3a4…
 """
 from __future__ import annotations
 
+import argparse
 import json
 import mimetypes
 import os
-import re
-import sqlite3
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEVANT = ROOT / "data/pst_extract/relevant"
-DEALS = RELEVANT / "deals.jsonl"
-SQLITE = RELEVANT / "processed.db"
 CACHE_PATH = RELEVANT / "upload-cache.json"
-ATT_ROOTS = [
-    ROOT / "data/pst_extract/outlook_sep_2025_2026_rakesh/attachments",
-    ROOT / "data/pst_extract/kalpana_at_snspl_in_outlook/attachments",
-]
+ATT_ROOTS = sorted(ROOT.glob("data/pst_extract/*/attachments"))
 
-DIGEST_RE = re.compile(r"(?:^|/)([a-f0-9]{64})(?:\.[a-z0-9]+)?$", re.I)
 BUCKET = os.environ.get("AWS_S3_BUCKET", "conversation-agents-artifacts")
 PREFIX = (os.environ.get("AWS_S3_PREFIX") or "trade/pst-ingest").strip("/")
 REGION = os.environ.get("AWS_REGION", "ap-south-1")
@@ -38,76 +32,116 @@ def safe_filename(name: str) -> str:
     return (cleaned[:120] or "document").lstrip(".")
 
 
+def digest_of(path: Path) -> str | None:
+    stem = path.stem
+    dig = stem[:64].lower()
+    if len(dig) == 64 and all(c in "0123456789abcdef" for c in dig):
+        return dig
+    return None
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--only",
+        nargs="*",
+        default=[],
+        help="Optional digest prefixes/full digests to upload first",
+    )
+    parser.add_argument("--limit", type=int, default=0, help="Max new uploads (0=all)")
+    parser.add_argument(
+        "--skip-head",
+        action="store_true",
+        help="Do not HEAD S3 before upload (faster, may overwrite)",
+    )
+    args = parser.parse_args()
+
     try:
         import boto3
+        from botocore.exceptions import ClientError
     except ImportError:
         print("boto3 required (use scripts/pst-extract/.venv)", file=sys.stderr)
         return 1
 
-    if not SQLITE.exists() or not DEALS.exists():
-        print("missing processed.db or deals.jsonl", file=sys.stderr)
+    if not ATT_ROOTS:
+        print("no attachment roots under data/pst_extract/*/attachments", file=sys.stderr)
         return 1
 
-    ids = {
-        r[0]
-        for r in sqlite3.connect(str(SQLITE)).execute("SELECT id FROM processed_deals")
-    }
+    RELEVANT.mkdir(parents=True, exist_ok=True)
     cache: dict[str, str] = {}
     if CACHE_PATH.exists():
         cache = json.loads(CACHE_PATH.read_text())
 
-    needed: dict[str, str] = {}
-    for line in DEALS.open(encoding="utf-8"):
-        if not line.strip():
-            continue
-        deal = json.loads(line)
-        if deal.get("id") not in ids:
-            continue
-        for msg in deal.get("messages") or []:
-            for att in msg.get("attachments") or []:
-                path = (
-                    att.get("path")
-                    or att.get("rel_path")
-                    or att.get("stored_path")
-                    or ""
-                )
-                m = DIGEST_RE.search(path)
-                if not m:
-                    continue
-                digest = m.group(1).lower()
-                if digest in cache:
-                    continue
-                if digest not in needed:
-                    needed[digest] = att.get("name") or Path(path).name or digest
+    # digest -> best local path
+    local: dict[str, Path] = {}
+    for root in ATT_ROOTS:
+        for f in root.rglob("*"):
+            if not f.is_file():
+                continue
+            dig = digest_of(f)
+            if not dig:
+                continue
+            prev = local.get(dig)
+            if prev is None or f.stat().st_size > prev.stat().st_size:
+                local[dig] = f
+
+    only = [o.lower() for o in (args.only or [])]
+    digests = sorted(local)
+    if only:
+        digests = [
+            d
+            for d in digests
+            if any(d.startswith(o) or o.startswith(d) or d == o for o in only)
+        ]
 
     client = boto3.client("s3", region_name=REGION)
     uploaded = 0
-    skipped_missing = 0
+    skipped_cached = 0
+    skipped_remote = 0
     errors = 0
     bytes_up = 0
 
-    items = sorted(needed.items())
-    print(f"to_upload={len(items)} already_cached={len(cache)} bucket={BUCKET}/{PREFIX}")
+    print(
+        f"local_digests={len(local)} candidates={len(digests)} "
+        f"cached={len(cache)} roots={[str(r.relative_to(ROOT)) for r in ATT_ROOTS]} "
+        f"bucket={BUCKET}/{PREFIX}"
+    )
 
-    for i, (digest, name) in enumerate(items, 1):
-        local = None
-        for root in ATT_ROOTS:
-            cands = list(root.glob(f"{digest[:2]}/{digest[2:4]}/{digest}.*"))
-            if cands:
-                local = cands[0]
-                break
-        if local is None:
-            skipped_missing += 1
+    for i, digest in enumerate(digests, 1):
+        if args.limit and uploaded >= args.limit:
+            break
+        local_path = local[digest]
+        if digest in cache and not only:
+            skipped_cached += 1
             continue
 
-        filename = safe_filename(name or local.name)
-        # Prefer local extension if name lacks one
-        if "." not in filename and local.suffix:
-            filename = safe_filename(filename + local.suffix)
+        key_prefix = f"{PREFIX}/{digest}/"
+        if not args.skip_head and not only:
+            try:
+                listed = client.list_objects_v2(
+                    Bucket=BUCKET, Prefix=key_prefix, MaxKeys=1
+                )
+                if listed.get("KeyCount"):
+                    key = listed["Contents"][0]["Key"]
+                    cache[digest] = f"https://{BUCKET}.s3.amazonaws.com/{key}"
+                    skipped_remote += 1
+                    if skipped_remote % 200 == 0:
+                        CACHE_PATH.write_text(json.dumps(cache, indent=0))
+                        print(f"  scanned remote-existing={skipped_remote}")
+                    continue
+            except ClientError as exc:
+                print(f"HEAD/LIST fail {digest[:12]} {exc}", file=sys.stderr)
+
+        filename = safe_filename(local_path.name)
+        if "." not in filename and local_path.suffix:
+            filename = safe_filename(filename + local_path.suffix)
+        # Prefer original extension from content-addressed filename
+        if local_path.suffix and not filename.lower().endswith(local_path.suffix.lower()):
+            filename = safe_filename(Path(filename).stem + local_path.suffix)
+
         key = f"{PREFIX}/{digest}/{filename}"
         ctype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        data = local.read_bytes()
+        data = local_path.read_bytes()
         try:
             client.put_object(
                 Bucket=BUCKET,
@@ -124,17 +158,19 @@ def main() -> int:
             print(f"FAIL {digest[:12]} {exc}", file=sys.stderr)
             continue
 
-        if uploaded % 25 == 0 or i == len(items):
+        if uploaded % 25 == 0 or (only and uploaded == len(digests)):
             CACHE_PATH.write_text(json.dumps(cache, indent=0))
             print(
-                f"  {uploaded}/{len(items)} uploaded "
-                f"({bytes_up/1e6:.1f} MB) missing_local={skipped_missing} errors={errors}"
+                f"  uploaded={uploaded} ({bytes_up/1e6:.1f} MB) "
+                f"cached_skip={skipped_cached} remote_skip={skipped_remote} "
+                f"errors={errors} progress={i}/{len(digests)}"
             )
 
     CACHE_PATH.write_text(json.dumps(cache, indent=0))
     print(
-        f"done uploaded={uploaded} missing_local={skipped_missing} "
-        f"errors={errors} cache={len(cache)} bytes={bytes_up}"
+        f"done uploaded={uploaded} cached_skip={skipped_cached} "
+        f"remote_skip={skipped_remote} errors={errors} "
+        f"cache={len(cache)} bytes={bytes_up}"
     )
     return 0 if errors == 0 else 2
 
