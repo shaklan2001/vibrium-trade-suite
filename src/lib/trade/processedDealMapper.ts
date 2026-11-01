@@ -45,6 +45,9 @@ export type ProcessedDealRow = {
   document?: string | null;
   document_name?: string | null;
   document_url?: string | null;
+  /** Party + mail header tokens for Deal Board search (no bodies). */
+  search_text?: string | null;
+  has_evidence?: boolean | null;
 };
 
 export type EvidenceMessage = {
@@ -436,6 +439,34 @@ function evidenceFrom(row: ProcessedDealRow): EvidencePayload {
   return {};
 }
 
+/** Party + mail header tokens for Deal Board / copilot search. */
+export function buildDealSearchText(
+  row: ProcessedDealRow,
+  evidence?: EvidencePayload,
+): string {
+  if (row.search_text && String(row.search_text).trim()) {
+    return String(row.search_text).slice(0, 12_000);
+  }
+  const ev = evidence || evidenceFrom(row);
+  const parts: string[] = [
+    row.subject || "",
+    row.summary || "",
+    JSON.stringify(row.parties_json || {}),
+    JSON.stringify(row.po_numbers || []),
+  ];
+  for (const m of ev.messages || []) {
+    parts.push(
+      m.from || "",
+      m.from_name || "",
+      joinAddrs(m.to) || "",
+      joinAddrs(m.cc) || "",
+      joinAddrs(m.bcc) || "",
+      m.subject || "",
+    );
+  }
+  return parts.filter(Boolean).join(" ").slice(0, 12_000);
+}
+
 function joinAddrs(value: string | string[] | undefined): string | undefined {
   if (!value) return undefined;
   if (Array.isArray(value)) {
@@ -714,6 +745,7 @@ export function mapProcessedDeal(
       .map((p) => String(p).trim())
       .filter(Boolean),
     mailboxSlot: slot || undefined,
+    searchText: buildDealSearchText(row, evidence),
     commercialModel,
     agentResult: Object.keys(result).length ? result : undefined,
     parties: parties(row, result, commercialModel),

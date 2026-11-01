@@ -4,8 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { v4 as uuid } from "uuid";
 import { Button, Card, CardHeader, Input } from "@/components/ui/primitives";
 import { MarkdownMessage } from "@/components/copilot/markdown-message";
-import { useTradeStore } from "@/lib/trade/store";
-import { buildAgentDealPack } from "@/lib/trade/agentDealPack";
 import { MessageSquare, X } from "lucide-react";
 
 function extractStreamPiece(payload: string): string {
@@ -45,7 +43,6 @@ async function readStreamText(res: Response, onChunk: (t: string) => void) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    // SSE events are separated by blank lines; keep incomplete trailing chunk
     const parts = buffer.split(/\r?\n/);
     buffer = parts.pop() ?? "";
     for (const line of parts) {
@@ -58,7 +55,6 @@ async function readStreamText(res: Response, onChunk: (t: string) => void) {
           onChunk(full);
         }
       } else if (!trimmed.startsWith(":") && !trimmed.startsWith("event:")) {
-        // Non-SSE fallback — preserve original line breaks via trailing \n
         full += `${trimmed}\n`;
         onChunk(full);
       }
@@ -79,109 +75,6 @@ async function readStreamText(res: Response, onChunk: (t: string) => void) {
   }
 }
 
-function buildDealContext(deal: NonNullable<ReturnType<typeof useTradeStore.getState>["deals"][0]>) {
-  const partyLine = deal.parties
-    .map((p) => `${p.role}:${p.company || p.name}${p.email ? `<${p.email}>` : ""}`)
-    .join("; ");
-  const mailPeople = [
-    ...new Set(
-      deal.sources
-        .flatMap((s) => [s.from, s.to, s.cc])
-        .filter(Boolean) as string[],
-    ),
-  ]
-    .slice(0, 12)
-    .join("; ");
-  return `
-
-[Current deal context — use these facts; do not invent]
-Id: ${deal.id}
-Code: ${deal.code}
-Title: ${deal.title}
-Stage: ${deal.stage}
-Commercial model: ${deal.commercialModel || "—"}
-Parties: ${partyLine || "—"}
-Mailbox / mail people: ${mailPeople || "—"}
-PO numbers: ${(deal.mailboxPoNumbers || []).join(", ") || "—"}
-Requirement: ${JSON.stringify(deal.requirement || {})}
-Quote factory: ${deal.quote?.factoryName || "—"} · SKUs: ${deal.quote?.skus.length || 0} · selected: ${deal.quote?.skus.filter((s) => s.selected).length || 0}
-Artwork: ${deal.artwork?.summary || "—"}
-Samples: ${deal.samples?.summary || "—"}
-PI: ${deal.pi?.docNumber || "—"} · PO: ${deal.po?.docNumber || "—"} · Discrepancy: ${deal.discrepancy?.summary || "—"}
-Packaging: ${deal.packaging?.summary || deal.upcMatch?.summary || "—"}
-Production: ${deal.production?.summary || "—"}
-Inspection: ${deal.inspection?.summary || "—"}
-Booking: ${deal.booking?.summary || "—"}
-CBM: ${deal.cbm?.summary || "—"}
-Docs pack: ${deal.docsPack?.summary || "—"}
-Payment: ${deal.payment?.summary || "—"}
-Commission: ${deal.commission?.summary || "—"}
-Documents: ${deal.documents.map((d) => d.name).join(", ") || "none"}
-`;
-}
-
-function buildCompanyPulseContext(deals: ReturnType<typeof useTradeStore.getState>["deals"]) {
-  if (!deals.length) {
-    return `
-
-[Company book]
-No mailbox deals loaded yet. Tell the user to wait for Refresh data / mailbox hydrate.
-`;
-  }
-  const pack = buildAgentDealPack(deals);
-  // Cap payload for chat limits; prefer overdue / high-urgency first.
-  const ranked = [...pack.deals].sort((a, b) => {
-    const ua = a.urgency === "critical" ? 0 : a.urgency === "high" ? 1 : 2;
-    const ub = b.urgency === "critical" ? 0 : b.urgency === "high" ? 1 : 2;
-    return ua - ub;
-  });
-  const slice = ranked.slice(0, 180);
-  const compact = {
-    asOf: pack.asOf,
-    dealCount: pack.deals.length,
-    includedInSnapshot: slice.length,
-    note:
-      slice.length < pack.deals.length
-        ? `Snapshot includes top ${slice.length} of ${pack.deals.length} by urgency; ask to filter by person/email for the rest.`
-        : undefined,
-    deals: slice.map((d) => {
-      const full = deals.find((x) => x.id === d.id);
-      const emails = [
-        ...new Set(
-          [
-            ...(full?.parties || []).map((p) => p.email).filter(Boolean),
-            ...(full?.sources || [])
-              .flatMap((s) => [s.from, s.to])
-              .filter(Boolean),
-          ].filter(Boolean) as string[],
-        ),
-      ].slice(0, 6);
-      return {
-        id: d.id,
-        code: d.code,
-        title: d.title,
-        stage: d.stage,
-        commercialModel: full?.commercialModel,
-        parties: (full?.parties || [])
-          .map((p) => `${p.role}:${p.company || p.name}`)
-          .slice(0, 4),
-        emails,
-        payment: d.payment?.status,
-        paymentDue: full?.payment?.dueDate,
-        outstanding: full?.payment?.amountUsd,
-        docsMissing: d.docsPack?.missing,
-        productionBlockers: d.production?.blockers,
-        urgency: d.urgency,
-      };
-    }),
-  };
-  return `
-
-[Company book — ${compact.dealCount} live mailbox deals. Answer only from this data.]
-${JSON.stringify(compact)}
-`;
-}
-
 export function CopilotPanel({
   compact = false,
   dealId,
@@ -189,12 +82,6 @@ export function CopilotPanel({
   compact?: boolean;
   dealId?: string;
 }) {
-  const deal = useTradeStore((s) =>
-    dealId ? s.deals.find((d) => d.id === dealId) : s.deals[0],
-  );
-  const deals = useTradeStore((s) => s.deals);
-  const routing = useTradeStore((s) => s.routing);
-  const botId = routing.ops_copilot || "VB00000001";
   const [contactId] = useState(() => `trade-${uuid()}`);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<
@@ -216,14 +103,11 @@ export function CopilotPanel({
     setBusy(true);
     setMessages((m) => [...m, { role: "user", content: text }]);
 
-    const context =
-      (deal ? buildDealContext(deal) : "") + buildCompanyPulseContext(deals);
-
     try {
       await fetch("/api/chat/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contactId, botId }),
+        body: JSON.stringify({ contactId }),
       }).catch(() => null);
 
       setMessages((m) => [...m, { role: "assistant", content: "" }]);
@@ -232,8 +116,8 @@ export function CopilotPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contactId,
-          botId,
-          message: text + context,
+          message: text,
+          focusDealId: dealId || undefined,
         }),
       });
       if (!res.ok) {
@@ -263,7 +147,7 @@ export function CopilotPanel({
     >
       <CardHeader
         title="Trade Copilot · Savvy"
-        description={`Live mailbox book (${botId}) — dashboards, deals, finance & ops`}
+        description="Ask about the live book — deals, payments, teammates, ops"
       />
       <div className="flex-1 space-y-3 overflow-auto p-4">
         {messages.length === 0 ? (

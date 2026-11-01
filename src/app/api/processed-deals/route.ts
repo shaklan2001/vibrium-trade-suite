@@ -3,7 +3,10 @@ import path from "path";
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import { invokeTradeSuiteRds, isRdsProxyEnabled } from "@/lib/rdsProxy";
-import type { ProcessedDealRow } from "@/lib/trade/processedDealMapper";
+import {
+  buildDealSearchText,
+  type ProcessedDealRow,
+} from "@/lib/trade/processedDealMapper";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,6 +33,7 @@ export async function GET(request: Request) {
   const offsetRaw = Number(searchParams.get("offset") || 0);
   const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 400, 1), 500);
   const offset = Math.max(Number.isFinite(offsetRaw) ? offsetRaw : 0, 0);
+  const q = (searchParams.get("q") || "").trim().slice(0, 120);
 
   // Preferred path for Aurora: VPC Lambda proxy (schema trade_suite only)
   if (isRdsProxyEnabled()) {
@@ -39,6 +43,7 @@ export async function GET(request: Request) {
         stage: stage || undefined,
         limit,
         offset,
+        q: q || undefined,
       });
       if (!res.success) {
         return NextResponse.json(
@@ -95,8 +100,29 @@ export async function GET(request: Request) {
 
   try {
     const sql = getSql();
-    const deals = stage
-      ? await sql`
+    const like = q ? `%${q.replace(/[%_\\]/g, "\\$&")}%` : null;
+    const rawDeals = stage
+      ? like
+        ? await sql`
+          SELECT
+            id, po_numbers, subject, primary_stage, slot, agent_id,
+            status, summary, confidence, date_start, date_end,
+            message_count, doc_count, parties_json, error, processed_at,
+            cost_usd, input_tokens, output_tokens, result_json,
+            commercial_model, evidence_json, document_name, document_url
+          FROM processed_deals
+          WHERE primary_stage = ${stage}
+            AND (
+              subject ILIKE ${like} ESCAPE '\\'
+              OR parties_json::text ILIKE ${like} ESCAPE '\\'
+              OR po_numbers::text ILIKE ${like} ESCAPE '\\'
+              OR coalesce(summary, '') ILIKE ${like} ESCAPE '\\'
+              OR evidence_json::text ILIKE ${like} ESCAPE '\\'
+            )
+          ORDER BY date_end DESC NULLS LAST
+          LIMIT ${limit} OFFSET ${offset}
+        `
+        : await sql`
           SELECT
             id, po_numbers, subject, primary_stage, slot, agent_id,
             status, summary, confidence, date_start, date_end,
@@ -108,7 +134,25 @@ export async function GET(request: Request) {
           ORDER BY date_end DESC NULLS LAST
           LIMIT ${limit} OFFSET ${offset}
         `
-      : await sql`
+      : like
+        ? await sql`
+          SELECT
+            id, po_numbers, subject, primary_stage, slot, agent_id,
+            status, summary, confidence, date_start, date_end,
+            message_count, doc_count, parties_json, error, processed_at,
+            cost_usd, input_tokens, output_tokens, result_json,
+            commercial_model, evidence_json, document_name, document_url
+          FROM processed_deals
+          WHERE
+            subject ILIKE ${like} ESCAPE '\\'
+            OR parties_json::text ILIKE ${like} ESCAPE '\\'
+            OR po_numbers::text ILIKE ${like} ESCAPE '\\'
+            OR coalesce(summary, '') ILIKE ${like} ESCAPE '\\'
+            OR evidence_json::text ILIKE ${like} ESCAPE '\\'
+          ORDER BY date_end DESC NULLS LAST
+          LIMIT ${limit} OFFSET ${offset}
+        `
+        : await sql`
           SELECT
             id, po_numbers, subject, primary_stage, slot, agent_id,
             status, summary, confidence, date_start, date_end,
@@ -119,6 +163,17 @@ export async function GET(request: Request) {
           ORDER BY date_end DESC NULLS LAST
           LIMIT ${limit} OFFSET ${offset}
         `;
+
+    // Strip bulky evidence from list payloads; keep search_text for Deal Board.
+    const deals = asRows<ProcessedDealRow>(rawDeals).map((row) => {
+      const search_text = buildDealSearchText(row);
+      const { evidence_json: _drop, ...rest } = row;
+      return {
+        ...rest,
+        search_text,
+        has_evidence: Boolean(row.evidence_json),
+      };
+    });
 
     const stageRows = asRows<{ stage: string | null; count: number }>(
       await sql`

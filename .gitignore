@@ -103,6 +103,7 @@ Archive.zip
 
 # Python venv and caches for PST tooling
 scripts/pst-extract/.venv/
+.venv-aws/
 scripts/pst-extract/**/__pycache__/
 **/__pycache__/
 *.pyc

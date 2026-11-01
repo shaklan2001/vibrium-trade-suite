@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { startSession } from "@/lib/vibrium/chat";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { getVibriumConfig } from "@/lib/vibrium/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ export async function POST(req: NextRequest) {
     const limited = checkRateLimit(req, "chat-start", 30, 60_000);
     if (limited) return limited;
 
-    const body = (await req.json()) as { contactId?: string; botId?: string };
+    const body = (await req.json()) as { contactId?: string };
     const contactId = (body.contactId || "").trim();
     if (!contactId) {
       return NextResponse.json(
@@ -19,7 +20,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const session = await startSession(contactId, body.botId);
+    const { opsCopilotBotId } = getVibriumConfig();
+    if (!opsCopilotBotId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Trade Copilot is not configured on the server",
+        },
+        { status: 503 },
+      );
+    }
+
+    const session = await startSession(contactId, opsCopilotBotId);
     return NextResponse.json({ success: true, data: session });
   } catch (err) {
     console.error("[chat/start]", err);

@@ -167,48 +167,88 @@ def _health(conn: pg8000.native.Connection) -> dict:
     )
 
 
+# Lightweight participant/header blob for client search (no message bodies).
+_SEARCH_TEXT_SQL = f"""
+LEFT(
+  coalesce(subject, '') || ' ' ||
+  coalesce(parties_json::text, '') || ' ' ||
+  coalesce(po_numbers::text, '') || ' ' ||
+  coalesce(summary, '') || ' ' ||
+  coalesce(
+    (
+      SELECT string_agg(
+        coalesce(m->>'from','') || ' ' ||
+        coalesce(m->>'to','') || ' ' ||
+        coalesce(m->>'cc','') || ' ' ||
+        coalesce(m->>'bcc','') || ' ' ||
+        coalesce(m->>'from_name','') || ' ' ||
+        coalesce(m->>'subject',''),
+        ' '
+      )
+      FROM jsonb_array_elements(
+        CASE
+          WHEN evidence_json IS NOT NULL
+           AND jsonb_typeof(evidence_json->'messages') = 'array'
+          THEN evidence_json->'messages'
+          ELSE '[]'::jsonb
+        END
+      ) AS m
+    ),
+    ''
+  ),
+  12000
+)
+"""
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
     stage = (payload.get("stage") or "").strip()
+    q = (payload.get("q") or "").strip()[:120]
     # Page size capped for Lambda response size; callers should paginate via offset.
     limit = min(max(int(payload.get("limit") or 400), 1), 500)
     offset = max(int(payload.get("offset") or 0), 0)
     if stage and not IDENTIFIER_RE.match(stage):
         return _err("invalid stage")
     # list_deals omits evidence_json (can be multi-MB) — fetch via get_evidence.
+    # search_text carries party + mail header tokens (e.g. kalpana@snspl.in).
+    where_parts: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
     if stage:
-        rows = conn.run(
-            f"""
-            SELECT id, po_numbers, subject, primary_stage, slot, agent_id,
-                   status, summary, confidence, date_start, date_end,
-                   message_count, doc_count, parties_json, error, processed_at,
-                   cost_usd, input_tokens, output_tokens, result_json,
-                   commercial_model, document_name, document_url,
-                   (evidence_json IS NOT NULL) AS has_evidence
-            FROM {SCHEMA}.processed_deals
-            WHERE primary_stage = :stage
-            ORDER BY date_end DESC NULLS LAST
-            LIMIT :limit OFFSET :offset
-            """,
-            stage=stage,
-            limit=limit,
-            offset=offset,
+        where_parts.append("primary_stage = :stage")
+        params["stage"] = stage
+    if q:
+        like = f"%{_escape_like(q)}%"
+        params["like"] = like
+        where_parts.append(
+            "("
+            "subject ILIKE :like ESCAPE '\\' OR "
+            "parties_json::text ILIKE :like ESCAPE '\\' OR "
+            "po_numbers::text ILIKE :like ESCAPE '\\' OR "
+            "coalesce(summary, '') ILIKE :like ESCAPE '\\' OR "
+            "evidence_json::text ILIKE :like ESCAPE '\\'"
+            ")"
         )
-    else:
-        rows = conn.run(
-            f"""
-            SELECT id, po_numbers, subject, primary_stage, slot, agent_id,
-                   status, summary, confidence, date_start, date_end,
-                   message_count, doc_count, parties_json, error, processed_at,
-                   cost_usd, input_tokens, output_tokens, result_json,
-                   commercial_model, document_name, document_url,
-                   (evidence_json IS NOT NULL) AS has_evidence
-            FROM {SCHEMA}.processed_deals
-            ORDER BY date_end DESC NULLS LAST
-            LIMIT :limit OFFSET :offset
-            """,
-            limit=limit,
-            offset=offset,
-        )
+    where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    rows = conn.run(
+        f"""
+        SELECT id, po_numbers, subject, primary_stage, slot, agent_id,
+               status, summary, confidence, date_start, date_end,
+               message_count, doc_count, parties_json, error, processed_at,
+               cost_usd, input_tokens, output_tokens, result_json,
+               commercial_model, document_name, document_url,
+               (evidence_json IS NOT NULL) AS has_evidence,
+               {_SEARCH_TEXT_SQL} AS search_text
+        FROM {SCHEMA}.processed_deals
+        {where_sql}
+        ORDER BY date_end DESC NULLS LAST
+        LIMIT :limit OFFSET :offset
+        """,
+        **params,
+    )
     cols = [
         "id",
         "po_numbers",
@@ -234,6 +274,7 @@ def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
         "document_name",
         "document_url",
         "has_evidence",
+        "search_text",
     ]
     deals = [dict(zip(cols, r)) for r in rows]
     stage_rows = conn.run(

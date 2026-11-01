@@ -129,16 +129,16 @@ export default function RoutingPage() {
   }));
 
   const otherFields: { key: keyof AgentRoutingMap; label: string }[] = [
-    { key: "factory_outreach", label: "Conversational · factory_outreach (VB*)" },
+    { key: "factory_outreach", label: "Conversational · factory outreach" },
     {
       key: "buyer_selection_chase",
-      label: "Conversational · buyer_selection_chase (VB*)",
+      label: "Conversational · buyer selection chase",
     },
-    { key: "ops_copilot", label: "Conversational · ops_copilot (VB*)" },
-    { key: "wf_factory_outreach", label: "Workflow · wf_factory_outreach" },
+    { key: "ops_copilot", label: "Conversational · Trade Copilot" },
+    { key: "wf_factory_outreach", label: "Workflow · factory outreach" },
     {
       key: "wf_buyer_selection_chase",
-      label: "Workflow · wf_buyer_selection_chase",
+      label: "Workflow · buyer selection chase",
     },
   ];
 

@@ -7,6 +7,7 @@ export function dealSearchBlob(deal: Deal): string {
     deal.code,
     deal.title,
     deal.mailboxSourceId || "",
+    deal.searchText || "",
     ...(deal.mailboxPoNumbers || []),
   ];
   for (const p of deal.parties || []) {

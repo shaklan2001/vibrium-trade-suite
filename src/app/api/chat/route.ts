@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { streamCompletion } from "@/lib/vibrium/chat";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { buildGroundedChatMessage } from "@/lib/trade/copilotGrounding";
+import { getVibriumConfig } from "@/lib/vibrium/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
+
+const USER_MESSAGE_MAX = 2000;
+const GROUNDED_MESSAGE_MAX = 16000;
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,29 +19,42 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as {
       contactId?: string;
       message?: string;
-      botId?: string;
+      focusDealId?: string;
     };
 
     const contactId = (body.contactId || "").trim();
-    const message = (body.message || "").trim();
+    const userMessage = (body.message || "").trim();
     if (!contactId || contactId.length > 128) {
       return NextResponse.json(
         { error: "Valid contactId is required" },
         { status: 400 },
       );
     }
-    if (!message || message.length > 16000) {
+    if (!userMessage || userMessage.length > USER_MESSAGE_MAX) {
       return NextResponse.json(
-        { error: "Message is required (max 16000 chars)" },
+        { error: `Message is required (max ${USER_MESSAGE_MAX} chars)` },
         { status: 400 },
       );
     }
 
+    // Always use platform service bot — never trust client-supplied bot ids.
+    const { opsCopilotBotId } = getVibriumConfig();
+    if (!opsCopilotBotId) {
+      return NextResponse.json(
+        { error: "Trade Copilot is not configured on the server" },
+        { status: 503 },
+      );
+    }
+
+    const grounded = (
+      await buildGroundedChatMessage(userMessage, body.focusDealId)
+    ).slice(0, GROUNDED_MESSAGE_MAX);
+
     const stream = await streamCompletion(
       contactId,
-      message,
+      grounded,
       req.signal,
-      body.botId,
+      opsCopilotBotId,
     );
 
     return new Response(stream, {

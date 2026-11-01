@@ -799,6 +799,11 @@ export interface Deal {
   commercialModel?: "agency_commission" | "trader_principal";
   /** Worker slot that produced the latest extract */
   mailboxSlot?: string;
+  /**
+   * Lowercase-friendly blob of parties + mail headers for Deal Board search
+   * (team emails like kalpana@snspl.in that are not always in parties_json).
+   */
+  searchText?: string;
   /** Latest agent structured result (for audit panel) */
   agentResult?: Record<string, unknown>;
   recommendedFactoryIds?: string[];
