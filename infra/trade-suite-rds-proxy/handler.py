@@ -11,6 +11,8 @@ Actions:
   get_evidence         SELECT one row by id (full evidence)
   upsert_deals         Bulk upsert rows (for restore / ingest)
   health               SELECT current_database(), current_schema(), counts
+  mail_*               Live mailbox sync (connections, messages, deal jobs) —
+                       see MAIL_ACTIONS and src/lib/mail/store.ts
 """
 
 from __future__ import annotations
@@ -130,6 +132,7 @@ def _migrate(conn: pg8000.native.Connection) -> dict:
         )
         """
     )
+    _migrate_mail(conn)
     for stmt in (
         f"CREATE INDEX IF NOT EXISTS processed_deals_stage ON {SCHEMA}.processed_deals (primary_stage)",
         f"CREATE INDEX IF NOT EXISTS processed_deals_status ON {SCHEMA}.processed_deals (status)",
@@ -141,7 +144,13 @@ def _migrate(conn: pg8000.native.Connection) -> dict:
     return _ok(
         {
             "schema": SCHEMA,
-            "tables": ["processed_deals", "ingest_progress"],
+            "tables": [
+                "processed_deals",
+                "ingest_progress",
+                "mail_connections",
+                "mail_messages",
+                "mail_deal_jobs",
+            ],
             "processed_deals_count": count,
         }
     )
@@ -442,6 +451,422 @@ def _upsert_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
     return _ok({"upserted": upserted})
 
 
+# --------------------------------------------------------------------------
+# Live mailbox connections (Gmail / Microsoft 365 / IMAP) — see src/lib/mail
+# --------------------------------------------------------------------------
+
+MAIL_MESSAGE_COLS = (
+    "connection_id, provider_message_id, internet_message_id, in_reply_to, "
+    "references_json, deal_key, subject, from_email, from_name, to_text, cc_text, "
+    "sent_at, attachments_json, status, role, created_at"
+)
+MAIL_JOB_COLS = (
+    "deal_key, status, dirty, execution_id, agent_id, slot, pack_json, "
+    "attempts, last_error, started_at, updated_at"
+)
+JOB_UPDATE_FIELDS = {
+    "status": "",
+    "dirty": "",
+    "execution_id": "",
+    "agent_id": "",
+    "slot": "",
+    "pack_json": "jsonb",
+    "attempts": "",
+    "last_error": "",
+    "started_at": "",
+}
+
+
+def _migrate_mail(conn: pg8000.native.Connection) -> None:
+    for stmt in (
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.mail_connections (
+          id TEXT PRIMARY KEY,
+          provider TEXT NOT NULL,
+          email TEXT NOT NULL,
+          display_name TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          secret_enc TEXT NOT NULL,
+          settings_json JSONB NOT NULL DEFAULT '{{}}',
+          cursor_json JSONB NOT NULL DEFAULT '{{}}',
+          last_sync_at TIMESTAMPTZ,
+          last_error TEXT,
+          sync_lock_until TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.mail_messages (
+          connection_id TEXT NOT NULL,
+          provider_message_id TEXT NOT NULL,
+          internet_message_id TEXT,
+          in_reply_to TEXT,
+          references_json JSONB NOT NULL DEFAULT '[]',
+          deal_key TEXT,
+          subject TEXT,
+          from_email TEXT,
+          from_name TEXT,
+          to_text TEXT,
+          cc_text TEXT,
+          sent_at TIMESTAMPTZ,
+          body_text TEXT,
+          attachments_json JSONB NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL,
+          role TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (connection_id, provider_message_id)
+        )
+        """,
+        f"CREATE INDEX IF NOT EXISTS mail_messages_internet_id ON {SCHEMA}.mail_messages (internet_message_id)",
+        f"CREATE INDEX IF NOT EXISTS mail_messages_deal_key ON {SCHEMA}.mail_messages (deal_key)",
+        f"CREATE INDEX IF NOT EXISTS mail_messages_created ON {SCHEMA}.mail_messages (created_at DESC)",
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.mail_deal_jobs (
+          deal_key TEXT PRIMARY KEY,
+          status TEXT NOT NULL DEFAULT 'pending',
+          dirty BOOLEAN NOT NULL DEFAULT true,
+          execution_id TEXT,
+          agent_id TEXT,
+          slot TEXT,
+          pack_json JSONB,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          started_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        f"CREATE INDEX IF NOT EXISTS mail_deal_jobs_status ON {SCHEMA}.mail_deal_jobs (status, dirty)",
+    ):
+        conn.run(stmt)
+
+
+def _rows(conn: pg8000.native.Connection, sql: str, **params: Any) -> list[dict]:
+    rows = conn.run(sql, **params)
+    cols = [c["name"] for c in (conn.columns or [])]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def _str_list(value: Any, limit: int = 2000) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v) for v in value[:limit] if v is not None]
+
+
+def _mail_list_connections(conn, payload):
+    return _ok(_rows(conn, f"SELECT * FROM {SCHEMA}.mail_connections ORDER BY created_at ASC"))
+
+
+def _mail_get_connection(conn, payload):
+    rows = _rows(
+        conn, f"SELECT * FROM {SCHEMA}.mail_connections WHERE id = :id", id=payload.get("id")
+    )
+    return _ok(rows[0] if rows else None)
+
+
+def _mail_save_connection(conn, payload):
+    r = payload.get("row") or {}
+    if not r.get("id") or not r.get("provider") or not r.get("email") or not r.get("secret_enc"):
+        return _err("row.id, provider, email, secret_enc required")
+    conn.run(
+        f"""
+        INSERT INTO {SCHEMA}.mail_connections (
+          id, provider, email, display_name, status, secret_enc, settings_json,
+          cursor_json, last_sync_at, last_error, updated_at
+        ) VALUES (
+          :id, :provider, :email, :display_name, :status, :secret_enc,
+          CAST(:settings AS jsonb), CAST(:cursor AS jsonb), :last_sync_at, :last_error, now()
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          provider = EXCLUDED.provider,
+          email = EXCLUDED.email,
+          display_name = EXCLUDED.display_name,
+          status = EXCLUDED.status,
+          secret_enc = EXCLUDED.secret_enc,
+          settings_json = EXCLUDED.settings_json,
+          cursor_json = EXCLUDED.cursor_json,
+          last_sync_at = EXCLUDED.last_sync_at,
+          last_error = EXCLUDED.last_error,
+          updated_at = now()
+        """,
+        id=r["id"],
+        provider=r["provider"],
+        email=r["email"],
+        display_name=r.get("display_name"),
+        status=r.get("status") or "active",
+        secret_enc=r["secret_enc"],
+        settings=json.dumps(r.get("settings_json") or {}),
+        cursor=json.dumps(r.get("cursor_json") or {}),
+        last_sync_at=r.get("last_sync_at"),
+        last_error=r.get("last_error"),
+    )
+    return _ok({"saved": r["id"]})
+
+
+def _mail_delete_connection(conn, payload):
+    cid = payload.get("id")
+    conn.run(f"DELETE FROM {SCHEMA}.mail_messages WHERE connection_id = :id", id=cid)
+    conn.run(f"DELETE FROM {SCHEMA}.mail_connections WHERE id = :id", id=cid)
+    return _ok({"deleted": cid})
+
+
+def _mail_acquire_lock(conn, payload):
+    seconds = min(max(int(payload.get("seconds") or 300), 30), 900)
+    rows = conn.run(
+        f"""
+        UPDATE {SCHEMA}.mail_connections
+           SET sync_lock_until = now() + make_interval(secs => :secs)
+         WHERE id = :id AND (sync_lock_until IS NULL OR sync_lock_until < now())
+        RETURNING id
+        """,
+        id=payload.get("id"),
+        secs=seconds,
+    )
+    return _ok({"acquired": bool(rows)})
+
+
+def _mail_release_lock(conn, payload):
+    conn.run(
+        f"UPDATE {SCHEMA}.mail_connections SET sync_lock_until = NULL WHERE id = :id",
+        id=payload.get("id"),
+    )
+    return _ok({"released": True})
+
+
+def _mail_known_ids(conn, payload):
+    ids = _str_list(payload.get("ids"), 1000)
+    if not ids:
+        return _ok([])
+    rows = conn.run(
+        f"""
+        SELECT provider_message_id FROM {SCHEMA}.mail_messages
+        WHERE connection_id = :cid AND provider_message_id = ANY(CAST(:ids AS text[]))
+        """,
+        cid=payload.get("connection_id"),
+        ids=ids,
+    )
+    return _ok([r[0] for r in rows])
+
+
+def _mail_insert_messages(conn, payload):
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list) or len(rows) > 100:
+        return _err("rows must be a list of ≤ 100")
+    inserted = 0
+    for m in rows:
+        if not m.get("connection_id") or not m.get("provider_message_id"):
+            continue
+        conn.run(
+            f"""
+            INSERT INTO {SCHEMA}.mail_messages (
+              connection_id, provider_message_id, internet_message_id, in_reply_to,
+              references_json, deal_key, subject, from_email, from_name, to_text,
+              cc_text, sent_at, body_text, attachments_json, status, role
+            ) VALUES (
+              :cid, :pid, :iid, :irt, CAST(:refs AS jsonb), :deal_key, :subject,
+              :from_email, :from_name, :to_text, :cc_text, :sent_at, :body_text,
+              CAST(:atts AS jsonb), :status, :role
+            )
+            ON CONFLICT (connection_id, provider_message_id) DO NOTHING
+            """,
+            cid=m["connection_id"],
+            pid=m["provider_message_id"],
+            iid=m.get("internet_message_id"),
+            irt=m.get("in_reply_to"),
+            refs=json.dumps(m.get("references_json") or []),
+            deal_key=m.get("deal_key"),
+            subject=m.get("subject"),
+            from_email=m.get("from_email"),
+            from_name=m.get("from_name"),
+            to_text=m.get("to_text"),
+            cc_text=m.get("cc_text"),
+            sent_at=m.get("sent_at"),
+            body_text=m.get("body_text"),
+            atts=json.dumps(m.get("attachments_json") or []),
+            status=m.get("status") or "noise",
+            role=m.get("role"),
+        )
+        inserted += 1
+    return _ok({"inserted": inserted})
+
+
+def _mail_deal_keys(conn, payload):
+    ids = _str_list(payload.get("ids"), 200)
+    if not ids:
+        return _ok({})
+    rows = conn.run(
+        f"""
+        SELECT DISTINCT ON (internet_message_id) internet_message_id, deal_key
+        FROM {SCHEMA}.mail_messages
+        WHERE internet_message_id = ANY(CAST(:ids AS text[])) AND deal_key IS NOT NULL
+        """,
+        ids=ids,
+    )
+    return _ok({r[0]: r[1] for r in rows})
+
+
+def _mail_messages_for_deal(conn, payload):
+    limit = min(max(int(payload.get("limit") or 80), 1), 200)
+    return _ok(
+        _rows(
+            conn,
+            f"""
+            SELECT * FROM (
+              SELECT {MAIL_MESSAGE_COLS}, body_text FROM {SCHEMA}.mail_messages
+              WHERE deal_key = :key AND status = 'ingested'
+              ORDER BY sent_at DESC NULLS LAST
+              LIMIT :limit
+            ) t ORDER BY sent_at ASC NULLS FIRST
+            """,
+            key=payload.get("deal_key"),
+            limit=limit,
+        )
+    )
+
+
+def _mail_recent_messages(conn, payload):
+    limit = min(max(int(payload.get("limit") or 50), 1), 200)
+    cols = ", ".join(f"m.{c.strip()}" for c in MAIL_MESSAGE_COLS.split(","))
+    cid = payload.get("connection_id")
+    where = "WHERE m.connection_id = :cid" if cid else ""
+    params: dict[str, Any] = {"limit": limit}
+    if cid:
+        params["cid"] = cid
+    return _ok(
+        _rows(
+            conn,
+            f"""
+            SELECT {cols}, j.status AS job_status, j.last_error AS job_error
+            FROM {SCHEMA}.mail_messages m
+            LEFT JOIN {SCHEMA}.mail_deal_jobs j ON j.deal_key = m.deal_key
+            {where}
+            ORDER BY m.sent_at DESC NULLS LAST
+            LIMIT :limit
+            """,
+            **params,
+        )
+    )
+
+
+def _mail_connection_stats(conn, payload):
+    rows = _rows(
+        conn,
+        f"""
+        SELECT connection_id,
+               count(*)::int AS messages,
+               count(*) FILTER (WHERE status = 'ingested')::int AS ingested,
+               count(*) FILTER (WHERE status = 'noise')::int AS noise,
+               count(DISTINCT deal_key) FILTER (WHERE status = 'ingested')::int AS deals,
+               max(sent_at) AS last_message_at
+        FROM {SCHEMA}.mail_messages GROUP BY connection_id
+        """,
+    )
+    return _ok({r.pop("connection_id"): r for r in rows})
+
+
+def _mail_jobs_mark_dirty(conn, payload):
+    keys = _str_list(payload.get("deal_keys"), 1000)
+    if keys:
+        conn.run(
+            f"""
+            INSERT INTO {SCHEMA}.mail_deal_jobs (deal_key, status, dirty, updated_at)
+            SELECT k, 'pending', true, now() FROM unnest(CAST(:keys AS text[])) AS k
+            ON CONFLICT (deal_key) DO UPDATE SET dirty = true, updated_at = now()
+            """,
+            keys=keys,
+        )
+    return _ok({"marked": len(keys)})
+
+
+def _mail_jobs_claim(conn, payload):
+    limit = min(max(int(payload.get("limit") or 10), 1), 50)
+    return _ok(
+        _rows(
+            conn,
+            f"""
+            UPDATE {SCHEMA}.mail_deal_jobs SET status = 'starting', dirty = false,
+                   started_at = now(), updated_at = now()
+            WHERE deal_key IN (
+              SELECT deal_key FROM {SCHEMA}.mail_deal_jobs
+              WHERE (dirty AND status NOT IN ('running', 'starting'))
+                 OR (status = 'starting' AND started_at < now() - interval '10 minutes')
+              ORDER BY updated_at ASC
+              LIMIT :limit
+              FOR UPDATE SKIP LOCKED
+            )
+            RETURNING {MAIL_JOB_COLS}
+            """,
+            limit=limit,
+        )
+    )
+
+
+def _mail_jobs_running(conn, payload):
+    limit = min(max(int(payload.get("limit") or 50), 1), 200)
+    return _ok(
+        _rows(
+            conn,
+            f"""
+            SELECT {MAIL_JOB_COLS} FROM {SCHEMA}.mail_deal_jobs
+            WHERE status = 'running' ORDER BY started_at ASC LIMIT :limit
+            """,
+            limit=limit,
+        )
+    )
+
+
+def _mail_jobs_counts(conn, payload):
+    rows = conn.run(
+        f"SELECT status, count(*)::int FROM {SCHEMA}.mail_deal_jobs GROUP BY status"
+    )
+    return _ok({str(s): c for s, c in rows})
+
+
+def _mail_job_update(conn, payload):
+    key = payload.get("deal_key")
+    update = payload.get("update") or {}
+    sets: list[str] = []
+    params: dict[str, Any] = {"key": key}
+    for field, cast in JOB_UPDATE_FIELDS.items():
+        if field not in update:
+            continue
+        value = update[field]
+        if cast == "jsonb":
+            params[field] = None if value is None else json.dumps(value)
+            sets.append(f"{field} = CAST(:{field} AS jsonb)")
+        else:
+            params[field] = value
+            sets.append(f"{field} = :{field}")
+    if not key or not sets:
+        return _ok({"updated": 0})
+    conn.run(
+        f"UPDATE {SCHEMA}.mail_deal_jobs SET {', '.join(sets)}, updated_at = now() WHERE deal_key = :key",
+        **params,
+    )
+    return _ok({"updated": 1})
+
+
+MAIL_ACTIONS = {
+    "mail_list_connections": _mail_list_connections,
+    "mail_get_connection": _mail_get_connection,
+    "mail_save_connection": _mail_save_connection,
+    "mail_delete_connection": _mail_delete_connection,
+    "mail_acquire_lock": _mail_acquire_lock,
+    "mail_release_lock": _mail_release_lock,
+    "mail_known_ids": _mail_known_ids,
+    "mail_insert_messages": _mail_insert_messages,
+    "mail_deal_keys": _mail_deal_keys,
+    "mail_messages_for_deal": _mail_messages_for_deal,
+    "mail_recent_messages": _mail_recent_messages,
+    "mail_connection_stats": _mail_connection_stats,
+    "mail_jobs_mark_dirty": _mail_jobs_mark_dirty,
+    "mail_jobs_claim": _mail_jobs_claim,
+    "mail_jobs_running": _mail_jobs_running,
+    "mail_jobs_counts": _mail_jobs_counts,
+    "mail_job_update": _mail_job_update,
+}
+
+
 def lambda_handler(event, context):
     if isinstance(event.get("body"), str):
         try:
@@ -464,6 +889,8 @@ def lambda_handler(event, context):
             return _get_evidence(conn, payload)
         if action == "upsert_deals":
             return _upsert_deals(conn, payload)
+        if action in MAIL_ACTIONS:
+            return MAIL_ACTIONS[action](conn, payload)
         return _err(f"Unknown action: {action}")
     except Exception as e:
         logger.exception("trade-suite-rds-proxy failed")

@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { Plug } from "lucide-react";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Card, Stat } from "@/components/ui/primitives";
 import { LoadingBlock, ListSkeleton } from "@/components/ui/loading-block";
 import { PaginationBar } from "@/components/ui/pagination";
+import { SyncNowButton } from "@/components/mail/sync-now-button";
 
 type ProcessedDeal = {
   id: string;
@@ -165,6 +168,7 @@ export default function MailboxPage() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [now, setNow] = useState(Date.now());
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     setPage(1);
@@ -196,7 +200,7 @@ export default function MailboxPage() {
       window.clearInterval(poll);
       window.clearInterval(clock);
     };
-  }, [stage]);
+  }, [stage, refreshKey]);
 
   const completed = counts.byStatus.completed ?? 0;
   const failed = counts.byStatus.failed ?? 0;
@@ -226,7 +230,19 @@ export default function MailboxPage() {
     <div>
       <PageHeader
         title="Mailbox book"
-        description="Shared Outlook ingest. Progress and extracted deals come from the live database."
+        description="PST uploads and connected inboxes. Progress and extracted deals come from the live database."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <SyncNowButton onSynced={() => setRefreshKey((k) => k + 1)} />
+            <Link
+              href="/mailbox/connections"
+              className="inline-flex items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-900 transition hover:bg-zinc-50"
+            >
+              <Plug className="h-4 w-4" />
+              Email connections
+            </Link>
+          </div>
+        }
       />
 
       {progress ? (
@@ -328,7 +344,11 @@ export default function MailboxPage() {
 
           {!error && deals.length === 0 ? (
             <Card className="px-4 py-6 text-sm text-zinc-600">
-              No mailbox deals in the live database yet.
+              No mailbox deals in the live database yet.{" "}
+              <Link href="/mailbox/connections" className="font-medium text-teal-700 hover:underline">
+                Connect an inbox
+              </Link>{" "}
+              to start pulling mail automatically.
             </Card>
           ) : null}
 

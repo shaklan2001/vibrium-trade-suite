@@ -54,6 +54,8 @@ next-env.d.ts
 /docs/**
 !/docs/samples/
 !/docs/samples/**
+# Engineering setup guides that ship with the code
+!/docs/EMAIL_CONNECT.md
 
 # Cursor / local agent artefacts (if ever present in-repo)
 .cursor/

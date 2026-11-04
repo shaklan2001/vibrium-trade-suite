@@ -9,6 +9,7 @@ import {
   ListTodo,
   Mail,
   MessageSquare,
+  Plug,
   Radar,
   Route,
   Send,
@@ -72,6 +73,7 @@ export const GLOBAL_SIDEBAR_NAV: NavItem[] = [
   { href: "/partners", label: "Supplier Hub", icon: Building2 },
   { href: "/partners/commissions", label: "Agency commissions", icon: Landmark },
   { href: "/mailbox", label: "Mailbox book", icon: Mail },
+  { href: "/mailbox/connections", label: "Email connections", icon: Plug },
 ];
 
 /** Paths that belong to the global sidebar (never process-gated). */

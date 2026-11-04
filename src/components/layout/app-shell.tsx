@@ -13,6 +13,7 @@ import {
   WorkspaceProcessProvider,
 } from "@/components/layout/workspace-process";
 import { MailboxHydrator } from "@/components/layout/mailbox-hydrator";
+import { MailAutoSync } from "@/components/layout/mail-auto-sync";
 import { useTradeStore } from "@/lib/trade/store";
 import {
   COMMERCIAL_MODEL_OPTIONS,
@@ -205,11 +206,20 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
 
           <div className="mt-2 space-y-0.5 border-t border-zinc-200 pt-2">
             {GLOBAL_SIDEBAR_NAV.map((item) => {
+              const matches = (href: string) =>
+                pathname === href || pathname.startsWith(`${href}/`);
+              // Longest match wins (/mailbox/connections vs /mailbox).
+              const shadowed = GLOBAL_SIDEBAR_NAV.some(
+                (other) =>
+                  other.href.length > item.href.length &&
+                  other.href.startsWith(`${item.href}/`) &&
+                  matches(other.href),
+              );
               const active =
-                pathname === item.href ||
-                pathname.startsWith(`${item.href}/`) ||
-                pathname === "/supplier-hub" ||
-                pathname.startsWith("/supplier-hub/");
+                (matches(item.href) && !shadowed) ||
+                (item.href === "/partners" &&
+                  (pathname === "/supplier-hub" ||
+                    pathname.startsWith("/supplier-hub/")));
               return (
                 <NavLink
                   key={`global-${item.href}`}
@@ -235,6 +245,7 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <MailAutoSync />
             <MailboxHydrator />
             <div className="hidden items-center gap-2 rounded-full border border-zinc-200 px-2.5 py-1 sm:flex">
               <div className="flex h-7 w-7 items-center justify-center rounded-full bg-teal-50 text-[11px] font-semibold text-teal-800">
