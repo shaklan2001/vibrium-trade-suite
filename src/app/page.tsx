@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/primitives";
+import { LegalFooter } from "@/components/legal/legal-page";
 
 export default function HomePage() {
   return (
@@ -69,6 +70,26 @@ export default function HomePage() {
             <strong>4.</strong> Use Buyers & factories when choosing outreach targets
           </li>
         </ol>
+
+        <section className="rounded-xl border border-zinc-200 bg-white p-5 text-sm text-zinc-700">
+          <h2 className="text-sm font-semibold text-zinc-900">Connecting your Gmail</h2>
+          <p className="mt-2">
+            Vibrium Trade can connect to your Gmail or Google Workspace inbox with{" "}
+            <strong>read-only</strong> access. It reads trade emails and their attachments —
+            enquiries, quotes, purchase orders, invoices and shipping documents — and turns them
+            into deals in your book, so nobody has to forward or upload them. It never sends,
+            deletes or changes your email, and you can disconnect at any time.
+          </p>
+          <p className="mt-2">
+            See our{" "}
+            <Link href="/privacy" className="text-teal-700 underline">
+              privacy policy
+            </Link>{" "}
+            for exactly what we access and how Google user data is handled.
+          </p>
+        </section>
+
+        <LegalFooter />
       </div>
     </div>
   );

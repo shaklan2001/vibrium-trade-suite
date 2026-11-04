@@ -85,7 +85,7 @@ See *Where the data lives* above: redeploy the Lambda (Aurora) or do nothing (Ne
    - Add the scopes `openid`, `email`, `profile` and `.../auth/gmail.readonly`.
    - **Publishing status: Testing** is fine for the POC. Add every outside person under **Test users** (up to 100). Users from our own Workspace also need to be listed while in Testing.
    - In Testing, Google shows an "unverified app" screen. Click *Continue*. Google also **expires access after 7 days**; the inbox then shows *reconnect needed*, and one click on **Reconnect** fixes it.
-   - For production, submit for verification. `gmail.readonly` is a restricted scope and needs Google's security assessment. That removes the 7-day expiry, the test-user list and the warning screen.
+   - For production, submit for verification. `gmail.readonly` is a restricted scope and needs Google's security assessment. That removes the 7-day expiry, the test-user list and the warning screen. Full checklist: [GOOGLE_OAUTH_VERIFICATION.md](GOOGLE_OAUTH_VERIFICATION.md).
 3. Credentials → **OAuth client ID → Web application**. Authorised redirect URIs:
    - `https://vibrium-trade-suite.vercel.app/api/mail/oauth/google/callback`
    - `http://localhost:3000/api/mail/oauth/google/callback` (and :3001 if dev runs there)

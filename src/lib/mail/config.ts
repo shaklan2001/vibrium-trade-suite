@@ -6,10 +6,20 @@ function env(name: string): string {
   return process.env[name]?.trim() || "";
 }
 
+/**
+ * Production URL registered with Google (OAuth redirect URI, authorised domain,
+ * homepage + privacy policy on the consent screen). Keep in sync with
+ * docs/GOOGLE_OAUTH_VERIFICATION.md.
+ */
+export const PRODUCTION_SITE_URL = "https://vibrium-trade-suite.vercel.app";
+
 export function mailRedirectBase(requestOrigin?: string): string {
   return (
     env("MAIL_OAUTH_REDIRECT_BASE") ||
     env("NEXT_PUBLIC_SITE_URL") ||
+    // Production is pinned so a deploy reached via another alias still sends
+    // Google the one redirect URI that is registered.
+    (env("VERCEL_ENV") === "production" ? PRODUCTION_SITE_URL : "") ||
     requestOrigin ||
     "http://localhost:3000"
   ).replace(/\/$/, "");

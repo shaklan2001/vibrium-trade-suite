@@ -428,6 +428,12 @@ export default function EmailPage() {
               >
                 <Mail className="h-4 w-4" /> Connect Gmail
               </Button>
+              <p className="mx-auto mt-3 max-w-md text-xs text-zinc-400">
+                Read-only access. We never send, delete or change your email.{" "}
+                <Link href="/privacy" className="underline hover:text-zinc-600">
+                  Privacy policy
+                </Link>
+              </p>
               <div className="flex justify-center">{otherProviders}</div>
             </Card>
           ) : (

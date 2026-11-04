@@ -38,6 +38,8 @@ yarn-debug.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+# Public, non-secret production build values (secrets stay in Vercel env).
+!.env.production
 
 # vercel
 .vercel
@@ -56,6 +58,7 @@ next-env.d.ts
 !/docs/samples/**
 # Engineering setup guides that ship with the code
 !/docs/EMAIL_CONNECT.md
+!/docs/GOOGLE_OAUTH_VERIFICATION.md
 
 # Cursor / local agent artefacts (if ever present in-repo)
 .cursor/
