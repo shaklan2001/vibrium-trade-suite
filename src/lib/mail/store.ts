@@ -84,6 +84,8 @@ export interface MailStore {
   updateJob(dealKey: string, update: JobUpdate): Promise<void>;
   getProcessedDeal(id: string): Promise<ProcessedDealRow | null>;
   upsertProcessedDeal(row: ProcessedDealUpsert): Promise<void>;
+  /** Newest deals in the book (no evidence), for the agent inbox. */
+  recentDeals(limit: number): Promise<ProcessedDealRow[]>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -190,6 +192,9 @@ const rdsStore: MailStore = {
   },
   async upsertProcessedDeal(row) {
     await rds("upsert_deals", { rows: [row] });
+  },
+  async recentDeals(limit) {
+    return (await rds<ProcessedDealRow[]>("list_deals", { limit })) || [];
   },
 };
 
@@ -587,6 +592,15 @@ const neonStore: MailStore = {
       ],
     );
   },
+  recentDeals: (limit) =>
+    q<ProcessedDealRow>(
+      `SELECT id, po_numbers, subject, primary_stage, slot, agent_id, status,
+              summary, confidence, date_start, date_end, message_count, doc_count,
+              parties_json, error, processed_at, cost_usd, result_json,
+              commercial_model, document_name, document_url
+       FROM processed_deals ORDER BY date_end DESC NULLS LAST LIMIT $1`,
+      [limit],
+    ),
 };
 
 export function mailStoreConfigured(): boolean {
