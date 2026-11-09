@@ -2,6 +2,8 @@ import { getSql } from "@/lib/db";
 import { invokeTradeSuiteRds, isRdsProxyEnabled } from "@/lib/rdsProxy";
 import type { ProcessedDealRow } from "@/lib/trade/processedDealMapper";
 import type {
+  InboxMessageRow,
+  InboxPage,
   MailConnectionRow,
   MailConnectionStats,
   MailDealJob,
@@ -86,7 +88,21 @@ export interface MailStore {
   upsertProcessedDeal(row: ProcessedDealUpsert): Promise<void>;
   /** Newest deals in the book (no evidence), for the agent inbox. */
   recentDeals(limit: number): Promise<ProcessedDealRow[]>;
+  /** Specific deals (no evidence) — enriches inbox rows with what the stage agent found. */
+  dealsByIds(ids: string[]): Promise<ProcessedDealRow[]>;
+  /** One keyset-paged page of conversations across the given mailboxes. */
+  inboxPage(opts: InboxPageQuery): Promise<InboxPage>;
+  /** One conversation, copies deduped, oldest → newest, full bodies. */
+  threadMessages(opts: { connectionIds: string[]; threadKey: string; limit: number }): Promise<InboxMessageRow[]>;
 }
+
+export type InboxPageQuery = {
+  connectionIds: string[];
+  limit: number;
+  q?: string;
+  /** Cursor: the last row of the previous page. */
+  before?: { at: string; key: string } | null;
+};
 
 /* ------------------------------------------------------------------ */
 /* RDS proxy backend                                                   */
@@ -196,6 +212,30 @@ const rdsStore: MailStore = {
   async recentDeals(limit) {
     return (await rds<ProcessedDealRow[]>("list_deals", { limit })) || [];
   },
+  async dealsByIds(ids) {
+    if (!ids.length) return [];
+    return (await rds<ProcessedDealRow[]>("list_deals", { ids: ids.slice(0, 200), limit: 200 })) || [];
+  },
+  async inboxPage({ connectionIds, limit, q, before }) {
+    return (
+      (await rds<InboxPage>("mail_inbox_threads", {
+        connection_ids: connectionIds,
+        limit,
+        q: q || undefined,
+        before_at: before?.at,
+        before_key: before?.key,
+      })) || { threads: [], messages: [], has_more: false }
+    );
+  },
+  async threadMessages({ connectionIds, threadKey, limit }) {
+    const rows =
+      (await rds<InboxMessageRow[]>("mail_thread_messages", {
+        connection_ids: connectionIds,
+        thread_key: threadKey,
+        limit,
+      })) || [];
+    return rows.reverse();
+  },
 };
 
 /* ------------------------------------------------------------------ */
@@ -270,6 +310,10 @@ const NEON_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS mail_messages_internet_id ON mail_messages (internet_message_id)`,
   `CREATE INDEX IF NOT EXISTS mail_messages_deal_key ON mail_messages (deal_key)`,
   `CREATE INDEX IF NOT EXISTS mail_messages_created ON mail_messages (created_at DESC)`,
+  `ALTER TABLE mail_messages ADD COLUMN IF NOT EXISTS thread_key TEXT`,
+  `ALTER TABLE mail_messages ADD COLUMN IF NOT EXISTS folder TEXT`,
+  `CREATE INDEX IF NOT EXISTS mail_messages_conn_sent ON mail_messages (connection_id, sent_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS mail_messages_thread ON mail_messages (thread_key, sent_at DESC)`,
   `CREATE TABLE IF NOT EXISTS mail_deal_jobs (
     deal_key TEXT PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -309,6 +353,9 @@ async function q<T = Record<string, unknown>>(
 const MESSAGE_COLS = `connection_id, provider_message_id, internet_message_id, in_reply_to,
   references_json, deal_key, subject, from_email, from_name, to_text, cc_text,
   sent_at, attachments_json, status, role, created_at`;
+
+const INBOX_COLS = `connection_id, provider_message_id, internet_message_id, in_reply_to, thread_key, folder,
+  deal_key, subject, from_email, from_name, to_text, cc_text, sent_at, attachments_json, status, role`;
 
 const JOB_COLS = `deal_key, status, dirty, execution_id, agent_id, slot, pack_json,
   attempts, last_error, started_at, updated_at`;
@@ -391,8 +438,8 @@ const neonStore: MailStore = {
         `INSERT INTO mail_messages (
           connection_id, provider_message_id, internet_message_id, in_reply_to,
           references_json, deal_key, subject, from_email, from_name, to_text,
-          cc_text, sent_at, body_text, attachments_json, status, role
-        ) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16)
+          cc_text, sent_at, body_text, attachments_json, status, role, thread_key, folder
+        ) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17,$18)
         ON CONFLICT (connection_id, provider_message_id) DO NOTHING`,
         [
           m.connection_id,
@@ -411,6 +458,8 @@ const neonStore: MailStore = {
           JSON.stringify(m.attachments_json || []),
           m.status,
           m.role,
+          m.thread_key ?? null,
+          m.folder ?? null,
         ],
       );
     }
@@ -591,6 +640,77 @@ const neonStore: MailStore = {
         r.document_url,
       ],
     );
+  },
+  dealsByIds: (ids) =>
+    ids.length
+      ? q<ProcessedDealRow>(
+          `SELECT id, po_numbers, subject, primary_stage, slot, agent_id, status,
+                  summary, confidence, date_start, date_end, message_count, doc_count,
+                  parties_json, error, processed_at, cost_usd, result_json,
+                  commercial_model, document_name, document_url
+           FROM processed_deals WHERE id = ANY($1::text[])`,
+          [ids.slice(0, 200)],
+        )
+      : Promise.resolve([]),
+  async inboxPage({ connectionIds, limit, q: search, before }) {
+    if (!connectionIds.length) return { threads: [], messages: [], has_more: false };
+    const like = search ? `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
+    const threads = await q<{ thread_key: string; last_at: string; message_count: number }>(
+      `WITH t AS (
+         SELECT thread_key, max(sent_at) AS last_at,
+                count(DISTINCT coalesce(internet_message_id, provider_message_id))::int AS message_count
+         FROM mail_messages
+         WHERE connection_id = ANY($1::text[]) AND status <> 'error'
+           AND sent_at IS NOT NULL AND thread_key IS NOT NULL
+           AND ($2::text IS NULL OR subject ILIKE $2 OR from_email ILIKE $2
+                OR coalesce(from_name, '') ILIKE $2 OR coalesce(to_text, '') ILIKE $2
+                OR coalesce(body_text, '') ILIKE $2)
+         GROUP BY thread_key
+         HAVING bool_or(coalesce(folder, 'inbox') <> 'sent')
+       )
+       SELECT thread_key, last_at, message_count FROM t
+       WHERE $3::timestamptz IS NULL OR (last_at, thread_key) < ($3::timestamptz, $4::text)
+       ORDER BY last_at DESC, thread_key DESC
+       LIMIT $5`,
+      [connectionIds, like, before?.at ?? null, before?.key ?? "", limit + 1],
+    );
+    const has_more = threads.length > limit;
+    const page = threads.slice(0, limit);
+    const keys = page.map((t) => t.thread_key);
+    const messages = keys.length
+      ? await q<InboxMessageRow>(
+          `SELECT * FROM (
+             SELECT d.*, row_number() OVER (PARTITION BY d.thread_key ORDER BY d.sent_at DESC) AS rn
+             FROM (
+               SELECT DISTINCT ON (thread_key, coalesce(internet_message_id, connection_id || ':' || provider_message_id))
+                      ${INBOX_COLS}, left(coalesce(body_text, ''), 700) AS body_text
+               FROM mail_messages
+               WHERE connection_id = ANY($1::text[]) AND thread_key = ANY($2::text[])
+                 AND status <> 'error' AND sent_at IS NOT NULL
+               ORDER BY thread_key, coalesce(internet_message_id, connection_id || ':' || provider_message_id), sent_at DESC
+             ) d
+           ) r WHERE rn <= 8
+           ORDER BY thread_key, sent_at ASC`,
+          [connectionIds, keys],
+        )
+      : [];
+    return { threads: page, messages, has_more };
+  },
+  async threadMessages({ connectionIds, threadKey, limit }) {
+    const rows = await q<InboxMessageRow>(
+      `SELECT * FROM (
+         SELECT DISTINCT ON (coalesce(internet_message_id, connection_id || ':' || provider_message_id))
+                ${INBOX_COLS}, body_text
+         FROM mail_messages
+         WHERE connection_id = ANY($1::text[]) AND thread_key = $2
+           AND status <> 'error' AND sent_at IS NOT NULL
+         ORDER BY coalesce(internet_message_id, connection_id || ':' || provider_message_id), sent_at DESC
+       ) d
+       ORDER BY sent_at DESC
+       LIMIT $3`,
+      [connectionIds, threadKey, limit],
+    );
+    return rows.reverse();
   },
   recentDeals: (limit) =>
     q<ProcessedDealRow>(

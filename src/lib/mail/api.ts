@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { attachmentStoreConfigured } from "./parse";
-import { mailCronSecret, providerConfigured, pushWebhookBase } from "./config";
+import { mailCronSecret } from "./config";
 import { mailStoreConfigured } from "./store";
 
 export const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
@@ -26,13 +26,7 @@ export function mailSetupStatus() {
     attachments: attachmentStoreConfigured(),
     vibrium,
     cron: Boolean(mailCronSecret()),
-    push: Boolean(pushWebhookBase()),
-    providers: {
-      google: providerConfigured("google"),
-      microsoft: providerConfigured("microsoft"),
-      imap: true,
-    },
-    /** e.g. snspl.in — labels accounts as inside vs outside our Google Workspace. */
+    /** e.g. snspl.in — mail from this domain counts as our side. */
     workspaceDomain: process.env.MAIL_WORKSPACE_DOMAIN?.trim().toLowerCase() || null,
   };
 }

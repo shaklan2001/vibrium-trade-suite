@@ -1,6 +1,7 @@
-/** Shared shapes for live mailbox connections (Gmail / Microsoft 365 / IMAP). */
+/** Shared shapes for team mailbox connections (IMAP to read, SMTP to send). */
 
-export type MailProviderId = "google" | "microsoft" | "imap";
+/** SNSPL mailboxes are cPanel-hosted: IMAP to read, SMTP to send. */
+export type MailProviderId = "imap";
 
 export type MailConnectionStatus =
   | "active"
@@ -20,30 +21,21 @@ export type MailConnectionSettings = {
     secure: boolean;
     user: string;
   };
+  /** Outgoing server for IMAP mailboxes (replies from the inbox). Same login as IMAP. */
+  smtp?: {
+    host: string;
+    port: number;
+    secure: boolean;
+  };
 };
 
 export type MailConnectionCursor = {
   /** Everything received before this instant has been listed and stored. */
   synced_through?: string;
-  /** Microsoft Graph change-notification subscription. */
-  ms_subscription_id?: string;
-  ms_subscription_expires?: string;
-  ms_client_state?: string;
-  /** Gmail users.watch (Pub/Sub) registration. */
-  gmail_watch_expires?: string;
-  gmail_history_id?: string;
 };
 
 /** Decrypted secret payload — never leaves the server. */
-export type MailSecret =
-  | {
-      kind: "oauth";
-      access_token: string;
-      refresh_token?: string;
-      expires_at?: number;
-      scope?: string;
-    }
-  | { kind: "password"; password: string };
+export type MailSecret = { kind: "password"; password: string };
 
 /** Row as stored (secret still encrypted). */
 export type MailConnectionRow = {
@@ -66,7 +58,6 @@ export type MailConnectionPublic = Omit<
   MailConnectionRow,
   "secret_enc" | "cursor_json"
 > & {
-  push: "on" | "off";
   synced_through: string | null;
   stats?: MailConnectionStats;
 };
@@ -111,8 +102,22 @@ export type StoredMailMessage = {
   attachments_json: StoredAttachment[];
   status: MailMessageStatus;
   role: string | null;
+  /** Conversation key — see threadKeyFor() in ./thread. */
+  thread_key?: string | null;
+  /** IMAP folder the copy came from. */
+  folder?: MailFolder | null;
   created_at?: string;
 };
+
+export type MailFolder = "inbox" | "sent";
+
+/** One conversation on an inbox page (keyset cursor = last_at + thread_key). */
+export type InboxThreadRow = { thread_key: string; last_at: string; message_count: number };
+
+/** Message as the inbox reads it from the store (body clipped on list pages). */
+export type InboxMessageRow = Omit<StoredMailMessage, "references_json" | "created_at">;
+
+export type InboxPage = { threads: InboxThreadRow[]; messages: InboxMessageRow[]; has_more: boolean };
 
 /** Message list row for the UI — no body. */
 export type MailMessageSummary = Omit<StoredMailMessage, "body_text"> & {

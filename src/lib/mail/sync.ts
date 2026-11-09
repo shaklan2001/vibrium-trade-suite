@@ -13,24 +13,14 @@ import {
   pickDocument,
   type ClassifyContext,
 } from "./classify";
-import {
-  googleOAuthConfig,
-  mailCronSecret,
-  MAIL_LIMITS,
-  pushWebhookBase,
-} from "./config";
-import { decryptSecret, encryptSecret, randomToken } from "./crypto";
+import { MAIL_LIMITS } from "./config";
+import { decryptSecret } from "./crypto";
 import { buildDealPack, buildEvidence, dealContextNotes, type DealPack } from "./dealPack";
 import { attachmentBucket, parseRawMail, storeAttachment } from "./parse";
 import { MailAuthError, PROVIDER_SESSIONS } from "./providers";
-import { googleWatch, freshGoogleSecret } from "./providers/google";
-import {
-  freshMicrosoftSecret,
-  microsoftRenew,
-  microsoftSubscribe,
-} from "./providers/microsoft";
 import type { ProviderSession } from "./providers/types";
 import { getMailStore, type MailStore, type ProcessedDealUpsert } from "./store";
+import { folderForRef, threadKeyFor } from "./thread";
 import type {
   MailConnectionPublic,
   MailConnectionRow,
@@ -93,14 +83,8 @@ export function toPublicConnection(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { secret_enc: _secret, cursor_json, ...rest } = row;
   const cursor = cursor_json || {};
-  const push =
-    (row.provider === "microsoft" && cursor.ms_subscription_id) ||
-    (row.provider === "google" && cursor.gmail_watch_expires)
-      ? "on"
-      : "off";
   return {
     ...rest,
-    push,
     synced_through: cursor.synced_through || null,
     stats,
   };
@@ -165,11 +149,6 @@ export async function syncConnection(
 
   try {
     session = await PROVIDER_SESSIONS[conn.provider](conn, decryptSecret(conn.secret_enc));
-    if (session.secretChanged) {
-      // Persist rotated tokens straight away (Microsoft refresh tokens rotate).
-      conn.secret_enc = encryptSecret(session.secret);
-      await store.saveConnection(conn);
-    }
 
     const cursor = conn.cursor_json || {};
     const floor = startedAt.getTime() - backfillDays(conn) * DAY_MS;
@@ -183,7 +162,9 @@ export async function syncConnection(
       warning = `More than ${MAIL_LIMITS.listCap} messages in the sync window — lower the backfill days to cover older mail`;
     }
     const known = new Set(await store.knownMessageIds(conn.id, refs.map((r) => r.id)));
-    const fresh = refs.filter((r) => !known.has(r.id));
+    // Newest first: a freshly connected mailbox fills the shared inbox from the
+    // top while older mail keeps backfilling on later runs.
+    const fresh = refs.filter((r) => !known.has(r.id)).reverse();
     stats.fresh = fresh.length;
 
     const batch = fresh.slice(0, MAIL_LIMITS.messagesPerRun);
@@ -214,6 +195,8 @@ export async function syncConnection(
         }
         const mail = await parseRawMail(raw);
         const common: Partial<StoredMailMessage> = {
+          thread_key: threadKeyFor(mail.subject, mail.internet_message_id || ref.id),
+          folder: folderForRef(ref.id),
           internet_message_id: mail.internet_message_id,
           in_reply_to: mail.in_reply_to,
           references_json: mail.references.slice(-20),
@@ -227,7 +210,15 @@ export async function syncConnection(
         };
 
         if (isNoiseMessage(mail, ctx)) {
-          pending.push(messageRow(conn, ref.id, { ...common, status: "noise" }));
+          // Not a deal, but still mail: keep the text so the shared inbox shows it.
+          pending.push(
+            messageRow(conn, ref.id, {
+              ...common,
+              status: "noise",
+              body_text: mail.body_text,
+              attachments_json: mail.attachments.map((a) => ({ ...a.meta, skipped: "not_trade" })),
+            }),
+          );
           stats.noise += 1;
           continue;
         }
@@ -325,7 +316,7 @@ export async function syncConnection(
 
 let s3: S3Client | null = null;
 async function presign(key: string) {
-  if (!s3) s3 = new S3Client({ region: process.env.AWS_REGION || "ap-south-1" });
+  if (!s3) s3 = new S3Client({ region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "ap-south-1" });
   return getSignedUrl(s3, new GetObjectCommand({ Bucket: attachmentBucket(), Key: key }), {
     expiresIn: PRESIGN_SECONDS,
   });
@@ -646,77 +637,12 @@ export async function processJobs(opts: {
 }
 
 /* ------------------------------------------------------------------ */
-/* Push notifications (optional — polling always runs)                 */
-/* ------------------------------------------------------------------ */
-
-const RENEW_BEFORE_MS = DAY_MS;
-
-export async function maintainPush(store: MailStore, conn: MailConnectionRow) {
-  const base = pushWebhookBase();
-  if (!base || conn.status === "paused") return;
-  const cursor = { ...(conn.cursor_json || {}) };
-  const soon = (iso?: string) => !iso || Date.parse(iso) - Date.now() < RENEW_BEFORE_MS;
-  let changed = false;
-  let secret = decryptSecret(conn.secret_enc);
-
-  try {
-    if (conn.provider === "microsoft" && soon(cursor.ms_subscription_expires)) {
-      const fresh = await freshMicrosoftSecret(secret);
-      if (fresh.changed) {
-        secret = fresh.secret;
-        conn.secret_enc = encryptSecret(secret);
-        changed = true;
-      }
-      let sub = cursor.ms_subscription_id
-        ? await microsoftRenew(secret, cursor.ms_subscription_id)
-        : null;
-      if (!sub) {
-        cursor.ms_client_state = cursor.ms_client_state || randomToken(18);
-        sub = await microsoftSubscribe(
-          secret,
-          `${base}/api/mail/webhooks/microsoft?token=${encodeURIComponent(mailCronSecret())}`,
-          cursor.ms_client_state,
-        );
-      }
-      cursor.ms_subscription_id = sub.id;
-      cursor.ms_subscription_expires = sub.expires;
-      changed = true;
-    }
-    const topic = googleOAuthConfig().pubsubTopic;
-    if (conn.provider === "google" && topic && soon(cursor.gmail_watch_expires)) {
-      const fresh = await freshGoogleSecret(secret);
-      if (fresh.changed) {
-        secret = fresh.secret;
-        conn.secret_enc = encryptSecret(secret);
-      }
-      const watch = await googleWatch(secret, topic);
-      cursor.gmail_watch_expires = watch.expires;
-      cursor.gmail_history_id = watch.historyId;
-      changed = true;
-    }
-  } catch (err) {
-    // Push is best effort; polling keeps the inbox in sync regardless.
-    console.warn(`[mail] push setup failed for ${conn.email}:`, err);
-  }
-
-  if (changed) {
-    const latest = (await store.getConnection(conn.id)) || conn;
-    await store.saveConnection({
-      ...latest,
-      secret_enc: conn.secret_enc,
-      cursor_json: { ...latest.cursor_json, ...cursor },
-    });
-  }
-}
-
-/* ------------------------------------------------------------------ */
 /* One cycle: sync connections, then drive deal jobs                   */
 /* ------------------------------------------------------------------ */
 
 export async function runMailCycle(opts: {
   deadline: number;
   connectionId?: string;
-  push?: boolean;
   syncMail?: boolean;
   /** Skip inboxes synced within this window (auto-sync from open tabs). */
   minIntervalMs?: number;
@@ -743,11 +669,5 @@ export async function runMailCycle(opts: {
     }
   }
   const jobs = await processJobs({ deadline: opts.deadline, store, all });
-  if (opts.push) {
-    for (const conn of targets) {
-      if (Date.now() > opts.deadline) break;
-      await maintainPush(store, conn);
-    }
-  }
   return { connections, jobs, job_counts: await store.jobCounts() };
 }
