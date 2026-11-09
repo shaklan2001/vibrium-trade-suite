@@ -1,26 +1,36 @@
 import { NextResponse } from "next/server";
-import { jsonError, NO_STORE } from "@/lib/mail/api";
-import { loadInbox } from "@/lib/mail/inbox";
+import { checkRateLimit } from "@/lib/rate-limit";
+import { jsonError, mailSetupStatus, NO_STORE } from "@/lib/mail/api";
+import { loadInboxPage, MailboxError } from "@/lib/mail/inboxService";
 import { mailStoreConfigured } from "@/lib/mail/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
 
 /**
- * GET /api/mail/inbox?source=book|live&limit=30
- * Agent inbox: newest mail per deal thread + what the worker read + a draft reply.
- * `book` uses the PST deal book (demo data), `live` the connected inboxes.
+ * GET /api/mail/inbox?mailbox=all|<connectionId>&before_at=&before_key=&q=&limit=40
+ * One keyset page of conversations from the synced store, plus every
+ * connected team mailbox for the switcher.
  */
 export async function GET(req: Request) {
+  const limited = checkRateLimit(req, "mail-inbox", 90, 60_000);
+  if (limited) return limited;
   if (!mailStoreConfigured()) return jsonError("No database configured", 503);
-  const { searchParams } = new URL(req.url);
-  const source = searchParams.get("source") === "live" ? "live" : "book";
-  const limit = Math.min(Math.max(Number(searchParams.get("limit")) || 30, 1), 60);
+  const sp = new URL(req.url).searchParams;
+  const beforeAt = sp.get("before_at");
   try {
-    const items = await loadInbox(source, limit);
-    return NextResponse.json({ source, items }, { headers: NO_STORE });
+    const page = await loadInboxPage({
+      mailbox: sp.get("mailbox") || "all",
+      before: beforeAt && !Number.isNaN(Date.parse(beforeAt)) ? { at: beforeAt, key: sp.get("before_key") || "" } : null,
+      q: sp.get("q") || undefined,
+      limit: Number(sp.get("limit")) || undefined,
+    });
+    return NextResponse.json({ ...page, setup: mailSetupStatus() }, { headers: NO_STORE });
   } catch (err) {
-    return jsonError(err);
+    if (err instanceof MailboxError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: err.status, headers: NO_STORE });
+    }
+    console.error("[mail/inbox] failed", err);
+    return jsonError(err, 502);
   }
 }

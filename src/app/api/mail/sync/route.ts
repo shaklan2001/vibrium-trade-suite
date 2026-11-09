@@ -33,7 +33,6 @@ export async function POST(req: Request) {
       connectionId: body.connection_id || undefined,
       syncMail: !body.jobs_only,
       minIntervalMs: body.auto ? AUTO_MIN_INTERVAL_MS : undefined,
-      push: body.auto,
       deadline: deadlineIn(body.jobs_only ? 25 : undefined),
     });
     return NextResponse.json(result, { headers: NO_STORE });

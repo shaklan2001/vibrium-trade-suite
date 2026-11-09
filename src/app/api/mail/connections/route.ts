@@ -1,8 +1,9 @@
 import { after, NextResponse } from "next/server";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { deadlineIn, jsonError, mailSetupStatus, NO_STORE } from "@/lib/mail/api";
-import { MAIL_LIMITS } from "@/lib/mail/config";
+import { allowedMailDomains, MAIL_LIMITS, mailServerFor } from "@/lib/mail/config";
 import { connectionId, encryptSecret } from "@/lib/mail/crypto";
+import { verifySmtp } from "@/lib/mail/imapMailbox";
 import { verifyImap } from "@/lib/mail/providers/imap";
 import { getMailStore, mailStoreConfigured } from "@/lib/mail/store";
 import { runMailCycle, toPublicConnection } from "@/lib/mail/sync";
@@ -48,7 +49,8 @@ export async function GET() {
 }
 
 /**
- * POST /api/mail/connections — connect an IMAP mailbox (app password).
+ * POST /api/mail/connections { email, password, name? } — connect a team mailbox.
+ * The IMAP/SMTP servers and the allowed domain are backend config (see config.ts).
  * OAuth providers connect via /api/mail/oauth/{provider}/start instead.
  */
 export async function POST(req: Request) {
@@ -57,26 +59,29 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as {
       email?: string;
-      host?: string;
-      port?: number;
-      secure?: boolean;
-      user?: string;
       password?: string;
+      name?: string;
       backfill_days?: number;
       filter_mode?: MailFilterMode;
     };
-    const email = (body.email || body.user || "").trim().toLowerCase();
-    const host = (body.host || "").trim();
-    const user = (body.user || email).trim();
+    const email = (body.email || "").trim().toLowerCase();
     const password = body.password || "";
-    const port = Number(body.port) || 993;
-    if (!email.includes("@") || !host || !password) {
-      return jsonError("email, host and password are required", 400);
+    if (!/^[^\s@]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(email) || !password) {
+      return jsonError("Email address and password are required", 400);
     }
-    if (!/^[a-z0-9.-]+$/i.test(host)) return jsonError("Invalid IMAP host", 400);
+    const allowed = allowedMailDomains();
+    if (allowed.length && !allowed.includes(email.split("@")[1]!)) {
+      return jsonError(`Only ${allowed.map((d) => `@${d}`).join(", ")} mailboxes can be connected`, 400);
+    }
+    const name = (body.name || "").trim().slice(0, 120) || null;
 
-    const imap = { host, port, secure: body.secure !== false, user };
+    // Servers come from the backend (MAIL_IMAP_HOST / MAIL_SMTP_HOST …), never the browser.
+    const server = mailServerFor(email);
+    if (!server.imap.host) return jsonError("Mail server is not configured (MAIL_IMAP_HOST)", 503);
+    const imap = { ...server.imap, user: email };
+    const smtp = server.smtp;
     await verifyImap(imap, password);
+    await verifySmtp({ settings_json: { imap, smtp } }, password);
 
     const store = getMailStore();
     const id = connectionId("imap", email);
@@ -85,12 +90,13 @@ export async function POST(req: Request) {
       id,
       provider: "imap",
       email,
-      display_name: prev?.display_name || null,
+      display_name: name || prev?.display_name || null,
       status: "active",
       secret_enc: encryptSecret({ kind: "password", password }),
       settings_json: {
         ...(prev?.settings_json || {}),
         imap,
+        smtp,
         backfill_days: Number(body.backfill_days) || prev?.settings_json.backfill_days || MAIL_LIMITS.defaultBackfillDays,
         filter_mode: body.filter_mode === "all" ? "all" : prev?.settings_json.filter_mode || "trade",
       },

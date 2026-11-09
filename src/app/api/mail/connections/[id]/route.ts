@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import { jsonError, NO_STORE } from "@/lib/mail/api";
 import { MAIL_LIMITS } from "@/lib/mail/config";
-import { decryptSecret } from "@/lib/mail/crypto";
-import { googleRevoke, googleStopWatch } from "@/lib/mail/providers/google";
-import { microsoftUnsubscribe } from "@/lib/mail/providers/microsoft";
 import { getMailStore } from "@/lib/mail/store";
 import { toPublicConnection } from "@/lib/mail/sync";
 import type { MailFilterMode } from "@/lib/mail/types";
@@ -48,7 +45,7 @@ export async function PATCH(req: Request, { params }: Params) {
 }
 
 /**
- * DELETE — stop push, revoke the grant, drop stored raw messages.
+ * DELETE — forget the mailbox (encrypted password included) and its stored mail.
  * Deals already in the book stay (they are business records, not mail copies).
  */
 export async function DELETE(_req: Request, { params }: Params) {
@@ -57,18 +54,6 @@ export async function DELETE(_req: Request, { params }: Params) {
     const store = getMailStore();
     const row = await store.getConnection(id);
     if (!row) return jsonError("Not found", 404);
-    try {
-      const secret = decryptSecret(row.secret_enc);
-      if (row.provider === "microsoft" && row.cursor_json.ms_subscription_id) {
-        await microsoftUnsubscribe(secret, row.cursor_json.ms_subscription_id);
-      }
-      if (row.provider === "google") {
-        await googleStopWatch(secret);
-        await googleRevoke(secret);
-      }
-    } catch (err) {
-      console.warn("[mail] provider cleanup failed", err);
-    }
     await store.deleteConnection(id);
     return NextResponse.json({ ok: true }, { headers: NO_STORE });
   } catch (err) {
