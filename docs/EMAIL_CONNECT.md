@@ -1,20 +1,68 @@
-# Email connections (live mailbox sync)
+# Team mailboxes: shared inbox + deal book (IMAP / SMTP)
 
-Connect a **Gmail / Google Workspace** inbox at **`/mailbox/connections`**. Outlook and IMAP
-are also built in, behind "Other providers". New mail is pulled automatically and runs through
-the **same pipeline as the PST upload**, so deals land in `processed_deals` and show up in
-Mailbox book, Deal Board, Operations and Copilot without any other change.
+SNSPL mail is hosted on cPanel (`mail.snspl.in`), so every mailbox connects with its **email +
+password**: IMAP to read, SMTP to send. Nothing is registered with Google or Microsoft.
 
+There is no login yet, so this is a **shared workspace**. Every member connects their own mailbox
+once, and everyone sees every connected mailbox in one inbox. The mailbox switcher shows
+**All mailboxes** or one person.
+
+## How it fits together
+
+```mermaid
+flowchart TD
+  subgraph Connect["1 · Connect (once per member)"]
+    A["/mailbox/connections<br/>email + password"] --> B{"IMAP login 993<br/>SMTP login 465"}
+    B -- ok --> C[("mail_connections<br/>password AES-256-GCM")]
+    B -- wrong --> X["error shown, nothing saved"]
+  end
+
+  subgraph Sync["2 · Sync (every ~3 min while the suite is open, daily cron, 'Check for new mail')"]
+    C --> D["IMAP: list INBOX + Sent since cursor<br/>newest first, 150 msgs / 48 s chunk"]
+    D --> E["parse MIME · thread_key = subject without Re/Fw<br/>trade vs noise (PST rules)"]
+    E --> F[("mail_messages<br/>every mail, body + folder + thread_key")]
+    E -- "trade mail" --> G["attachments → S3 trade/pst-ingest"]
+    E -- "trade mail" --> H[("mail_deal_jobs (dirty)")]
+  end
+
+  subgraph Agents["3 · Stage agents (same pipeline as PST upload)"]
+    H --> I["deal pack → relevance gate → choose slot<br/>→ Vibrium worker agent"]
+    I --> J[("processed_deals")]
+  end
+
+  subgraph Read["4 · Read"]
+    F --> K["/mailbox/inbox<br/>keyset pages of 40 conversations<br/>All mailboxes or one member · search"]
+    J --> K
+    J --> L["Mailbox book · Deal Board · Copilot<br/>source: all / connected / one member"]
+  end
+
+  subgraph Reply["5 · Reply"]
+    K -- "open mail" --> M["/api/mail/draft: whole thread + deal facts<br/>→ Vibrium Ops Copilot (prompt in replyAgent.ts)"]
+    M --> N["person reviews / edits"]
+    N -- Send --> O["SMTP from the member's own address<br/>In-Reply-To / References threaded"]
+    O --> P["copy filed in Sent (IMAP APPEND \\Seen)<br/>+ row in mail_messages → shows as Replied"]
+    N -- "Save to Drafts" --> Q["IMAP APPEND to Drafts (\\Draft)"]
+  end
 ```
-Gmail ──(Sync now | auto-sync while the suite is open | daily cron | optional push)──▶ /api/mail/*
-  │  list since cursor → dedupe → fetch raw MIME → parse (mailparser)
-  │  noise filter → thread into deal_key (In-Reply-To / PO / BKG / topic)
-  │  attachments → S3 trade/pst-ingest/{sha256}/{file}
-  ▼
-mail_messages ──▶ mail_deal_jobs (dirty) ──▶ deal pack (+ PST history for same id)
-  ──▶ relevance gate ──▶ choose_slot / pick_document ──▶ Vibrium worker (agent-executions)
-  ──▶ processed_deals (same row shape as scripts/pst-extract/process_deals.py)
-```
+
+**Why the inbox reads from the store, not live IMAP:** one database query serves a page for one
+mailbox or for all 15–20 together. It also allows search across all mail and keyset paging through
+every conversation, with no 15 IMAP logins per page view and no load on the mail server. The sync
+keeps the store within about 3 minutes of the server, and **Check for new mail** pulls straight away.
+
+## Code map
+
+| Piece | File |
+|---|---|
+| Connect + verify IMAP/SMTP | `src/app/api/mail/connections/route.ts`, `src/components/mail/imap-connect-form.tsx` |
+| Sync engine (IMAP → store, trade filter, deal jobs) | `src/lib/mail/sync.ts`, `src/lib/mail/providers/imap.ts` |
+| Conversation key | `src/lib/mail/thread.ts` (same rule as the SQL backfill in the Lambda) |
+| Inbox pages, threads, replies | `src/lib/mail/inboxService.ts`, `src/lib/mail/inboxItems.ts` |
+| SMTP send, Sent/Drafts filing | `src/lib/mail/imapMailbox.ts` |
+| AI reply | `src/lib/mail/replyAgent.ts` (prompt) → Vibrium Ops Copilot bot (`VIBRIUM_OPS_COPILOT_BOT_ID`) |
+| Quick drafts per stage | `src/lib/mail/replyDraft.ts` |
+| Store (two backends) | `src/lib/mail/store.ts` → Lambda `infra/trade-suite-rds-proxy/handler.py` or Neon |
+| UI | `/mailbox/inbox` (`src/components/mail/inbox/*`), `/mailbox/connections`, `/mailbox` (book) |
 
 | PST script (Python) | Live mail (TypeScript) |
 |---|---|
@@ -24,95 +72,48 @@ mail_messages ──▶ mail_deal_jobs (dirty) ──▶ deal pack (+ PST histor
 
 **Keep the two in step.** If you change a domain list or regex in one, change the other.
 
-## Where the data lives (and "the Lambda")
+## Where the data lives
 
-The app already reads the deal book from one of two places. Mail sync uses the same one:
+| `TRADE_SUITE_DB_MODE` | Storage |
+|---|---|
+| `rds-proxy` (deployed) | Aurora schema `trade_suite` via the VPC Lambda `trade-suite-rds-proxy` (`infra/trade-suite-rds-proxy/`). After changing `handler.py`, deploy it and run `{"action":"migrate"}`. Migrations only add things (`ADD COLUMN IF NOT EXISTS`, indexes, backfill), so the running app is unaffected. |
+| unset + `DATABASE_URL` | Neon. Tables and columns are created on first use. |
 
-| `TRADE_SUITE_DB_MODE` | Storage | What to do for mail |
-|---|---|---|
-| `rds-proxy` (the deployed suite) | Aurora schema `trade_suite`, reached through the **existing** VPC Lambda `trade-suite-rds-proxy`. Source: `infra/trade-suite-rds-proxy/handler.py`, deploy script `deploy.sh`, called from `src/lib/rdsProxy.ts`. | The mail actions (`mail_*`) were added to that same handler. **Redeploy it once:** `DB_PASSWORD=… infra/trade-suite-rds-proxy/deploy.sh` (needs the AWS CLI for account 173961275780). This updates the code and runs `migrate`, which creates the mail tables. |
-| unset + `DATABASE_URL` | Neon Postgres | Nothing. Mail tables are created on first use. Easiest for a POC or local dev. |
-
-No new Lambda was created.
-
-## Free tier (Vercel Hobby)
-
-Hobby limits functions to **60 s** and cron to **once a day**, so sync is built in small chunks:
-
-- **Sync now.** Buttons on *Mailbox book* and *Email connections*. Each call does about 48 s of work (`MAIL_REQUEST_BUDGET_S`), and the browser keeps calling until every inbox is caught up. A large first import (for example 90 days) simply takes several rounds, with live progress in the toast.
-- **Auto-sync while the suite is open.** Every open tab pings `/api/mail/sync` every 3 minutes. The server skips inboxes synced in the last 2 minutes and uses a per-inbox lock, so many tabs are harmless.
-- **Daily Vercel cron.** `vercel.json` runs `/api/mail/cron` at 06:00 UTC to catch up when nobody has the app open.
-- *Optional, free, near-real-time without the app open:*
-  - **A free pinger.** [cron-job.org](https://cron-job.org) or UptimeRobot calls `GET https://<site>/api/mail/cron?token=<CRON_SECRET>` every 5 minutes.
-  - **Gmail push.** Google Pub/Sub has a free tier; see step 3.5 below.
-- Local dev: `npm run mail:sync` loops the cron endpoint every 2 minutes.
-
-Worker agents run asynchronously. A deal started in one call is picked up and saved by the next sync, auto-sync or page poll.
-
-## Behaviour
-
-- **Read-only.** Gmail `gmail.readonly` (Graph `Mail.Read` and IMAP read-only for the other providers).
-- **Credentials** are AES-256-GCM encrypted with `MAIL_ENCRYPTION_KEY` and never sent to the browser.
-- **History:** the first sync imports the last N days (picked on connect, default 30). Raising it later re-lists the wider window. Stored IDs dedupe.
-- **Threading:** a reply joins its parent's deal across every connected inbox. If the PST book already has `po:8615`, new mail on PO 8615 is merged into that deal's evidence and the worker re-runs on the combined thread.
-- **Safety:** a failed or skipped re-run never replaces a completed deal. The old result stays and only the evidence is refreshed.
-- **Relevance:** *Known parties* uses the PST rules (buyer/factory/forwarder domains, POs, freight). *Any trade thread* sends anything with a trade signal to the worker and lets its `isTradeDeal` gate decide. For other companies' domains, add them via `MAIL_EXTRA_*_DOMAINS`.
-- **Disconnect** stops push, revokes the Google grant and deletes stored raw mail. Deals stay in the book.
+Tables: `mail_connections`, `mail_messages` (with `thread_key` and `folder`), `mail_deal_jobs`, and
+`processed_deals`.
 
 ## Setup
 
-### 1. Environment (`.env.local` / Vercel)
+1. **Env:** `MAIL_ENCRYPTION_KEY` (`openssl rand -base64 32`, the same value everywhere, never
+   rotate) and `CRON_SECRET`. `MAIL_WORKSPACE_DOMAIN=snspl.in` is in the committed `.env.production`.
+   Full list and deploy steps: [DEPLOY.md](DEPLOY.md).
+2. **Connect mailboxes:** each member opens **Email connections → Connect a mailbox** and enters
+   their email, mailbox password and name. Only `@snspl.in` is accepted. The server is decided on the
+   backend: `mail.<domain>`, IMAP 993 / SMTP 465, which is what cPanel → Email Accounts → Connect
+   Devices shows for snspl.in. `MAIL_IMAP_HOST` and its sibling variables override it only if the
+   host moves.
+3. **History:** a new mailbox imports the last 365 days (`MAIL_DEFAULT_BACKFILL_DAYS`, max 3650),
+   newest first, about 150 messages per chunk. Each "Check for new mail" or auto-sync continues it.
 
-```
-MAIL_ENCRYPTION_KEY=   # openssl rand -base64 32   (required; don't rotate without re-connecting)
-CRON_SECRET=           # openssl rand -hex 24      (cron, free pinger, push webhooks)
-MAIL_WORKSPACE_DOMAIN=snspl.in
-NEXT_PUBLIC_SITE_URL=https://vibrium-trade-suite.vercel.app
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-```
+## Operating notes
 
-The suite's existing DB, `VIBRIUM_*` and `AWS_S3_BUCKET` settings are reused.
-
-### 2. Database
-
-See *Where the data lives* above: redeploy the Lambda (Aurora) or do nothing (Neon).
-
-### 3. Google: our Workspace and accounts outside it
-
-1. Google Cloud console (any project, ideally under our Workspace org) → APIs & Services → enable the **Gmail API**.
-2. **OAuth consent screen → User type: _External_.** This is required for accounts outside our Workspace (personal Gmail, buyers' or factories' Workspaces). *Internal* only allows `@MAIL_WORKSPACE_DOMAIN` accounts.
-   - Add the scopes `openid`, `email`, `profile` and `.../auth/gmail.readonly`.
-   - **Publishing status: Testing** is fine for the POC. Add every outside person under **Test users** (up to 100). Users from our own Workspace also need to be listed while in Testing.
-   - In Testing, Google shows an "unverified app" screen. Click *Continue*. Google also **expires access after 7 days**; the inbox then shows *reconnect needed*, and one click on **Reconnect** fixes it.
-   - For production, submit for verification. `gmail.readonly` is a restricted scope and needs Google's security assessment. That removes the 7-day expiry, the test-user list and the warning screen. Full checklist: [GOOGLE_OAUTH_VERIFICATION.md](GOOGLE_OAUTH_VERIFICATION.md).
-3. Credentials → **OAuth client ID → Web application**. Authorised redirect URIs:
-   - `https://vibrium-trade-suite.vercel.app/api/mail/oauth/google/callback`
-   - `http://localhost:3000/api/mail/oauth/google/callback` (and :3001 if dev runs there)
-4. Copy the client ID and secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
-5. *Optional push:* create a Pub/Sub topic and grant `gmail-api-push@system.gserviceaccount.com` the **Publisher** role. Add a push subscription to `https://<site>/api/mail/webhooks/google?token=<CRON_SECRET>`. Set `GOOGLE_PUBSUB_TOPIC=projects/<p>/topics/<t>`.
-
-**If a company account is blocked:** some Workspaces (ours or a partner's) block unverified third-party apps. The user then sees *"admin_policy_enforced"* / *"Access blocked"*. That Workspace's admin allows it under **Admin console → Security → API controls → App access control → Add app → OAuth client ID → Trusted**.
-
-The connections list labels each account as **our Workspace**, **outside Workspace (domain)** or **Personal Gmail**. Mail from the connected address, and from its company domain unless it's a public domain like gmail.com, is treated as *internal* when classifying parties.
-
-### 4. Outlook / IMAP (optional, later)
-
-- **Outlook:** create an Entra app registration with redirect `{site}/api/mail/oauth/microsoft/callback` and delegated permissions `Mail.Read`, `User.Read` and `offline_access`. Then set `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` and `MICROSOFT_TENANT_ID`.
-- **IMAP:** no setup. Users enter host, login and an app password.
+- **Wrong passwords:** cPanel blocks an IP after repeated failed logins (cPHulk). A changed password
+  shows the mailbox as *Password needed*. Use **Update password** on Email connections.
+- **Sent mail kept only on the PC:** some Outlook setups (POP3, or Sent Items stored locally) never put
+  replies on the server. The app then can't see those replies, so those threads don't show as
+  "Replied". Replies sent from the app are always recorded. To fix it, set Outlook to IMAP with Sent
+  Items on the server.
+- **Sending:** always through the member's own SMTP. Don't send `@snspl.in` mail through any other
+  service: the domain's DMARC policy is `reject`, so it would bounce.
+- **Disconnect** deletes the stored password and that mailbox's stored mail. Deals stay in the book.
+- **Access:** anyone with the site URL can open every mailbox and send. Add login (or Vercel
+  password protection) before inviting more people.
 
 ## Limits & tuning
 
 | Env | Default | |
 |---|---|---|
-| `MAIL_REQUEST_BUDGET_S` | 48 | seconds of work per request (stay under the 60 s limit) |
-| `MAIL_MESSAGES_PER_RUN` | 150 | messages fetched per inbox per request |
+| `MAIL_REQUEST_BUDGET_S` | 48 | seconds of work per request (Vercel Hobby caps functions at 60 s) |
+| `MAIL_MESSAGES_PER_RUN` | 150 | messages fetched per mailbox per request |
 | `MAIL_JOBS_PER_RUN` | 10 | worker executions started per request |
-| `MAIL_DEFAULT_BACKFILL_DAYS` | 30 | |
-
-- Listing is capped at 2,000 messages per sync window. A larger first import shows a warning, so lower the history days.
-- Each new email on a deal re-runs one worker on that deal (about $0.01–0.03 with gpt-4.1).
-
-## Access control
-
-POC: the suite has no login, so anyone with the URL can connect or disconnect inboxes and see deals. This is intentional for now. **Auth0** will be added for production; put `/api/mail/*` and `/mailbox/*` behind it at that point.
+| `MAIL_DEFAULT_BACKFILL_DAYS` | 365 | history for a new mailbox |

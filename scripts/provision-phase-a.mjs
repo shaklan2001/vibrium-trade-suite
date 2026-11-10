@@ -9,7 +9,7 @@
  * --upgrade patches NEXT_PUBLIC_AGENT_REQUIREMENT_EXTRACTOR /
  * NEXT_PUBLIC_AGENT_QUOTE_NORMALIZER (or AA00000025 / AA00000026) in place.
  */
-const API = (process.env.VIBRIUM_API_BASE_URL || "").replace(/\/$/, "");
+const API = (process.env.VIBRIUM_API_BASE_URL || "https://api-staging.vibrium.ai").replace(/\/$/, "");
 const CUSTOMER = process.env.VIBRIUM_CUSTOMER_ID;
 const USER = process.env.VIBRIUM_SERVICE_USERNAME;
 const PASS = process.env.VIBRIUM_SERVICE_PASSWORD;
