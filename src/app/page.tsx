@@ -72,20 +72,19 @@ export default function HomePage() {
         </ol>
 
         <section className="rounded-xl border border-zinc-200 bg-white p-5 text-sm text-zinc-700">
-          <h2 className="text-sm font-semibold text-zinc-900">Connecting your Gmail</h2>
+          <h2 className="text-sm font-semibold text-zinc-900">Connecting your mailbox</h2>
           <p className="mt-2">
-            Vibrium Trade can connect to your Gmail or Google Workspace inbox with{" "}
-            <strong>read-only</strong> access. It reads trade emails and their attachments —
-            enquiries, quotes, purchase orders, invoices and shipping documents — and turns them
-            into deals in your book, so nobody has to forward or upload them. It never sends,
-            deletes or changes your email, and you can disconnect at any time.
+            Each team member connects their mailbox with its email and password (IMAP to read,
+            SMTP to send). Vibrium Trade reads trade emails and attachments — enquiries, quotes,
+            purchase orders, invoices and shipping documents — turns them into deals, and drafts
+            replies that are only sent when someone clicks Send.
           </p>
           <p className="mt-2">
             See our{" "}
             <Link href="/privacy" className="text-teal-700 underline">
               privacy policy
             </Link>{" "}
-            for exactly what we access and how Google user data is handled.
+            for exactly what we store and how to remove it.
           </p>
         </section>
 

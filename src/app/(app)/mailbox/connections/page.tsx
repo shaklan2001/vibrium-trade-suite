@@ -2,275 +2,101 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import {
-  AlertTriangle,
-  ArrowRight,
-  Inbox,
-  Mail,
-  Pause,
-  Play,
-  Plus,
-  RefreshCw,
-  Server,
-  Trash2,
-} from "lucide-react";
+import { Inbox, KeyRound, Pause, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/app-shell";
-import { Badge, Button, Card, CardHeader, Input, Label } from "@/components/ui/primitives";
-import { ListSkeleton, LoadingBlock } from "@/components/ui/loading-block";
-import { slugId } from "@/lib/trade/processedDealMapper";
-import { hydrateMailboxBook } from "@/lib/trade/mailboxHydrate";
-import { useTradeStore } from "@/lib/trade/store";
-import { STAGE_LABELS, type Deal } from "@/types/trade";
+import { ImapConnectForm } from "@/components/mail/imap-connect-form";
+import { Badge, Button, Card, CardHeader } from "@/components/ui/primitives";
+import { ListSkeleton } from "@/components/ui/loading-block";
 import { describeSync, syncMailNow } from "@/lib/mail/client";
-import type {
-  MailConnectionPublic,
-  MailMessageSummary,
-  MailProviderId,
-} from "@/lib/mail/types";
+import type { MailConnectionPublic } from "@/lib/mail/types";
 
-type Setup = {
-  database: boolean;
-  encryption: boolean;
-  vibrium: boolean;
-  providers: Record<MailProviderId, boolean>;
-};
+/**
+ * Email connections: the team's mailboxes. Anyone can connect their own
+ * mailbox here (email + password over IMAP/SMTP); every connected mailbox
+ * feeds the shared Inbox and the Mailbox book.
+ */
 
 type ConnectionsResponse = {
-  setup: Setup;
-  connections: MailConnectionPublic[];
-  jobs: Record<string, number>;
+  connections?: MailConnectionPublic[];
+  jobs?: Record<string, number>;
   error?: string;
 };
 
-const PROVIDER_NAMES: Record<MailProviderId, string> = {
-  google: "Gmail",
-  microsoft: "Outlook",
-  imap: "IMAP",
-};
-
-const IMAP_PRESETS: Record<string, { host: string; port: number }> = {
-  custom: { host: "", port: 993 },
-  gmail: { host: "imap.gmail.com", port: 993 },
-  outlook: { host: "outlook.office365.com", port: 993 },
-  zoho: { host: "imap.zoho.in", port: 993 },
-  godaddy: { host: "imap.secureserver.net", port: 993 },
-  yahoo: { host: "imap.mail.yahoo.com", port: 993 },
-};
-
-const RECENT_PREVIEW = 8;
-
 function ago(iso: string | null | undefined, now: number) {
   if (!iso) return "never";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "—";
-  const s = Math.max(0, Math.round((now - t) / 1000));
+  const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
   if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return `${Math.floor(s / 86400)} d ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86_400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86_400)} d ago`;
 }
 
-/** One plain-language status per email instead of pipeline internals. */
-function emailStatus(m: MailMessageSummary) {
-  if (m.status === "noise") return { label: "Filtered", tone: "neutral" as const };
-  if (m.status === "error") return { label: "Couldn't read", tone: "danger" as const };
-  switch (m.job_status) {
-    case "done":
-      return { label: "Added to deal", tone: "success" as const };
-    case "skipped":
-      return { label: "Not a deal", tone: "neutral" as const };
-    case "failed":
-      return { label: "Will retry", tone: "warning" as const };
-    default:
-      return { label: "Reading…", tone: "info" as const };
-  }
+function health(c: MailConnectionPublic): { tone: "success" | "warning" | "danger" | "info" | "neutral"; text: string } {
+  if (c.status === "reauth_required") return { tone: "danger", text: "Password needed" };
+  if (c.status === "paused") return { tone: "neutral", text: "Paused" };
+  if (c.status === "error") return { tone: "warning", text: "Sync error" };
+  if (!c.last_sync_at) return { tone: "info", text: "Importing" };
+  return { tone: "success", text: "Connected" };
 }
 
-function connectionHealth(c: MailConnectionPublic) {
-  if (c.status === "reauth_required")
-    return { dot: "bg-red-500", text: "Access expired — reconnect to keep syncing" };
-  if (c.status === "paused") return { dot: "bg-zinc-400", text: "Paused" };
-  if (c.status === "error")
-    return { dot: "bg-amber-500", text: "Last sync had a problem — it will retry" };
-  return { dot: "bg-emerald-500", text: "Syncing automatically" };
-}
-
-function partyNames(deal: Deal) {
-  const pick = (role: string) =>
-    deal.parties.filter((p) => p.role === role).map((p) => p.company || p.name)[0];
-  return [pick("buyer"), pick("factory") || pick("forwarder")].filter(Boolean).join(" · ");
-}
-
-function ImapForm({ onDone }: { onDone: () => void }) {
-  const [preset, setPreset] = useState("custom");
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState(993);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      const res = await fetch("/api/mail/connections", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, user: email, host, port, secure: true, password }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      toast.success(`Connected ${email} — importing your recent mail`);
-      setPassword("");
-      onDone();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not connect");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="mt-4 grid gap-3 rounded-lg border border-zinc-200 p-4 sm:grid-cols-2">
-      <div>
-        <Label>Mail provider</Label>
-        <select
-          className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
-          value={preset}
-          onChange={(e) => {
-            setPreset(e.target.value);
-            const p = IMAP_PRESETS[e.target.value];
-            if (p?.host) {
-              setHost(p.host);
-              setPort(p.port);
-            }
-          }}
-        >
-          {Object.keys(IMAP_PRESETS).map((k) => (
-            <option key={k} value={k}>
-              {k === "custom" ? "Other server" : k[0]!.toUpperCase() + k.slice(1)}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="grid grid-cols-[1fr_90px] gap-2">
-        <div>
-          <Label>Server</Label>
-          <Input required value={host} onChange={(e) => setHost(e.target.value)} placeholder="imap.example.com" />
-        </div>
-        <div>
-          <Label>Port</Label>
-          <Input type="number" value={port} onChange={(e) => setPort(Number(e.target.value) || 993)} />
-        </div>
-      </div>
-      <div>
-        <Label>Email address</Label>
-        <Input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
-      </div>
-      <div>
-        <Label>App password</Label>
-        <Input
-          required
-          type="password"
-          autoComplete="new-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-      </div>
-      <div className="sm:col-span-2">
-        <Button type="submit" disabled={busy}>
-          {busy ? "Checking…" : "Connect"}
-        </Button>
-      </div>
-    </form>
-  );
-}
-
-export default function EmailPage() {
-  const [data, setData] = useState<ConnectionsResponse | null>(null);
-  const [messages, setMessages] = useState<MailMessageSummary[]>([]);
+export default function EmailConnectionsPage() {
+  const [connections, setConnections] = useState<MailConnectionPublic[]>([]);
+  const [jobs, setJobs] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [reconnect, setReconnect] = useState<MailConnectionPublic | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
-  const [showOthers, setShowOthers] = useState(false);
-  const [showImap, setShowImap] = useState(false);
-  const [showAllRecent, setShowAllRecent] = useState(false);
-  const [showFiltered, setShowFiltered] = useState(false);
-  const [now, setNow] = useState(Date.now());
-  const bookDeals = useTradeStore((s) => s.deals);
+  const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async () => {
     try {
-      const [c, m] = await Promise.all([
-        fetch("/api/mail/connections", { cache: "no-store" }).then((r) => r.json()),
-        fetch("/api/mail/messages?limit=200", { cache: "no-store" })
-          .then((r) => (r.ok ? r.json() : { messages: [] }))
-          .catch(() => ({ messages: [] })),
-      ]);
-      setData(c as ConnectionsResponse);
-      setMessages((m as { messages?: MailMessageSummary[] }).messages || []);
+      const res = await fetch("/api/mail/connections", { cache: "no-store" });
+      const body = (await res.json()) as ConnectionsResponse;
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setConnections(body.connections || []);
+      setJobs(body.jobs || {});
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load connections");
     } finally {
       setLoading(false);
+      setNow(Date.now());
     }
   }, []);
 
-  // OAuth callback lands here with ?connected= or ?error=
-  useEffect(() => {
-    const sp = new URLSearchParams(window.location.search);
-    const connected = sp.get("connected");
-    const error = sp.get("error");
-    if (connected) toast.success(`Connected ${connected} — importing your recent mail`);
-    if (error) toast.error(error);
-    if (connected || error) window.history.replaceState(null, "", "/mailbox/connections");
-  }, []);
-
-  const inFlight = (data?.jobs.running || 0) + (data?.jobs.pending || 0) + (data?.jobs.starting || 0);
-
   useEffect(() => {
     void load();
-    const clock = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(clock);
+    const t = window.setInterval(() => void load(), 30_000);
+    return () => window.clearInterval(t);
   }, [load]);
 
-  // Refresh faster while agents are still reading conversations.
-  useEffect(() => {
-    const t = window.setInterval(
-      async () => {
-        if (inFlight > 0) {
-          await fetch("/api/mail/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ jobs_only: true }),
-          }).catch(() => undefined);
-          void hydrateMailboxBook();
-        }
-        void load();
-      },
-      inFlight > 0 ? 12_000 : 30_000,
-    );
-    return () => window.clearInterval(t);
-  }, [inFlight, load]);
+  const sorted = useMemo(
+    () => [...connections].sort((a, b) => (a.display_name || a.email).localeCompare(b.display_name || b.email)),
+    [connections],
+  );
+  const totals = useMemo(
+    () => ({
+      mails: connections.reduce((n, c) => n + (c.stats?.messages || 0), 0),
+      deals: connections.reduce((n, c) => n + (c.stats?.deals || 0), 0),
+      attention: connections.filter((c) => c.status === "reauth_required" || c.status === "error").length,
+    }),
+    [connections],
+  );
+  const agentsWorking = (jobs.running || 0) + (jobs.starting || 0) + (jobs.pending || 0);
 
-  async function syncNow(connectionId?: string) {
-    setSyncing(connectionId || "all");
-    const toastId = toast.loading("Checking for new mail…");
+  async function syncNow(id?: string) {
+    setSyncing(id || "all");
     try {
-      const r = await syncMailNow({
-        connectionId,
-        onProgress: (p) => {
-          toast.loading(
-            `Checking… ${p.ingested} new email${p.ingested === 1 ? "" : "s"}${p.remaining ? `, ${p.remaining} to go` : ""}`,
-            { id: toastId },
-          );
-          void load();
-        },
+      const result = await syncMailNow({
+        connectionId: id,
+        onProgress: (p) => toast.loading(describeSync(p), { id: "mail-sync" }),
       });
-      if (r.errors.length) toast.error(r.errors[0], { id: toastId });
-      else if (r.locked && r.rounds === 1) toast.message("Already syncing — results appear shortly", { id: toastId });
-      else toast.success(r.ingested ? describeSync(r) : "You're up to date", { id: toastId });
-      await hydrateMailboxBook();
+      if (result.errors.length) toast.error(result.errors[0]!, { id: "mail-sync" });
+      else toast.success(describeSync(result), { id: "mail-sync" });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Sync failed", { id: toastId });
+      toast.error(err instanceof Error ? err.message : "Sync failed", { id: "mail-sync" });
     } finally {
       setSyncing(null);
       void load();
@@ -283,340 +109,198 @@ export default function EmailPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: paused ? "paused" : "active" }),
     });
-    if (!res.ok) toast.error("Couldn't update");
+    if (!res.ok) toast.error("Could not update the mailbox");
     void load();
   }
 
   async function disconnect(c: MailConnectionPublic) {
-    if (!window.confirm(`Disconnect ${c.email}? Deals already found stay in the book.`)) return;
+    if (
+      !window.confirm(
+        `Disconnect ${c.email}? Its stored mail and password are removed from Vibrium. Deals already in the book stay. This can't be undone.`,
+      )
+    )
+      return;
     const res = await fetch(`/api/mail/connections/${c.id}`, { method: "DELETE" });
     if (!res.ok) toast.error("Disconnect failed");
     else toast.success(`Disconnected ${c.email}`);
     void load();
   }
 
-  function connectGoogle() {
-    window.location.href = "/api/mail/oauth/google/start";
+  function connected() {
+    setAdding(false);
+    setReconnect(null);
+    void load();
+    void syncNow();
   }
 
-  const setup = data?.setup;
-  const ready = Boolean(setup?.database && setup?.encryption);
-  const connections = useMemo(() => data?.connections || [], [data]);
-
-  // Deals the agents built from this mail, newest first, enriched from the book.
-  const emailDeals = useMemo(() => {
-    const byKey = new Map<string, { subject: string; at: string | null }>();
-    for (const m of messages) {
-      if (m.status !== "ingested" || m.job_status !== "done" || !m.deal_key) continue;
-      if (!byKey.has(m.deal_key)) byKey.set(m.deal_key, { subject: m.subject || "", at: m.sent_at });
-    }
-    return [...byKey.entries()].map(([key, meta]) => ({
-      key,
-      href: `/deals/${encodeURIComponent(slugId(key))}`,
-      deal: bookDeals.find((d) => d.mailboxSourceId === key) || null,
-      ...meta,
-    }));
-  }, [messages, bookDeals]);
-
-  const dealsPerConnection = useMemo(() => {
-    const out = new Map<string, Set<string>>();
-    for (const m of messages) {
-      if (m.job_status !== "done" || !m.deal_key) continue;
-      if (!out.has(m.connection_id)) out.set(m.connection_id, new Set());
-      out.get(m.connection_id)!.add(m.deal_key);
-    }
-    return out;
-  }, [messages]);
-
-  const reading = useMemo(
-    () =>
-      new Set(
-        messages
-          .filter((m) => m.status === "ingested" && !["done", "skipped", "failed"].includes(m.job_status || ""))
-          .map((m) => m.deal_key),
-      ).size,
-    [messages],
-  );
-
-  const recent = useMemo(() => {
-    const list = showFiltered ? messages : messages.filter((m) => m.status !== "noise");
-    return showAllRecent ? list.slice(0, 60) : list.slice(0, RECENT_PREVIEW);
-  }, [messages, showAllRecent, showFiltered]);
-
-  const otherProviders = (
-    <div className="mt-3">
-      <button
-        type="button"
-        className="text-xs font-medium text-zinc-500 hover:text-zinc-800"
-        onClick={() => setShowOthers((v) => !v)}
-      >
-        {showOthers ? "Hide other options" : "Use Outlook or another email provider"}
-      </button>
-      {showOthers ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button
-            variant="secondary"
-            disabled={!setup?.providers.microsoft}
-            title={setup?.providers.microsoft ? undefined : "Outlook sign-in isn't set up yet"}
-            onClick={() => (window.location.href = "/api/mail/oauth/microsoft/start")}
-          >
-            <Inbox className="h-4 w-4" /> Outlook / Microsoft 365
-          </Button>
-          <Button variant="secondary" onClick={() => setShowImap((v) => !v)}>
-            <Server className="h-4 w-4" /> Other (IMAP)
-          </Button>
-        </div>
-      ) : null}
-      {showOthers && showImap ? (
-        <ImapForm
-          onDone={() => {
-            setShowImap(false);
-            setShowOthers(false);
-            void load();
-          }}
-        />
-      ) : null}
-    </div>
-  );
-
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className="mx-auto max-w-5xl">
       <PageHeader
-        title="Your email"
-        description="New emails from buyers, factories and forwarders become deals automatically. Read-only — nothing is ever sent or changed in your inbox."
+        title="Email connections"
+        description="Each team member connects their mailbox once. Every connected mailbox feeds the shared Inbox and the Mailbox book."
         actions={
-          connections.length ? (
-            <Button onClick={() => syncNow()} disabled={syncing !== null}>
-              <RefreshCw className={`h-4 w-4 ${syncing === "all" ? "animate-spin" : ""}`} />
-              {syncing === "all" ? "Checking…" : "Check for new mail"}
+          <div className="flex flex-wrap gap-2">
+            {connections.length ? (
+              <Button variant="secondary" onClick={() => void syncNow()} disabled={syncing !== null}>
+                <RefreshCw className={`h-4 w-4 ${syncing === "all" ? "animate-spin" : ""}`} />
+                {syncing === "all" ? "Checking…" : "Check all for new mail"}
+              </Button>
+            ) : null}
+            <Button
+              onClick={() => {
+                setReconnect(null);
+                setAdding(true);
+              }}
+            >
+              <Plus className="h-4 w-4" /> Connect a mailbox
             </Button>
-          ) : null
+          </div>
         }
       />
 
-      {loading ? (
-        <>
-          <LoadingBlock label="Loading…" className="mb-4" />
-          <ListSkeleton rows={3} />
-        </>
-      ) : (
-        <>
-          {!ready || data?.error ? (
-            <Card className="mb-6 flex items-start gap-3 border-amber-200 bg-amber-50/60 px-4 py-3 text-sm text-amber-900">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                Email sync isn&apos;t available right now. Please ask your admin to finish the
-                server setup.
-              </div>
-            </Card>
-          ) : null}
-
-          {connections.length === 0 ? (
-            <Card className="mb-6 px-6 py-10 text-center">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-teal-50">
-                <Mail className="h-6 w-6 text-teal-700" />
-              </div>
-              <h2 className="mt-4 text-lg font-semibold text-zinc-900">Connect your email</h2>
-              <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">
-                We&apos;ll import the last 30 days and then keep checking for new mail. Orders,
-                quotes and shipments you discuss by email show up as deals — no uploading.
-              </p>
-              <Button
-                className="mt-5"
-                disabled={!ready || !setup?.providers.google}
-                onClick={connectGoogle}
-              >
-                <Mail className="h-4 w-4" /> Connect Gmail
-              </Button>
-              <p className="mx-auto mt-3 max-w-md text-xs text-zinc-400">
-                Read-only access. We never send, delete or change your email.{" "}
-                <Link href="/privacy" className="underline hover:text-zinc-600">
-                  Privacy policy
-                </Link>
-              </p>
-              <div className="flex justify-center">{otherProviders}</div>
-            </Card>
-          ) : (
-            <Card className="mb-6">
-              <ul className="divide-y divide-zinc-100">
-                {connections.map((c) => {
-                  const health = connectionHealth(c);
-                  const found = dealsPerConnection.get(c.id)?.size || 0;
-                  return (
-                    <li key={c.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-4">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-teal-50 text-sm font-semibold uppercase text-teal-800">
-                          {c.email[0]}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-zinc-900">{c.email}</div>
-                          <div className="mt-0.5 flex items-center gap-1.5 text-xs text-zinc-500" title={c.last_error || undefined}>
-                            <span className={`h-2 w-2 rounded-full ${health.dot}`} />
-                            {health.text} · {PROVIDER_NAMES[c.provider]} · checked {ago(c.last_sync_at, now)}
-                          </div>
-                          <div className="mt-0.5 text-xs text-zinc-500">
-                            {c.stats?.messages || 0} emails read · {found} deal{found === 1 ? "" : "s"} found
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        {c.status === "reauth_required" && c.provider === "google" ? (
-                          <Button onClick={connectGoogle}>Reconnect</Button>
-                        ) : (
-                          <Button
-                            variant="secondary"
-                            disabled={syncing !== null || c.status === "paused"}
-                            onClick={() => syncNow(c.id)}
-                          >
-                            <RefreshCw className={`h-4 w-4 ${syncing === c.id ? "animate-spin" : ""}`} />
-                            Sync
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          title={c.status === "paused" ? "Resume syncing" : "Pause syncing"}
-                          onClick={() => setPaused(c, c.status !== "paused")}
-                        >
-                          {c.status === "paused" ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-                        </Button>
-                        <Button variant="ghost" title="Disconnect" onClick={() => disconnect(c)}>
-                          <Trash2 className="h-4 w-4 text-zinc-400 hover:text-red-600" />
-                        </Button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-              <div className="border-t border-zinc-100 px-4 py-3">
+      {adding || reconnect || (!loading && !connections.length) ? (
+        <Card className="mb-6">
+          <CardHeader
+            title={reconnect ? `Update the password for ${reconnect.email}` : "Connect a mailbox"}
+            description={
+              reconnect
+                ? "Enter the current mailbox password. Everything already imported stays."
+                : "Just the email address and mailbox password — the company mail server is already set up."
+            }
+            action={
+              connections.length ? (
                 <button
                   type="button"
-                  disabled={!ready}
-                  onClick={connectGoogle}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-teal-700 hover:underline disabled:opacity-50"
+                  onClick={() => {
+                    setAdding(false);
+                    setReconnect(null);
+                  }}
+                  className="rounded-full p-1.5 text-zinc-500 hover:bg-zinc-100"
+                  aria-label="Close"
                 >
-                  <Plus className="h-3.5 w-3.5" /> Connect another Gmail
+                  <X className="h-4 w-4" />
                 </button>
-                {otherProviders}
-              </div>
-            </Card>
-          )}
+              ) : null
+            }
+          />
+          <div className="px-4 pb-5">
+            <ImapConnectForm
+              key={reconnect?.id || "new"}
+              onConnected={connected}
+              defaultEmail={reconnect?.email}
+              defaultName={reconnect?.display_name || ""}
+              submitLabel={reconnect ? "Update password" : "Connect mailbox"}
+            />
+          </div>
+        </Card>
+      ) : null}
 
-          {connections.length ? (
-            <>
-              <Card className="mb-6">
-                <CardHeader
-                  title="Deals found in your email"
-                  description={
-                    reading
-                      ? `Reading ${reading} conversation${reading === 1 ? "" : "s"}… new deals appear here.`
-                      : "Opened from your conversations with buyers, factories and forwarders."
-                  }
-                  action={
-                    <Link href="/deals" className="text-xs font-medium text-teal-700 hover:underline">
-                      Deal Board →
+      <Card className="mb-6">
+        <CardHeader
+          title={`Team mailboxes (${connections.length})`}
+          description={
+            connections.length
+              ? `${totals.mails.toLocaleString()} emails synced · ${totals.deals} deals found${
+                  agentsWorking ? ` · agents reading ${agentsWorking} conversation${agentsWorking === 1 ? "" : "s"}` : ""
+                }${totals.attention ? ` · ${totals.attention} need attention` : ""}`
+              : "No mailbox connected yet."
+          }
+          action={
+            <Link href="/mailbox/inbox" className="text-xs font-medium text-teal-700 hover:underline">
+              Open shared inbox →
+            </Link>
+          }
+        />
+        {loading ? (
+          <div className="p-4">
+            <ListSkeleton rows={3} />
+          </div>
+        ) : error ? (
+          <p className="px-4 pb-4 text-sm text-red-700">{error}</p>
+        ) : (
+          <ul className="divide-y divide-zinc-100">
+            {sorted.map((c) => {
+              const h = health(c);
+              const imap = c.settings_json.imap;
+              return (
+                <li key={c.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-teal-50 text-sm font-semibold uppercase text-teal-800">
+                      {(c.display_name || c.email)[0]}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="truncate text-sm font-medium text-zinc-900">{c.display_name || c.email.split("@")[0]}</span>
+                        <Badge tone={h.tone}>{h.text}</Badge>
+                      </div>
+                      <div className="truncate text-xs text-zinc-500">
+                        {c.email} · IMAP {imap ? `${imap.host}:${imap.port}` : ""} · checked {ago(c.last_sync_at, now)}
+                      </div>
+                      <div className="text-xs text-zinc-500" title={c.last_error || undefined}>
+                        {(c.stats?.messages || 0).toLocaleString()} emails · {c.stats?.deals || 0} deals
+                        {c.last_error ? <span className="text-amber-700"> · {c.last_error.slice(0, 90)}</span> : null}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <Link
+                      href={`/mailbox/inbox?mailbox=${encodeURIComponent(c.id)}`}
+                      className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-50"
+                    >
+                      <Inbox className="h-3.5 w-3.5" /> Inbox
                     </Link>
-                  }
-                />
-                {emailDeals.length === 0 ? (
-                  <p className="px-4 py-8 text-center text-sm text-zinc-500">
-                    No deals yet. When a buyer, factory or forwarder emails you about an order,
-                    quote or shipment, it will show up here.
-                  </p>
-                ) : (
-                  <ul className="divide-y divide-zinc-100">
-                    {emailDeals.map(({ key, href, deal, subject, at }) => (
-                      <li key={key}>
-                        <Link
-                          href={href}
-                          className="flex items-center justify-between gap-3 px-4 py-3 transition hover:bg-zinc-50"
-                        >
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-zinc-900">
-                              {deal?.title || subject || "Untitled deal"}
-                            </div>
-                            <div className="mt-0.5 truncate text-xs text-zinc-500">
-                              {[deal?.code, deal ? partyNames(deal) : "", ago(at, now)]
-                                .filter(Boolean)
-                                .join(" · ")}
-                            </div>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            {deal ? <Badge tone="info">{STAGE_LABELS[deal.stage]}</Badge> : null}
-                            <ArrowRight className="h-4 w-4 text-zinc-300" />
-                          </div>
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Card>
-
-              <Card>
-                <CardHeader
-                  title="Recent emails"
-                  action={
-                    <label className="flex items-center gap-1.5 text-xs text-zinc-500">
-                      <input
-                        type="checkbox"
-                        checked={showFiltered}
-                        onChange={(e) => setShowFiltered(e.target.checked)}
-                      />
-                      Show newsletters &amp; notifications
-                    </label>
-                  }
-                />
-                {recent.length === 0 ? (
-                  <p className="px-4 py-6 text-center text-sm text-zinc-500">No emails yet.</p>
-                ) : (
-                  <ul className="divide-y divide-zinc-100">
-                    {recent.map((m) => {
-                      const s = emailStatus(m);
-                      const row = (
-                        <div className="flex items-center justify-between gap-3 px-4 py-2.5">
-                          <div className="min-w-0">
-                            <div className="truncate text-sm text-zinc-900">{m.subject || "(no subject)"}</div>
-                            <div className="truncate text-xs text-zinc-500">
-                              {m.from_name || m.from_email || "Unknown sender"} · {ago(m.sent_at, now)}
-                            </div>
-                          </div>
-                          <span className="shrink-0 whitespace-nowrap">
-                            <Badge tone={s.tone}>{s.label}</Badge>
-                          </span>
-                        </div>
-                      );
-                      return (
-                        <li key={`${m.connection_id}:${m.provider_message_id}`}>
-                          {m.job_status === "done" && m.deal_key ? (
-                            <Link
-                              href={`/deals/${encodeURIComponent(slugId(m.deal_key))}`}
-                              className="block transition hover:bg-zinc-50"
-                            >
-                              {row}
-                            </Link>
-                          ) : (
-                            row
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-                {messages.length > RECENT_PREVIEW ? (
-                  <div className="border-t border-zinc-100 px-4 py-2.5">
+                    {c.status === "reauth_required" ? (
+                      <Button
+                        onClick={() => {
+                          setAdding(false);
+                          setReconnect(c);
+                        }}
+                      >
+                        <KeyRound className="h-4 w-4" /> Update password
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        disabled={syncing !== null || c.status === "paused"}
+                        onClick={() => void syncNow(c.id)}
+                      >
+                        <RefreshCw className={`h-4 w-4 ${syncing === c.id ? "animate-spin" : ""}`} /> Sync
+                      </Button>
+                    )}
                     <button
                       type="button"
-                      className="text-xs font-medium text-teal-700 hover:underline"
-                      onClick={() => setShowAllRecent((v) => !v)}
+                      onClick={() => void setPaused(c, c.status !== "paused")}
+                      className="rounded-md p-2 text-zinc-500 hover:bg-zinc-100"
+                      aria-label={c.status === "paused" ? `Resume ${c.email}` : `Pause ${c.email}`}
+                      title={c.status === "paused" ? "Resume syncing" : "Pause syncing"}
                     >
-                      {showAllRecent ? "Show less" : "Show more"}
+                      {c.status === "paused" ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void disconnect(c)}
+                      className="rounded-md p-2 text-zinc-500 hover:bg-red-50 hover:text-red-700"
+                      aria-label={`Disconnect ${c.email}`}
+                      title="Disconnect"
+                    >
+                      <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
-                ) : null}
-              </Card>
-            </>
-          ) : null}
-        </>
-      )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      <p className="text-xs leading-relaxed text-zinc-500">
+        New mail is pulled every few minutes while the suite is open and once a day otherwise. Mail from buyers,
+        factories and forwarders is read by the stage agents and becomes deals in the{" "}
+        <Link href="/mailbox" className="text-teal-700 hover:underline">
+          Mailbox book
+        </Link>
+        . Passwords are stored encrypted and never shown again.
+      </p>
     </div>
   );
 }
