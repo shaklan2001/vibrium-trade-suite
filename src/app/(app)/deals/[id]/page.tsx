@@ -21,12 +21,14 @@ import { DealPaymentsPanel } from "@/components/ops/deal-payments-panel";
 import { DealOverviewCard } from "@/components/ops/deal-overview-card";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
 import { BookSwitch } from "@/components/ops/book-switch";
+import { findDealByRef } from "@/lib/trade/dealLink";
 
 export default function DealRoomPage() {
   const params = useParams<{ id: string }>();
   const id = decodeURIComponent(params.id || "");
   const deal = useTradeStore((s) =>
-    s.deals.find((d) => d.id === id || d.id === params.id),
+    // Full id, or the short /deals/<code>~<hash> key the Copilot links with.
+    findDealByRef(s.deals, id) || s.deals.find((d) => d.id === params.id),
   );
   const updateDeal = useTradeStore((s) => s.updateDeal);
   const deleteDeal = useTradeStore((s) => s.deleteDeal);

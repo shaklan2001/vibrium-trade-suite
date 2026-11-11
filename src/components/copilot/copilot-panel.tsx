@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { v4 as uuid } from "uuid";
 import { Button, Card, CardHeader, Input } from "@/components/ui/primitives";
 import { MarkdownMessage } from "@/components/copilot/markdown-message";
-import { Loader2, MessageSquare, Mic, Square, Volume2, X } from "lucide-react";
+import { ArrowUpRight, Loader2, MessageSquare, Mic, Square, Volume2, X } from "lucide-react";
+import { useTradeStore } from "@/lib/trade/store";
+import type { CopilotDealRef } from "@/lib/trade/copilotGrounding";
 import { toast } from "sonner";
 import {
   applyVoiceSegment,
@@ -110,6 +114,29 @@ const VOICE_STRIP: Record<Exclude<VoicePhase, "idle">, string> = {
   speaking: "Speaking the reply… tap ■ to stop",
 };
 
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  /** Deals this answer is about (from the server) — shown as Open chips. */
+  deals?: CopilotDealRef[];
+};
+
+function readDealRefs(res: Response): CopilotDealRef[] {
+  const raw = res.headers.get("X-Copilot-Deals");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw)) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (d): d is CopilotDealRef =>
+            Boolean(d) && typeof d.id === "string" && typeof d.href === "string",
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export function CopilotPanel({
   compact = false,
   dealId,
@@ -119,9 +146,10 @@ export function CopilotPanel({
 }) {
   const [contactId] = useState(() => `trade-${uuid()}`);
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<
-    { role: "user" | "assistant"; content: string }[]
-  >([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const bookFilter = useTradeStore((s) => s.commercialModelFilter);
+  /** Deals the last answer was about — lets "its payment term?" resolve. */
+  const activeDealIdsRef = useRef<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
@@ -180,6 +208,8 @@ export function CopilotPanel({
           contactId,
           message: text,
           focusDealId: dealId || undefined,
+          activeDealIds: activeDealIdsRef.current,
+          bookFilter,
           voice: opts.voice || undefined,
         }),
       });
@@ -187,11 +217,13 @@ export function CopilotPanel({
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `Chat failed (${res.status})`);
       }
+      const deals = readDealRefs(res);
+      if (deals.length) activeDealIdsRef.current = deals.map((d) => d.id);
       await readStreamText(res, (full) => {
         reply = full;
         setMessages((m) => {
           const copy = [...m];
-          copy[copy.length - 1] = { role: "assistant", content: full };
+          copy[copy.length - 1] = { role: "assistant", content: full, deals };
           return copy;
         });
       });
@@ -415,12 +447,13 @@ export function CopilotPanel({
         {messages.length === 0 ? (
           <div className="space-y-2 text-sm text-zinc-500">
             <p>
-              Ask about the live book — overdue payments, a teammate&apos;s
-              deals (e.g. kalpana), or what needs attention.
+              Ask about any deal or PO, a buyer, factory or teammate, payments,
+              shipments, or what needs attention.
             </p>
             <p className="text-xs">
-              Try: “How many open deals?”, “Show kalpana deals”, “What is
-              overdue?”, “What’s next on this deal?”
+              Try: “Summarize PO 15269”, “Which deals have overdue payments?”,
+              “Show Swastik deals in booking”, “What needs attention today?”
+              {dealId ? ", “Summarize this deal”" : ""}
             </p>
             {voiceSupported ? (
               <p className="text-xs">
@@ -440,9 +473,26 @@ export function CopilotPanel({
           >
             {m.role === "assistant" ? (
               m.content ? (
-                <MarkdownMessage content={m.content} />
+                <>
+                  <MarkdownMessage content={m.content} />
+                  {m.deals?.length && !(busy && i === messages.length - 1) ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {m.deals.slice(0, 4).map((d) => (
+                        <Link
+                          key={d.id}
+                          href={d.href}
+                          title={d.title}
+                          className="inline-flex items-center gap-1 rounded-full border border-teal-200 bg-white px-2 py-0.5 text-[11px] font-medium text-teal-800 transition hover:bg-teal-50"
+                        >
+                          Open {d.code}
+                          <ArrowUpRight className="h-3 w-3" />
+                        </Link>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
               ) : busy && i === messages.length - 1 ? (
-                <span className="text-sm text-zinc-500">…</span>
+                <span className="text-sm text-zinc-500">Looking it up…</span>
               ) : null
             ) : (
               m.content
@@ -539,8 +589,21 @@ export function CopilotPanel({
   );
 }
 
+/** Deal open on screen (/deals/[id]) so "this deal" works from the floating panel. */
+function useDealOnScreen(): string | undefined {
+  const pathname = usePathname() || "";
+  const m = /^\/deals\/([^/?#]+)/.exec(pathname);
+  if (!m) return undefined;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1];
+  }
+}
+
 export function FloatingCopilot() {
   const [open, setOpen] = useState(false);
+  const dealOnScreen = useDealOnScreen();
 
   return (
     <div className="fixed bottom-4 right-4 z-40">
@@ -555,12 +618,12 @@ export function FloatingCopilot() {
               <X className="h-4 w-4" />
             </button>
           </div>
-          <CopilotPanel compact />
+          <CopilotPanel compact dealId={dealOnScreen} />
         </div>
       ) : (
         <button
           onClick={() => setOpen(true)}
-          className="flex items-center gap-2 rounded-full bg-teal-700 px-4 py-2.5 text-sm font-medium text-white shadow-lg transition hover:bg-teal-800"
+          className="fab"
         >
           <MessageSquare className="h-4 w-4" />
           Copilot

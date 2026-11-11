@@ -97,41 +97,27 @@ export function KpiTile({
   onClick?: () => void;
   href?: string;
 }) {
-  const ring =
+  const toneClass =
     tone === "danger"
-      ? "border-red-200 bg-red-50/50"
+      ? "kpi-danger"
       : tone === "warning"
-        ? "border-amber-200 bg-amber-50/50"
+        ? "kpi-warning"
         : tone === "success"
-          ? "border-emerald-200 bg-emerald-50/50"
+          ? "kpi-success"
           : tone === "info"
-            ? "border-sky-200 bg-sky-50/50"
-            : "border-zinc-200 bg-white";
+            ? "kpi-info"
+            : "";
   const clickable = Boolean(onClick || href);
-  const className = `rounded-lg border shadow-sm ${ring} ${
-    size === "lg" ? "px-4 py-4" : "px-3 py-3"
-  } ${
-    clickable
-      ? "cursor-pointer transition hover:border-teal-400 hover:shadow-md hover:ring-2 hover:ring-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
-      : ""
+  const className = `kpi ${toneClass} ${size === "md" ? "kpi-md" : ""} ${
+    clickable ? "cursor-pointer" : ""
   }`;
   const inner = (
     <>
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+      <span>
         {label}
-        {clickable ? (
-          <span className="ml-1 font-normal normal-case text-teal-700">
-            · open
-          </span>
-        ) : null}
-      </div>
-      <div
-        className={`mt-1 font-semibold tabular-nums tracking-tight text-zinc-900 ${
-          size === "lg" ? "text-2xl sm:text-3xl" : "text-xl"
-        }`}
-      >
-        {value}
-      </div>
+        {clickable ? " · open" : ""}
+      </span>
+      <strong>{value}</strong>
     </>
   );
   if (href) {
@@ -167,7 +153,7 @@ export function ExpandSection({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section id={id} className="rounded-lg border border-zinc-200 bg-white shadow-sm">
+    <section id={id} className="card">
       <button
         type="button"
         className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-zinc-50/80"
