@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 
 /** Soft-normalize common stream/LLM glitches that jam markdown blocks together. */
@@ -56,16 +57,24 @@ export function MarkdownMessage({ content }: { content: string }) {
             <strong className="font-semibold text-zinc-900">{children}</strong>
           ),
           em: ({ children }) => <em className="italic text-zinc-700">{children}</em>,
-          a: ({ href, children }) => (
-            <a
-              href={href}
-              className="font-medium text-teal-700 underline underline-offset-2 hover:text-teal-800"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {children}
-            </a>
-          ),
+          a: ({ href, children }) =>
+            href?.startsWith("/") && !href.startsWith("//") ? (
+              <Link
+                href={href}
+                className="font-medium text-teal-700 underline underline-offset-2 hover:text-teal-800"
+              >
+                {children}
+              </Link>
+            ) : (
+              <a
+                href={href}
+                className="font-medium text-teal-700 underline underline-offset-2 hover:text-teal-800"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {children}
+              </a>
+            ),
           code: ({ children, className }) => {
             const isBlock = Boolean(className);
             if (isBlock) {

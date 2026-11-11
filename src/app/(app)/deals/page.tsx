@@ -103,7 +103,7 @@ export default function DealsPage() {
         }
       />
 
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
         <label className="relative min-w-[220px] flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
           <Input
@@ -168,7 +168,7 @@ export default function DealsPage() {
         </>
       ) : (
         <>
-          <div className="mb-6 grid gap-3 sm:grid-cols-4">
+          <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Stat label="Matching deals" value={deals.length} />
             <Stat
               label="In outreach"

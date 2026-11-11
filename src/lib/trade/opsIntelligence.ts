@@ -396,10 +396,10 @@ export function scoreDeal(
   const value = dealValueProxy(deal);
   if (value >= 15000) {
     score += 10;
-    reasons.push(`Value ~$${Math.round(value).toLocaleString()}`);
+    reasons.push(`Value ~$${Math.round(value).toLocaleString("en-US")}`);
   } else if (value >= 5000) {
     score += 5;
-    reasons.push(`Value ~$${Math.round(value).toLocaleString()}`);
+    reasons.push(`Value ~$${Math.round(value).toLocaleString("en-US")}`);
   }
 
   const urg = (deal.requirement?.urgency || "").toLowerCase();

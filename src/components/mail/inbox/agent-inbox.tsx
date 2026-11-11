@@ -48,11 +48,13 @@ type InboxResponse = {
   items?: InboxItem[];
   nextCursor?: InboxCursor | null;
   error?: string;
+  code?: string;
 };
 
 const ALL = "all";
 const PAGE_SIZE = 40;
-const CHOSEN_KEY = "vt-inbox-mailbox";
+/** v2: the old demo inbox stored a {provider, address} object under "vt-inbox-mailbox". */
+const CHOSEN_KEY = "vt-inbox-mailbox-v2";
 const READ_KEY = "vt-inbox-read-v2";
 const SENT_KEY = "vt-inbox-sent-v2";
 /** Re-read the current page while the inbox is open (the sync runs every ~3 min). */
@@ -143,9 +145,20 @@ export function AgentInbox() {
           sp.set("before_at", opts.cursor.at);
           sp.set("before_key", opts.cursor.key);
         }
-        const res = await fetch(`/api/mail/inbox?${sp}`, { cache: "no-store" });
-        const body = (await res.json()) as InboxResponse;
+        let res = await fetch(`/api/mail/inbox?${sp}`, { cache: "no-store" });
+        let body = (await res.json()) as InboxResponse;
         if (id !== requestId.current) return; // a newer request superseded this one
+        // The chosen mailbox was disconnected (or the choice is stale): show all mailboxes.
+        if (res.status === 404 && body.code === "not_found" && opts.scope !== ALL) {
+          setScope(ALL);
+          saveStored(CHOSEN_KEY, ALL);
+          sp.set("mailbox", ALL);
+          sp.delete("before_at");
+          sp.delete("before_key");
+          res = await fetch(`/api/mail/inbox?${sp}`, { cache: "no-store" });
+          body = (await res.json()) as InboxResponse;
+          if (id !== requestId.current) return;
+        }
         if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
         setMailboxes(body.mailboxes || []);
         setItems(body.items || []);
@@ -167,7 +180,8 @@ export function AgentInbox() {
     setRead(loadStored<string[]>(READ_KEY, []));
     setSent(loadStored<Record<string, SentReply>>(SENT_KEY, {}));
     const fromUrl = new URLSearchParams(window.location.search).get("mailbox");
-    const first = fromUrl || loadStored<string>(CHOSEN_KEY, ALL);
+    const saved = loadStored<unknown>(CHOSEN_KEY, ALL);
+    const first = fromUrl || (typeof saved === "string" && saved ? saved : ALL);
     setScope(first);
     void load({ scope: first, cursor: null, q: "" });
   }, [load]);

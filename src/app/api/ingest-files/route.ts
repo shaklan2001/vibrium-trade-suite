@@ -18,6 +18,12 @@ const PREFIX = (process.env.AWS_S3_PREFIX || "trade/pst-ingest")
 
 const DIGEST_RE = /^[a-f0-9]{64}$/i;
 
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (c) =>
+    c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;",
+  );
+}
+
 let client: S3Client | null = null;
 function s3() {
   if (!client) client = new S3Client({ region: REGION });
@@ -68,9 +74,10 @@ export async function GET(request: NextRequest) {
         return new NextResponse(
           `<!doctype html><meta charset="utf-8"/><title>Attachment missing</title>
            <body style="font:14px/1.45 system-ui;padding:2rem;max-width:40rem">
-           <h1>Attachment not in cloud storage</h1>
-           <p>This file was referenced in a mailbox deal but is not in the ingest bucket yet. If you just refreshed the book, wait for attachment sync to finish, then try again.</p>
-           <p><code>${digest}</code></p>
+           <h1>${nameHint ? escapeHtml(nameHint) : "This attachment"} was never uploaded</h1>
+           <p>The email that carried this file is in the deal, but the file itself is not in cloud storage. Most mailbox deals came from an Outlook (PST) export, and only one file per deal was uploaded from it.</p>
+           <p>To fix it, upload the missing files from the original export: <code>python scripts/upload-missing-attachments.py</code> on the machine that holds <code>data/pst_extract</code>. Mail from a connected mailbox uploads its files automatically.</p>
+           <p style="color:#71717a">File id <code>${digest}</code></p>
            </body>`,
           {
             status: 404,

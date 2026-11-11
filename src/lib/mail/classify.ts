@@ -64,6 +64,8 @@ const FACTORY_DOMAINS = [
   "ykindustries.co.in",
   "protectools.cn",
   "agrofoods.net",
+  // Britannia Industries mails from britindia.com; it ships Waldos orders (PO 4329707).
+  "britindia.com",
 ];
 
 const FORWARDER_DOMAINS = [
@@ -73,7 +75,6 @@ const FORWARDER_DOMAINS = [
   "wacbangladesh.com",
   "c-air.com",
   "expeditors.com",
-  "britindia.com",
   "cardinalgl.com",
   "deigratialogistics.com",
   "avmcargo.com",

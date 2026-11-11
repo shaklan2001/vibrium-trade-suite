@@ -14,6 +14,7 @@ import {
   type ClassifyContext,
 } from "./classify";
 import type { StoredAttachment, StoredMailMessage } from "./types";
+import { poNumbersIn } from "@/lib/trade/dealReference";
 
 /**
  * Deal pack for one deal_key — the live-mail equivalent of one line in
@@ -257,9 +258,11 @@ export function buildDealPack(
 
   const pos = new Set<string>(parseJson<string[]>(existing?.po_numbers, []));
   if (dealKey.startsWith("po:")) pos.add(dealKey.slice(3));
+  // Every PO in every subject, not just the first ("PO # G 2625017, G 2625076, …").
   for (const s of subjects) {
     const po = poKey(s);
     if (po) pos.add(po);
+    for (const p of poNumbersIn(s)) pos.add(p);
   }
 
   const documents: DealPack["documents"] = [];

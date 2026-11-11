@@ -132,8 +132,42 @@ def _migrate(conn: pg8000.native.Connection) -> dict:
         )
         """
     )
+    # Manual corrections a person made on the Deal Board (e.g. Agency → Trader).
+    # Kept apart from processed_deals so pipeline upserts never overwrite them.
+    conn.run(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.deal_overrides (
+          deal_id TEXT PRIMARY KEY,
+          commercial_model TEXT,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """
+    )
+    # One PI / PO / invoice extraction per attachment, so a deal is not limited
+    # to the single file its main worker read.
+    conn.run(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.deal_documents (
+          deal_id TEXT NOT NULL,
+          sha256 TEXT NOT NULL,
+          name TEXT,
+          sent_at TIMESTAMPTZ,
+          slot TEXT,
+          agent_id TEXT,
+          execution_id TEXT,
+          status TEXT NOT NULL,
+          result_json JSONB,
+          error TEXT,
+          cost_usd DOUBLE PRECISION,
+          started_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (deal_id, sha256)
+        )
+        """
+    )
     _migrate_mail(conn)
     for stmt in (
+        f"CREATE INDEX IF NOT EXISTS deal_documents_status ON {SCHEMA}.deal_documents (status)",
         f"CREATE INDEX IF NOT EXISTS processed_deals_stage ON {SCHEMA}.processed_deals (primary_stage)",
         f"CREATE INDEX IF NOT EXISTS processed_deals_status ON {SCHEMA}.processed_deals (status)",
         f"CREATE INDEX IF NOT EXISTS processed_deals_date_end ON {SCHEMA}.processed_deals (date_end DESC)",
@@ -146,6 +180,8 @@ def _migrate(conn: pg8000.native.Connection) -> dict:
             "schema": SCHEMA,
             "tables": [
                 "processed_deals",
+                "deal_overrides",
+                "deal_documents",
                 "ingest_progress",
                 "mail_connections",
                 "mail_messages",
@@ -175,6 +211,20 @@ def _health(conn: pg8000.native.Connection) -> dict:
         }
     )
 
+
+_OVERRIDE_SQL = (
+    f"(SELECT o.commercial_model FROM {SCHEMA}.deal_overrides o "
+    f"WHERE o.deal_id = {SCHEMA}.processed_deals.id)"
+)
+
+# Completed per-document extracts, without line items (they can be large).
+_DOCUMENTS_SQL = (
+    "(SELECT coalesce(jsonb_agg(jsonb_build_object("
+    "'name', d.name, 'sha256', d.sha256, 'sent_at', d.sent_at, 'slot', d.slot, "
+    "'result', coalesce(d.result_json, '{}'::jsonb) - 'lines') ORDER BY d.sent_at DESC NULLS LAST), '[]'::jsonb) "
+    f"FROM {SCHEMA}.deal_documents d "
+    f"WHERE d.deal_id = {SCHEMA}.processed_deals.id AND d.status = 'completed')"
+)
 
 # Lightweight participant/header blob for client search (no message bodies).
 _SEARCH_TEXT_SQL = f"""
@@ -269,7 +319,9 @@ def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
                cost_usd, input_tokens, output_tokens, result_json,
                commercial_model, document_name, document_url,
                (evidence_json IS NOT NULL) AS has_evidence,
-               {_SEARCH_TEXT_SQL} AS search_text
+               {_SEARCH_TEXT_SQL} AS search_text,
+               {_OVERRIDE_SQL} AS commercial_model_override,
+               {_DOCUMENTS_SQL} AS documents_json
         FROM {SCHEMA}.processed_deals
         {where_sql}
         ORDER BY date_end DESC NULLS LAST
@@ -303,6 +355,8 @@ def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
         "document_url",
         "has_evidence",
         "search_text",
+        "commercial_model_override",
+        "documents_json",
     ]
     deals = [dict(zip(cols, r)) for r in rows]
     stage_rows = conn.run(
@@ -357,7 +411,9 @@ def _get_evidence(conn: pg8000.native.Connection, payload: dict) -> dict:
                status, summary, confidence, date_start, date_end,
                message_count, doc_count, parties_json, error, processed_at,
                cost_usd, result_json, commercial_model, evidence_json,
-               document_name, document_url
+               document_name, document_url,
+               {_OVERRIDE_SQL} AS commercial_model_override,
+               {_DOCUMENTS_SQL} AS documents_json
         FROM {SCHEMA}.processed_deals
         WHERE id = :id
         LIMIT 1
@@ -389,8 +445,129 @@ def _get_evidence(conn: pg8000.native.Connection, payload: dict) -> dict:
         "evidence_json",
         "document_name",
         "document_url",
+        "commercial_model_override",
+        "documents_json",
     ]
     return _ok(dict(zip(cols, rows[0])))
+
+
+_DOC_COLS = [
+    "deal_id", "sha256", "name", "sent_at", "slot", "agent_id", "execution_id",
+    "status", "result_json", "error", "cost_usd", "started_at", "updated_at",
+]
+
+
+def _list_deal_documents(conn: pg8000.native.Connection, payload: dict) -> dict:
+    """Per-document rows for some deals, or every row in one status (e.g. running)."""
+    ids = _str_list(payload.get("deal_ids"), 500)
+    status = (payload.get("status") or "").strip()
+    limit = min(max(int(payload.get("limit") or 500), 1), 2000)
+    where, params = [], {"limit": limit}
+    if ids:
+        where.append("deal_id = ANY(CAST(:ids AS text[]))")
+        params["ids"] = ids
+    if status:
+        where.append("status = :status")
+        params["status"] = status
+    if not where:
+        return _err("deal_ids or status required")
+    rows = conn.run(
+        f"SELECT {', '.join(_DOC_COLS)} FROM {SCHEMA}.deal_documents "
+        f"WHERE {' AND '.join(where)} ORDER BY updated_at DESC LIMIT :limit",
+        **params,
+    )
+    return _ok([dict(zip(_DOC_COLS, r)) for r in rows])
+
+
+def _upsert_deal_document(conn: pg8000.native.Connection, payload: dict) -> dict:
+    row = payload.get("row") or {}
+    if not row.get("deal_id") or not row.get("sha256") or not row.get("status"):
+        return _err("row.deal_id, row.sha256 and row.status required")
+    conn.run(
+        f"""
+        INSERT INTO {SCHEMA}.deal_documents (
+          deal_id, sha256, name, sent_at, slot, agent_id, execution_id, status,
+          result_json, error, cost_usd, started_at, updated_at
+        ) VALUES (
+          :deal_id, :sha256, :name, CAST(:sent_at AS timestamptz), :slot, :agent_id,
+          :execution_id, :status, CAST(:result AS jsonb), :error, :cost_usd,
+          CAST(:started_at AS timestamptz), now()
+        )
+        ON CONFLICT (deal_id, sha256) DO UPDATE SET
+          name = EXCLUDED.name,
+          sent_at = EXCLUDED.sent_at,
+          slot = EXCLUDED.slot,
+          agent_id = EXCLUDED.agent_id,
+          execution_id = EXCLUDED.execution_id,
+          status = EXCLUDED.status,
+          result_json = EXCLUDED.result_json,
+          error = EXCLUDED.error,
+          cost_usd = EXCLUDED.cost_usd,
+          started_at = EXCLUDED.started_at,
+          updated_at = now()
+        """,
+        deal_id=row["deal_id"],
+        sha256=row["sha256"],
+        name=row.get("name"),
+        sent_at=row.get("sent_at"),
+        slot=row.get("slot"),
+        agent_id=row.get("agent_id"),
+        execution_id=row.get("execution_id"),
+        status=row["status"],
+        result=json.dumps(row.get("result_json")) if row.get("result_json") is not None else None,
+        error=row.get("error"),
+        cost_usd=row.get("cost_usd"),
+        started_at=row.get("started_at"),
+    )
+    return _ok({"deal_id": row["deal_id"], "sha256": row["sha256"]})
+
+
+_MODELS = {"agency_commission", "trader_principal"}
+
+
+def _set_deal_override(conn: pg8000.native.Connection, payload: dict) -> dict:
+    """Pin a deal's book. commercial_model null removes the pin."""
+    deal_id = (payload.get("id") or "").strip()
+    model = payload.get("commercial_model")
+    if not deal_id:
+        return _err("id required")
+    if model is not None and model not in _MODELS:
+        return _err("commercial_model must be agency_commission, trader_principal or null")
+    if not conn.run(f"SELECT 1 FROM {SCHEMA}.processed_deals WHERE id = :id", id=deal_id):
+        return _err("Not found")
+    if model is None:
+        conn.run(f"DELETE FROM {SCHEMA}.deal_overrides WHERE deal_id = :id", id=deal_id)
+    else:
+        conn.run(
+            f"""
+            INSERT INTO {SCHEMA}.deal_overrides (deal_id, commercial_model, updated_at)
+            VALUES (:id, :model, now())
+            ON CONFLICT (deal_id) DO UPDATE
+              SET commercial_model = EXCLUDED.commercial_model, updated_at = now()
+            """,
+            id=deal_id,
+            model=model,
+        )
+    return _ok({"id": deal_id, "commercial_model_override": model})
+
+
+def _patch_evidence(conn: pg8000.native.Connection, payload: dict) -> dict:
+    """Replace only evidence_json (text repairs), leaving the rest of the row as it is."""
+    deal_id = (payload.get("id") or "").strip()
+    evidence = payload.get("evidence_json")
+    if not deal_id or not isinstance(evidence, dict):
+        return _err("id and evidence_json object required")
+    updated = conn.run(
+        f"""
+        UPDATE {SCHEMA}.processed_deals SET evidence_json = CAST(:ev AS jsonb)
+        WHERE id = :id RETURNING id
+        """,
+        id=deal_id,
+        ev=json.dumps(evidence),
+    )
+    if not updated:
+        return _err("Not found")
+    return _ok({"id": deal_id})
 
 
 def _upsert_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
@@ -1041,6 +1218,14 @@ def lambda_handler(event, context):
             return _get_evidence(conn, payload)
         if action == "upsert_deals":
             return _upsert_deals(conn, payload)
+        if action == "set_deal_override":
+            return _set_deal_override(conn, payload)
+        if action == "patch_evidence":
+            return _patch_evidence(conn, payload)
+        if action == "list_deal_documents":
+            return _list_deal_documents(conn, payload)
+        if action == "upsert_deal_document":
+            return _upsert_deal_document(conn, payload)
         if action in MAIL_ACTIONS:
             return MAIL_ACTIONS[action](conn, payload)
         return _err(f"Unknown action: {action}")

@@ -10,8 +10,11 @@ import { Button, Card } from "@/components/ui/primitives";
 import { LoadingBlock, KpiSkeletonRow } from "@/components/ui/loading-block";
 import { KpiTile } from "@/components/ops/command-center-ui";
 import { BookInsightsStrip } from "@/components/ops/book-insights-strip";
+import { EarlyWarningsCard } from "@/components/ops/early-warnings-card";
 import { useTradeStore } from "@/lib/trade/store";
 import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
+import { filterDealsByCommercialModel } from "@/lib/trade/commercialModel";
+import { collectEarlyWarnings } from "@/lib/trade/earlyWarnings";
 import { companyPulse } from "@/lib/trade/opsIntelligence";
 import { buildCashExposureReport } from "@/lib/trade/cashExposure";
 import {
@@ -44,12 +47,14 @@ function k(n: number) {
 
 export default function CommandCenterHubPage() {
   const deals = useVisibleDeals();
+  const allDeals = useTradeStore((s) => s.deals);
   const filter = useTradeStore((s) => s.commercialModelFilter);
   const agencyMode = filter === "agency_commission";
   const rates = useAgencyCommissionStore((s) => s.rates);
-  const opsIntel = useTradeStore((s) => s.opsIntel);
   const { setProcessId } = useWorkspaceProcess();
   const mailboxStatus = useTradeStore((s) => s.mailboxBookStatus);
+  const mailboxError = useTradeStore((s) => s.mailboxBookError);
+  const failedExtracts = useTradeStore((s) => s.mailboxFailedCount);
 
   useEffect(() => {
     if (mailboxStatus === "idle") void hydrateMailboxBook();
@@ -67,9 +72,16 @@ export default function CommandCenterHubPage() {
     () => buildBookInsights(deals, rates),
     [deals, rates],
   );
-  const alerts = (opsIntel.attention || []).filter(
-    (a) => a.severity === "critical" || a.severity === "warning",
-  ).length;
+  const warnings = useMemo(
+    () =>
+      collectEarlyWarnings(filterDealsByCommercialModel(allDeals, filter), {
+        failedExtracts,
+      }),
+    [allDeals, filter, failedExtracts],
+  );
+  const alerts = warnings.length;
+  const alertTone =
+    mailboxStatus === "error" ? "neutral" : alerts ? "danger" : "success";
 
   const bookLoading =
     mailboxStatus === "idle" || mailboxStatus === "loading";
@@ -149,12 +161,18 @@ export default function CommandCenterHubPage() {
                 <KpiTile
                   label="Ops alerts"
                   value={alerts}
-                  tone={alerts ? "danger" : "success"}
+                  tone={alertTone}
                   size="lg"
                 />
               </>
             )}
           </div>
+
+          <EarlyWarningsCard
+            rows={warnings}
+            status={mailboxStatus}
+            error={mailboxError}
+          />
 
           <BookInsightsStrip insights={insights} />
 
@@ -231,7 +249,7 @@ export default function CommandCenterHubPage() {
                       <KpiTile
                         label="Alerts"
                         value={alerts}
-                        tone={alerts ? "danger" : "neutral"}
+                        tone={mailboxStatus === "error" ? "neutral" : alerts ? "danger" : "neutral"}
                       />
                       <KpiTile
                         label="About to sail"

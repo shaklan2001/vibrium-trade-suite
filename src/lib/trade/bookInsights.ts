@@ -142,12 +142,12 @@ export function buildBookInsights(
   );
   if (agencyBook.bookUsd > 0) {
     headlines.push(
-      `Agency commission after shipment · collected ${agencyBook.collectionPct}% · overdue $${Math.round(agencyBook.overdueUsd).toLocaleString()}`,
+      `Agency commission after shipment · collected ${agencyBook.collectionPct}% · overdue $${Math.round(agencyBook.overdueUsd).toLocaleString("en-US")}`,
     );
   }
   if (overdueTotalUsd > 0) {
     headlines.push(
-      `Open overdue installments ≈ $${Math.round(overdueTotalUsd).toLocaleString()} across aging buckets`,
+      `Open overdue installments ≈ $${Math.round(overdueTotalUsd).toLocaleString("en-US")} across aging buckets`,
     );
   }
   const defaulted = deals.filter((d) => {

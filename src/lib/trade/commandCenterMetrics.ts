@@ -108,7 +108,7 @@ export function ensureDealEconomics(deal: Deal): DealEconomics {
           ? "Commission at risk exceeds near inflows — watch cash."
           : "Cash stuck relative to inflows — escalate payment / commission.",
     sources: citeFromDeal(deal, ["payment", "commission", "pi", "po", "quote"]),
-    summary: `${deal.code}: $${money(commercial).toLocaleString()} commercial · $${money(commission).toLocaleString()} agency`,
+    summary: `${deal.code}: $${money(commercial).toLocaleString("en-US")} commercial · $${money(commission).toLocaleString("en-US")} agency`,
   };
 }
 
@@ -237,7 +237,7 @@ export function buildFinancePulseFromDeals(deals: Deal[]): FinancePulseReport {
     agencyExpectedTotalUsd: money(agencyExpected),
     agencyPayablesUsd: money(agencyPayables),
     lines,
-    summary: `Commercial: $${money(commercialReceived).toLocaleString()} received · $${money(commercialAbout).toLocaleString()} about to come · $${money(commercialAtRisk).toLocaleString()} at risk. Agency: $${money(agencyReceived).toLocaleString()} received · $${money(agencyAbout).toLocaleString()} about to come · $${money(agencyAtRisk).toLocaleString()} at risk · $${money(agencyPayables).toLocaleString()} to pay.`,
+    summary: `Commercial: $${money(commercialReceived).toLocaleString("en-US")} received · $${money(commercialAbout).toLocaleString("en-US")} about to come · $${money(commercialAtRisk).toLocaleString("en-US")} at risk. Agency: $${money(agencyReceived).toLocaleString("en-US")} received · $${money(agencyAbout).toLocaleString("en-US")} about to come · $${money(agencyAtRisk).toLocaleString("en-US")} at risk · $${money(agencyPayables).toLocaleString("en-US")} to pay.`,
     sources: sources.slice(0, 12),
     confidence: 0.85,
   };

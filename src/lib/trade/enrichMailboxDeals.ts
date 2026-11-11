@@ -3,16 +3,15 @@
  * commercial value from PI/PO rows — enables Agency commission-after-shipment KPIs.
  */
 import type { Deal } from "@/types/trade";
+import { cleanPoNumber, cleanPoNumbers } from "./dealReference";
 import { isLocalChargesNarrative } from "./localCharges";
 
 function poKeys(deal: Deal): string[] {
-  const keys = new Set<string>();
-  for (const p of deal.mailboxPoNumbers || []) {
-    const k = p.replace(/\s+/g, "").toUpperCase();
-    if (k) keys.add(k);
+  const keys = new Set<string>(cleanPoNumbers(deal.mailboxPoNumbers));
+  if (deal.code?.toUpperCase().startsWith("PO-")) {
+    const code = cleanPoNumber(deal.code.slice(3));
+    if (code) keys.add(code);
   }
-  const code = (deal.code || "").replace(/^PO-/i, "").replace(/\s+/g, "").toUpperCase();
-  if (code && deal.code?.toUpperCase().startsWith("PO-")) keys.add(code);
   return [...keys];
 }
 
@@ -56,6 +55,11 @@ export function enrichMailboxDeals(deals: Deal[]): Deal[] {
 
     const amount = best.amount;
     const paid = d.payment?.status === "paid";
+    // A donor valued only by a factory PI (e.g. Protec PI 2651WQ) is the
+    // factory bill, not what the buyer owes — link it on the factory side.
+    const factoryOnly = Boolean(
+      best.donor.pi?.totalAmount && !best.donor.po?.totalAmount && !best.donor.payment?.amountUsd,
+    );
     const economics = {
       commercialValueUsd: amount,
       agencyCommissionUsd: Math.round(amount * 0.05 * 100) / 100,
@@ -77,13 +81,17 @@ export function enrichMailboxDeals(deals: Deal[]): Deal[] {
       ({
         buyerTerms: best.donor.paymentSchedule?.buyerTerms || "Linked from commercial extract",
         factoryTerms: best.donor.paymentSchedule?.factoryTerms,
-        currency: best.donor.payment?.currency || best.donor.po?.currency || "USD",
+        currency:
+          best.donor.payment?.currency ||
+          best.donor.po?.currency ||
+          (factoryOnly ? best.donor.pi?.currency : undefined) ||
+          "USD",
         orderValueUsd: amount,
         checkpoints: [
           {
             id: `${d.id}-linked`,
-            side: "buyer" as const,
-            label: "Commercial value (linked PO)",
+            side: factoryOnly ? ("factory" as const) : ("buyer" as const),
+            label: factoryOnly ? "Factory PI (linked)" : "Commercial value (linked PO)",
             percent: 100,
             amountUsd: Math.round(amount),
             dueDate: d.booking?.etd || d.payment?.dueDate || d.updatedAt?.slice(0, 10),
@@ -94,6 +102,11 @@ export function enrichMailboxDeals(deals: Deal[]): Deal[] {
           },
         ],
       } satisfies NonNullable<Deal["paymentSchedule"]>);
+
+    // Factory bill only: no buyer commercial value, commission or receivable.
+    if (factoryOnly) {
+      return { ...d, paymentSchedule, pi: d.pi || best.donor.pi };
+    }
 
     return {
       ...d,

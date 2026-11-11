@@ -686,12 +686,12 @@ export default function FinanceDashboardPage() {
         </>
       )}
 
-      <Card className="mb-4 p-3">
-        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+      <Card className="mb-4 p-4">
+        <h2 className="mb-1 text-base font-semibold tracking-tight text-[var(--ink)]">
           {agencyMode
             ? "Order-wise commission flow"
             : "Order-wise payment flow"}
-        </div>
+        </h2>
         <OrderPaymentFlowGrid
           orders={pay.byOrder}
           onSelectOrder={openDealMonth}

@@ -83,6 +83,64 @@ const FINANCE_PHASES = [
   { name: "Commission settle", color: "bg-emerald-800" },
 ];
 
+function Swimlane({
+  lanes,
+  steps,
+}: {
+  lanes: readonly string[];
+  steps: readonly { id: string; title: string; lane: string; detail: string }[];
+}) {
+  return (
+    <div className="overflow-x-auto px-5 pb-5 pt-2">
+      <div
+        className="grid gap-3"
+        style={{
+          gridTemplateColumns: `11rem repeat(${steps.length}, minmax(9.25rem, 1fr))`,
+          minWidth: `${11 + steps.length * 9.25}rem`,
+        }}
+      >
+        <div />
+        {steps.map((step) => (
+          <div
+            key={`h-${step.id}`}
+            className="pb-1 text-center text-xs font-semibold text-[var(--muted)]"
+          >
+            {step.id}
+          </div>
+        ))}
+        {lanes.map((lane) => (
+          <Fragment key={lane}>
+            <div className="sticky left-0 z-[1] flex items-center rounded-xl bg-[var(--muted-bg)] px-3 py-3 text-[13px] font-semibold leading-snug text-[var(--ink)]">
+              {lane}
+            </div>
+            {steps.map((step) =>
+              step.lane === lane ? (
+                <div
+                  key={`${lane}-${step.id}`}
+                  className="flex min-h-[7.5rem] flex-col gap-1.5 rounded-xl border border-[color-mix(in_srgb,var(--accent)_22%,var(--line))] bg-[var(--accent-soft)] p-3"
+                >
+                  <div className="text-[13px] font-semibold leading-snug text-[var(--ink)]">
+                    {step.title}
+                  </div>
+                  <div className="text-xs leading-relaxed text-[var(--muted)]">
+                    {step.detail}
+                  </div>
+                </div>
+              ) : (
+                <div
+                  key={`${lane}-${step.id}`}
+                  className="min-h-[7.5rem] rounded-xl bg-[color-mix(in_srgb,var(--muted-bg)_55%,transparent)]"
+                  aria-hidden
+                />
+              ),
+            )}
+          </Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function OpsProcessMap() {
   return (
     <div>
@@ -96,11 +154,11 @@ function OpsProcessMap() {
           title="End-to-end flow"
           description="Requirement → Development → Sample → PO → Production → Inspection → Packing → Booking → Docs → Payment → Commission"
         />
-        <div className="flex flex-wrap gap-2 px-4 pb-4">
+        <div className="flex flex-wrap gap-2 px-5 pb-5">
           {OPS_PHASES.map((p) => (
             <span
               key={p.name}
-              className={`${p.color} rounded-md px-2.5 py-1.5 text-xs font-medium text-white`}
+              className={`${p.color} rounded-full px-3 py-1.5 text-xs font-semibold text-white`}
             >
               {p.name}
             </span>
@@ -108,54 +166,9 @@ function OpsProcessMap() {
         </div>
       </Card>
 
-      <Card className="mb-6 overflow-x-auto">
+      <Card className="mb-6">
         <CardHeader title="Swimlanes" description="Who owns each handoff" />
-        <div className="min-w-[720px] p-4">
-          <div
-            className="grid gap-2"
-            style={{
-              gridTemplateColumns: `7rem repeat(${OPS_STEPS.length}, minmax(5.5rem, 1fr))`,
-            }}
-          >
-            <div />
-            {OPS_STEPS.map((s) => (
-              <div
-                key={`h-${s.id}`}
-                className="text-center text-[10px] font-semibold uppercase tracking-wide text-zinc-400"
-              >
-                {s.id}
-              </div>
-            ))}
-            {OPS_LANES.map((lane) => (
-              <Fragment key={lane}>
-                <div className="flex items-center rounded-md bg-zinc-100 px-2 py-2 text-xs font-semibold text-zinc-700">
-                  {lane}
-                </div>
-                {OPS_STEPS.map((s) => (
-                  <div
-                    key={`${lane}-${s.id}`}
-                    className="min-h-[4.5rem] rounded-md border border-zinc-100 bg-zinc-50/80 p-1.5"
-                  >
-                    {s.lane === lane ? (
-                      <div className="h-full rounded-md border border-teal-200 bg-teal-50 p-1.5">
-                        <div className="text-[10px] font-semibold text-teal-900">
-                          {s.title}
-                        </div>
-                        <div className="mt-0.5 text-[9px] leading-snug text-teal-800/80">
-                          {s.detail}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex h-full items-center justify-center">
-                        <div className="h-px w-full bg-zinc-200" />
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </Fragment>
-            ))}
-          </div>
-        </div>
+        <Swimlane lanes={OPS_LANES} steps={OPS_STEPS} />
       </Card>
 
       <div className="grid gap-3 md:grid-cols-2">
@@ -210,74 +223,29 @@ function FinanceProcessMap() {
           title="Cash cycle"
           description="PI/PO + payment terms → Deploy to factory → Track → Buyer recoveries (checkpoints + email confirm) → Commission settle"
         />
-        <div className="flex flex-wrap gap-2 px-4 pb-4">
+        <div className="flex flex-wrap gap-2 px-5 pb-5">
           {FINANCE_PHASES.map((p) => (
             <span
               key={p.name}
-              className={`${p.color} rounded-md px-2.5 py-1.5 text-xs font-medium text-white`}
+              className={`${p.color} rounded-full px-3 py-1.5 text-xs font-semibold text-white`}
             >
               {p.name}
             </span>
           ))}
         </div>
-        <p className="border-t border-zinc-100 px-4 py-3 text-xs text-zinc-500">
+        <p className="border-t border-zinc-100 px-5 py-4 text-sm leading-relaxed text-zinc-500">
           <strong className="text-zinc-700">Agency · Sourcing</strong> and{" "}
           <strong className="text-zinc-700">Agency · Accounts</strong> are both
           Savvy Net Sourcing (SNSPL) — not separate legal entities.
         </p>
       </Card>
 
-      <Card className="mb-6 overflow-x-auto">
+      <Card className="mb-6">
         <CardHeader
           title="Cash lanes"
           description="Buyer · SNSPL (Sourcing / Accounts) · Factory"
         />
-        <div className="min-w-[640px] p-4">
-          <div
-            className="grid gap-2"
-            style={{
-              gridTemplateColumns: `7rem repeat(${FINANCE_STEPS.length}, minmax(5.5rem, 1fr))`,
-            }}
-          >
-            <div />
-            {FINANCE_STEPS.map((s) => (
-              <div
-                key={`h-${s.id}`}
-                className="text-center text-[10px] font-semibold uppercase tracking-wide text-zinc-400"
-              >
-                {s.id}
-              </div>
-            ))}
-            {FINANCE_LANES.map((lane) => (
-              <Fragment key={lane}>
-                <div className="flex items-center rounded-md bg-zinc-100 px-2 py-2 text-xs font-semibold text-zinc-700">
-                  {lane}
-                </div>
-                {FINANCE_STEPS.map((s) => (
-                  <div
-                    key={`${lane}-${s.id}`}
-                    className="min-h-[4.5rem] rounded-md border border-zinc-100 bg-zinc-50/80 p-1.5"
-                  >
-                    {s.lane === lane ? (
-                      <div className="h-full rounded-md border border-teal-200 bg-teal-50 p-1.5">
-                        <div className="text-[10px] font-semibold text-teal-900">
-                          {s.title}
-                        </div>
-                        <div className="mt-0.5 text-[9px] leading-snug text-teal-800/80">
-                          {s.detail}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex h-full items-center justify-center">
-                        <div className="h-px w-full bg-zinc-200" />
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </Fragment>
-            ))}
-          </div>
-        </div>
+        <Swimlane lanes={FINANCE_LANES} steps={FINANCE_STEPS} />
       </Card>
 
       <div className="grid gap-3 md:grid-cols-2">

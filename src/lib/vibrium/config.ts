@@ -25,6 +25,29 @@ export function getVibriumConfig() {
   };
 }
 
+/**
+ * Bot used for Copilot voice (LiveKit web-call STT). Prefer a dedicated
+ * VIBRIUM_VOICE_BOT_ID; falls back to the Ops Copilot bot.
+ */
+export function getVoiceBotId(): string {
+  return (
+    process.env.VIBRIUM_VOICE_BOT_ID?.trim() ||
+    process.env.VIBRIUM_OPS_COPILOT_BOT_ID?.trim() ||
+    process.env.VIBRIUM_BOT_ID?.trim() ||
+    ""
+  );
+}
+
+/** True when every env var needed for the voice web-call is present. */
+export function isVibriumVoiceConfigured(): boolean {
+  return Boolean(
+    process.env.VIBRIUM_CUSTOMER_ID?.trim() &&
+      process.env.VIBRIUM_SERVICE_USERNAME?.trim() &&
+      process.env.VIBRIUM_SERVICE_PASSWORD?.trim() &&
+      getVoiceBotId(),
+  );
+}
+
 export function getPublicConfig() {
   return {
     apiBaseUrl: (
