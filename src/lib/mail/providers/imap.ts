@@ -96,12 +96,3 @@ export const openImapSession: OpenSession = async (conn, secret) => {
     },
   };
 };
-
-/** Presets for the connect form. */
-export const IMAP_PRESETS: Record<string, { host: string; port: number; secure: boolean }> = {
-  gmail: { host: "imap.gmail.com", port: 993, secure: true },
-  outlook: { host: "outlook.office365.com", port: 993, secure: true },
-  yahoo: { host: "imap.mail.yahoo.com", port: 993, secure: true },
-  zoho: { host: "imap.zoho.in", port: 993, secure: true },
-  godaddy: { host: "imap.secureserver.net", port: 993, secure: true },
-};

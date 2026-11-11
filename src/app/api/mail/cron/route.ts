@@ -26,7 +26,7 @@ export async function GET(req: Request) {
   }
   if (!mailStoreConfigured()) return jsonError("No database configured", 503);
   try {
-    const result = await runMailCycle({ push: true, deadline: deadlineIn() });
+    const result = await runMailCycle({ deadline: deadlineIn() });
     return NextResponse.json(result, { headers: NO_STORE });
   } catch (err) {
     return jsonError(err);

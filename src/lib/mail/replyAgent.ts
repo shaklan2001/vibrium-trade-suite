@@ -88,7 +88,9 @@ export function replyPrompt(item: InboxItem, signer: string) {
     "Never invent prices, quantities, dates or commitments. If you can't confirm something (e.g. a payment), say we are checking and will revert.",
     "Separate paragraphs with a blank line.",
     `Reply to: ${item.latest.fromName || item.latest.from} <${item.latest.from}>.`,
-    `Deal stage: ${item.stage || "unknown"}. ${item.agentName} found: ${item.summary || "no summary"}`,
+    item.slot || item.summary
+      ? `Deal stage: ${item.stage || "unknown"}. ${item.agentName} found: ${item.summary || "no summary"}`
+      : "This mail is not linked to a deal yet — answer it from the thread alone.",
     facts ? `Extracted facts: ${facts}` : "",
     `End with:\nBest regards,\n${signer}\nSavvy Net Sourcing`,
     "",

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Mail } from "lucide-react";
@@ -229,31 +230,26 @@ export default function IntakePage() {
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <Mail className="h-4 w-4 text-zinc-500" aria-hidden />
                 <span className="text-sm font-medium text-zinc-800">
-                  Connect mailbox
+                  Team mailboxes
                 </span>
-                <Badge>Unavailable</Badge>
               </div>
               <p className="mb-3 text-xs text-zinc-500">
-                Connect Gmail or Outlook to import buyer enquiries automatically.
-                Paste an email below to continue.
+                Connected mailboxes bring buyer enquiries into the shared Inbox and the
+                deal book automatically. Or paste an email below.
               </p>
               <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled
-                  title="Mailbox connect shipping next — Gmail OAuth"
+                <Link
+                  href="/mailbox/connections"
+                  className="inline-flex items-center rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-50"
                 >
-                  Connect Gmail
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled
-                  title="Mailbox connect shipping next — Outlook OAuth"
+                  Email connections
+                </Link>
+                <Link
+                  href="/mailbox/inbox"
+                  className="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-teal-700 hover:bg-teal-50"
                 >
-                  Connect Outlook
-                </Button>
+                  Open shared inbox →
+                </Link>
               </div>
             </div>
             <div>

@@ -118,7 +118,7 @@ function formatEtd(iso: string | null | undefined) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-async function fetchAllDeals(stage: string) {
+async function fetchAllDeals(stage: string, source: string) {
   const all: ProcessedDeal[] = [];
   const seen = new Set<string>();
   let offset = 0;
@@ -132,6 +132,7 @@ async function fetchAllDeals(stage: string) {
       offset: String(offset),
     });
     if (stage !== "all") params.set("stage", stage);
+    if (source !== "all") params.set("mailbox", source);
     const res = await fetch(`/api/processed-deals?${params}`, {
       cache: "no-store",
     });
@@ -154,8 +155,13 @@ async function fetchAllDeals(stage: string) {
   return { deals: all, counts, progress };
 }
 
+type SourceMailbox = { id: string; email: string; display_name: string | null };
+
 export default function MailboxPage() {
   const [stage, setStage] = useState<(typeof STAGE_FILTERS)[number]>("all");
+  /** "all" = PST uploads + email, "connected" = every connected mailbox, or one connection id. */
+  const [source, setSource] = useState("all");
+  const [mailboxes, setMailboxes] = useState<SourceMailbox[]>([]);
   const [deals, setDeals] = useState<ProcessedDeal[]>([]);
   const [counts, setCounts] = useState<Counts>({
     total: 0,
@@ -172,14 +178,21 @@ export default function MailboxPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [stage]);
+  }, [stage, source]);
+
+  useEffect(() => {
+    fetch("/api/mail/connections", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((b: { connections?: SourceMailbox[] }) => setMailboxes(b.connections || []))
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     async function load(first = false) {
       try {
         if (first) setLoading(true);
-        const next = await fetchAllDeals(stage);
+        const next = await fetchAllDeals(stage, source);
         if (cancelled) return;
         setDeals(next.deals);
         setCounts(next.counts);
@@ -200,7 +213,7 @@ export default function MailboxPage() {
       window.clearInterval(poll);
       window.clearInterval(clock);
     };
-  }, [stage, refreshKey]);
+  }, [stage, source, refreshKey]);
 
   const completed = counts.byStatus.completed ?? 0;
   const failed = counts.byStatus.failed ?? 0;
@@ -230,9 +243,26 @@ export default function MailboxPage() {
     <div>
       <PageHeader
         title="Mailbox book"
-        description="PST uploads and connected inboxes. Progress and extracted deals come from the live database."
+        description="Deals from PST uploads and every connected team mailbox. Progress and extracted deals come from the live database."
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <label className="sr-only" htmlFor="mailbox-book-source">
+              Source
+            </label>
+            <select
+              id="mailbox-book-source"
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800"
+            >
+              <option value="all">All sources (PST + email)</option>
+              <option value="connected">Connected mailboxes ({mailboxes.length})</option>
+              {mailboxes.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.display_name || m.email.split("@")[0]} — {m.email}
+                </option>
+              ))}
+            </select>
             <SyncNowButton onSynced={() => setRefreshKey((k) => k + 1)} />
             <Link
               href="/mailbox/connections"

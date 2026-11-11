@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Inbox,
   CornerUpLeft,
   Paperclip,
   RefreshCw,
@@ -57,7 +58,7 @@ function AgentCard({
 }: {
   item: InboxItem;
   outcome: InboxOutcome;
-  dealHref: string;
+  dealHref: string | null;
   dealCode: string | null;
   sent: SentReply | null;
 }) {
@@ -68,9 +69,11 @@ function AgentCard({
           <Sparkles className="h-3.5 w-3.5" /> Vibrium agent · {item.agentName}
           {item.agentId ? <span className="font-normal normal-case text-teal-700/70">({item.agentId})</span> : null}
         </p>
-        <Link href={dealHref} className="text-xs font-medium text-teal-700 hover:underline">
-          Open deal{dealCode ? ` ${dealCode}` : ""} →
-        </Link>
+        {dealHref ? (
+          <Link href={dealHref} className="text-xs font-medium text-teal-700 hover:underline">
+            Open deal{dealCode ? ` ${dealCode}` : ""} →
+          </Link>
+        ) : null}
       </div>
       {item.summary ? <p className="mt-2 text-sm leading-relaxed text-zinc-700">{item.summary}</p> : null}
 
@@ -162,19 +165,26 @@ function DraftEditor({
   draft,
   status,
   sendLabel,
+  sending,
+  saveDraftLabel,
   onChange,
   onRewrite,
   onSend,
+  onSaveDraft,
 }: {
   draft: ReplyDraft;
   status: DraftStatus;
   sendLabel: string;
+  sending?: "send" | "draft" | null;
+  saveDraftLabel?: string;
   onChange: (body: string) => void;
   onRewrite: () => void;
   onSend: () => void;
+  onSaveDraft?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const writing = status === "writing";
+  const busy = writing || Boolean(sending);
 
   async function copy() {
     try {
@@ -221,15 +231,25 @@ function DraftEditor({
         <button
           type="button"
           onClick={onSend}
-          disabled={writing || !draft.body.trim()}
+          disabled={busy || !draft.body.trim()}
           className="inline-flex items-center gap-1.5 rounded-full bg-teal-700 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-teal-800 disabled:opacity-50"
         >
-          <Send className="h-3.5 w-3.5" /> {sendLabel}
+          <Send className="h-3.5 w-3.5" /> {sending === "send" ? "Sending…" : sendLabel}
         </button>
+        {onSaveDraft ? (
+          <button
+            type="button"
+            onClick={onSaveDraft}
+            disabled={busy || !draft.body.trim()}
+            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+          >
+            <Inbox className="h-3.5 w-3.5" /> {sending === "draft" ? "Saving…" : saveDraftLabel || "Save as draft"}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onRewrite}
-          disabled={writing}
+          disabled={busy}
           className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
         >
           <RefreshCw className={cn("h-3.5 w-3.5", writing && "animate-spin")} /> Rewrite with Copilot
@@ -270,26 +290,32 @@ export function InboxView({
   draftStatus,
   sent,
   sendLabel,
+  sending,
+  saveDraftLabel,
   onBack,
   onStep,
   onChangeDraft,
   onRewrite,
   onSend,
+  onSaveDraft,
 }: {
   item: InboxItem;
   outcome: InboxOutcome;
-  dealHref: string;
+  dealHref: string | null;
   dealCode: string | null;
   position: { index: number; total: number };
   draft: ReplyDraft | null;
   draftStatus: DraftStatus;
   sent: SentReply | null;
   sendLabel: string;
+  sending?: "send" | "draft" | null;
+  saveDraftLabel?: string;
   onBack: () => void;
   onStep: (dir: -1 | 1) => void;
   onChangeDraft: (body: string) => void;
   onRewrite: () => void;
   onSend: () => void;
+  onSaveDraft?: () => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const older = item.thread.slice(0, -1);
@@ -353,9 +379,12 @@ export function InboxView({
             draft={draft}
             status={draftStatus}
             sendLabel={sendLabel}
+            sending={sending}
+            saveDraftLabel={saveDraftLabel}
             onChange={onChangeDraft}
             onRewrite={onRewrite}
             onSend={onSend}
+            onSaveDraft={onSaveDraft}
           />
         ) : null}
       </div>

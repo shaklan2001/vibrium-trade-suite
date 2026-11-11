@@ -1,7 +1,5 @@
 /**
- * Facts shown on the public homepage, /privacy and /terms. Google's OAuth
- * verification reviewers check these pages against the consent screen, so the
- * values here must match what is entered in Google Cloud console.
+ * Facts shown on the public homepage, /privacy and /terms.
  */
 export const APP_NAME = "Vibrium Trade";
 export const COMPANY_NAME = "Vibrium AI";

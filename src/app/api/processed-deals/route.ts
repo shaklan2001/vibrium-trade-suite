@@ -2,6 +2,7 @@ import { readFile } from "fs/promises";
 import path from "path";
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
+import { getMailStore } from "@/lib/mail/store";
 import { invokeTradeSuiteRds, isRdsProxyEnabled } from "@/lib/rdsProxy";
 import {
   buildDealSearchText,
@@ -34,16 +35,25 @@ export async function GET(request: Request) {
   const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 400, 1), 500);
   const offset = Math.max(Number.isFinite(offsetRaw) ? offsetRaw : 0, 0);
   const q = (searchParams.get("q") || "").trim().slice(0, 120);
+  // Source filter: "connected" = every connected mailbox, or one connection id.
+  const mailbox = (searchParams.get("mailbox") || "").trim().slice(0, 100);
 
   // Preferred path for Aurora: VPC Lambda proxy (schema trade_suite only)
   if (isRdsProxyEnabled()) {
     try {
+      let connectionIds: string[] | undefined;
+      if (mailbox) {
+        const conns = await getMailStore().listConnections();
+        connectionIds = (mailbox === "connected" ? conns : conns.filter((c) => c.id === mailbox)).map((c) => c.id);
+        if (!connectionIds.length) connectionIds = ["__none__"];
+      }
       const res = await invokeTradeSuiteRds<ProcessedDealRow[]>({
         action: "list_deals",
         stage: stage || undefined,
         limit,
         offset,
         q: q || undefined,
+        connection_ids: connectionIds,
       });
       if (!res.success) {
         return NextResponse.json(

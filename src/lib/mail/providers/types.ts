@@ -13,12 +13,6 @@ export interface ProviderSession {
   secretChanged: boolean;
 }
 
-export type OAuthIdentity = {
-  email: string;
-  displayName: string | null;
-  secret: MailSecret;
-};
-
 export type OpenSession = (
   conn: MailConnectionRow,
   secret: MailSecret,

@@ -139,7 +139,7 @@ export async function parseRawMail(raw: Buffer | string): Promise<NormalizedMail
 /* ------------------------------------------------------------------ */
 
 const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "ap-south-1";
-const BUCKET = process.env.AWS_S3_BUCKET || "";
+const BUCKET = process.env.AWS_S3_BUCKET || "conversation-agents-artifacts";
 const PREFIX = (process.env.AWS_S3_PREFIX || "trade/pst-ingest").replace(/^\/+|\/+$/g, "");
 
 let s3: S3Client | null = null;

@@ -226,6 +226,25 @@ def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
     # search_text carries party + mail header tokens (e.g. kalpana@snspl.in).
     where_parts: list[str] = []
     params: dict[str, Any] = {"limit": limit, "offset": offset}
+    ids = _str_list(payload.get("ids"), 200)
+    if ids:
+        where_parts.append("id = ANY(CAST(:ids AS text[]))")
+        params["ids"] = ids
+    connection_ids = _str_list(payload.get("connection_ids"), 100)
+    scope_sql = ""
+    scope_params: dict[str, Any] = {}
+    if connection_ids:
+        # Deals built from these connected mailboxes (Mailbox book source filter).
+        scope_sql = (
+            f"id IN (SELECT DISTINCT deal_key FROM {SCHEMA}.mail_messages "
+            "WHERE connection_id = ANY(CAST(:connection_ids AS text[])) AND deal_key IS NOT NULL)"
+        )
+        where_parts.append(scope_sql)
+        params["connection_ids"] = connection_ids
+        scope_params["connection_ids"] = connection_ids
+    # Counts follow the source filter so the tabs add up.
+    scope_where = f"WHERE {scope_sql}" if scope_sql else ""
+    scope_and = f"AND {scope_sql}" if scope_sql else ""
     if stage:
         where_parts.append("primary_stage = :stage")
         params["stage"] = stage
@@ -289,26 +308,30 @@ def _list_deals(conn: pg8000.native.Connection, payload: dict) -> dict:
     stage_rows = conn.run(
         f"""
         SELECT primary_stage, count(*)::int
-        FROM {SCHEMA}.processed_deals GROUP BY primary_stage
-        """
+        FROM {SCHEMA}.processed_deals {scope_where} GROUP BY primary_stage
+        """,
+        **scope_params,
     )
     status_rows = conn.run(
         f"""
         SELECT status, count(*)::int
-        FROM {SCHEMA}.processed_deals GROUP BY status
-        """
+        FROM {SCHEMA}.processed_deals {scope_where} GROUP BY status
+        """,
+        **scope_params,
     )
     model_rows = conn.run(
         f"""
         SELECT commercial_model, count(*)::int
         FROM {SCHEMA}.processed_deals
-        WHERE status = 'completed'
+        WHERE status = 'completed' {scope_and}
         GROUP BY commercial_model
-        """
+        """,
+        **scope_params,
     )
-    total = conn.run(f"SELECT count(*)::int FROM {SCHEMA}.processed_deals")[0][0]
+    total = conn.run(f"SELECT count(*)::int FROM {SCHEMA}.processed_deals {scope_where}", **scope_params)[0][0]
     spend = conn.run(
-        f"SELECT coalesce(sum(cost_usd), 0)::float8 FROM {SCHEMA}.processed_deals"
+        f"SELECT coalesce(sum(cost_usd), 0)::float8 FROM {SCHEMA}.processed_deals {scope_where}",
+        **scope_params,
     )[0][0]
     return _ok(
         deals,
@@ -537,6 +560,28 @@ def _migrate_mail(conn: pg8000.native.Connection) -> None:
         )
         """,
         f"CREATE INDEX IF NOT EXISTS mail_deal_jobs_status ON {SCHEMA}.mail_deal_jobs (status, dirty)",
+        # Shared inbox: conversation grouping + folder, so the inbox reads from
+        # the store instead of opening 15 IMAP sessions per page.
+        f"ALTER TABLE {SCHEMA}.mail_messages ADD COLUMN IF NOT EXISTS thread_key TEXT",
+        f"ALTER TABLE {SCHEMA}.mail_messages ADD COLUMN IF NOT EXISTS folder TEXT",
+        # Same rule as threadKeyFor() in src/lib/mail/thread.ts.
+        f"""
+        UPDATE {SCHEMA}.mail_messages
+        SET thread_key = COALESCE(
+          NULLIF(btrim(regexp_replace(lower(regexp_replace(btrim(coalesce(subject, '')),
+            '^((re|fw|fwd|aw|sv)\\s*:\\s*)+', '', 'i')), '\\s+', ' ', 'g')), ''),
+          internet_message_id, provider_message_id)
+        WHERE thread_key IS NULL
+        """,
+        f"""
+        UPDATE {SCHEMA}.mail_messages
+        SET folder = CASE WHEN provider_message_id ILIKE 'imap:INBOX:%' THEN 'inbox'
+                          WHEN provider_message_id LIKE 'imap:%' THEN 'sent'
+                          ELSE 'inbox' END
+        WHERE folder IS NULL
+        """,
+        f"CREATE INDEX IF NOT EXISTS mail_messages_conn_sent ON {SCHEMA}.mail_messages (connection_id, sent_at DESC)",
+        f"CREATE INDEX IF NOT EXISTS mail_messages_thread ON {SCHEMA}.mail_messages (thread_key, sent_at DESC)",
     ):
         conn.run(stmt)
 
@@ -661,11 +706,12 @@ def _mail_insert_messages(conn, payload):
             INSERT INTO {SCHEMA}.mail_messages (
               connection_id, provider_message_id, internet_message_id, in_reply_to,
               references_json, deal_key, subject, from_email, from_name, to_text,
-              cc_text, sent_at, body_text, attachments_json, status, role
+              cc_text, sent_at, body_text, attachments_json, status, role,
+              thread_key, folder
             ) VALUES (
               :cid, :pid, :iid, :irt, CAST(:refs AS jsonb), :deal_key, :subject,
               :from_email, :from_name, :to_text, :cc_text, :sent_at, :body_text,
-              CAST(:atts AS jsonb), :status, :role
+              CAST(:atts AS jsonb), :status, :role, :thread_key, :folder
             )
             ON CONFLICT (connection_id, provider_message_id) DO NOTHING
             """,
@@ -685,6 +731,8 @@ def _mail_insert_messages(conn, payload):
             atts=json.dumps(m.get("attachments_json") or []),
             status=m.get("status") or "noise",
             role=m.get("role"),
+            thread_key=m.get("thread_key"),
+            folder=m.get("folder"),
         )
         inserted += 1
     return _ok({"inserted": inserted})
@@ -846,7 +894,111 @@ def _mail_job_update(conn, payload):
     return _ok({"updated": 1})
 
 
+INBOX_MESSAGE_COLS = (
+    "connection_id, provider_message_id, internet_message_id, in_reply_to, thread_key, folder, "
+    "deal_key, subject, from_email, from_name, to_text, cc_text, sent_at, attachments_json, "
+    "status, role"
+)
+
+
+def _mail_inbox_threads(conn, payload):
+    """One page of conversations across the given mailboxes, newest first (keyset paged)."""
+    ids = _str_list(payload.get("connection_ids"), 100)
+    if not ids:
+        return _ok({"threads": [], "messages": [], "has_more": False})
+    limit = min(max(int(payload.get("limit") or 40), 1), 60)
+    q = (payload.get("q") or "").strip()[:120]
+    params: dict[str, Any] = {"ids": ids, "limit": limit + 1}
+    search_sql = ""
+    if q:
+        params["like"] = f"%{_escape_like(q)}%"
+        search_sql = (
+            " AND (subject ILIKE :like ESCAPE '\\' OR from_email ILIKE :like ESCAPE '\\'"
+            " OR coalesce(from_name, '') ILIKE :like ESCAPE '\\' OR coalesce(to_text, '') ILIKE :like ESCAPE '\\'"
+            " OR coalesce(body_text, '') ILIKE :like ESCAPE '\\')"
+        )
+    cursor_sql = ""
+    if payload.get("before_at"):
+        params["before_at"] = str(payload["before_at"])
+        params["before_key"] = str(payload.get("before_key") or "")
+        cursor_sql = "WHERE (last_at, thread_key) < (CAST(:before_at AS timestamptz), :before_key)"
+    threads = _rows(
+        conn,
+        f"""
+        WITH t AS (
+          SELECT thread_key, max(sent_at) AS last_at,
+                 count(DISTINCT coalesce(internet_message_id, provider_message_id))::int AS message_count
+          FROM {SCHEMA}.mail_messages
+          WHERE connection_id = ANY(CAST(:ids AS text[])) AND status <> 'error'
+            AND sent_at IS NOT NULL AND thread_key IS NOT NULL{search_sql}
+          GROUP BY thread_key
+          HAVING bool_or(coalesce(folder, 'inbox') <> 'sent')
+        )
+        SELECT thread_key, last_at, message_count FROM t {cursor_sql}
+        ORDER BY last_at DESC, thread_key DESC
+        LIMIT :limit
+        """,
+        **params,
+    )
+    has_more = len(threads) > limit
+    threads = threads[:limit]
+    keys = [t["thread_key"] for t in threads]
+    messages: list[dict] = []
+    if keys:
+        messages = _rows(
+            conn,
+            f"""
+            SELECT * FROM (
+              SELECT d.*, row_number() OVER (PARTITION BY d.thread_key ORDER BY d.sent_at DESC) AS rn
+              FROM (
+                SELECT DISTINCT ON (thread_key, coalesce(internet_message_id, connection_id || ':' || provider_message_id))
+                       {INBOX_MESSAGE_COLS}, left(coalesce(body_text, ''), 700) AS body_text
+                FROM {SCHEMA}.mail_messages
+                WHERE connection_id = ANY(CAST(:ids AS text[])) AND thread_key = ANY(CAST(:keys AS text[]))
+                  AND status <> 'error' AND sent_at IS NOT NULL
+                ORDER BY thread_key, coalesce(internet_message_id, connection_id || ':' || provider_message_id), sent_at DESC
+              ) d
+            ) r WHERE rn <= 8
+            ORDER BY thread_key, sent_at ASC
+            """,
+            ids=ids,
+            keys=keys,
+        )
+    return _ok({"threads": threads, "messages": messages, "has_more": has_more})
+
+
+def _mail_thread_messages(conn, payload):
+    """Every copy-deduped message of one conversation (full bodies), oldest first."""
+    ids = _str_list(payload.get("connection_ids"), 100)
+    key = (payload.get("thread_key") or "").strip()
+    if not ids or not key:
+        return _ok([])
+    limit = min(max(int(payload.get("limit") or 30), 1), 60)
+    return _ok(
+        _rows(
+            conn,
+            f"""
+            SELECT * FROM (
+              SELECT DISTINCT ON (coalesce(internet_message_id, connection_id || ':' || provider_message_id))
+                     {INBOX_MESSAGE_COLS}, body_text
+              FROM {SCHEMA}.mail_messages
+              WHERE connection_id = ANY(CAST(:ids AS text[])) AND thread_key = :key
+                AND status <> 'error' AND sent_at IS NOT NULL
+              ORDER BY coalesce(internet_message_id, connection_id || ':' || provider_message_id), sent_at DESC
+            ) d
+            ORDER BY sent_at DESC
+            LIMIT :limit
+            """,
+            ids=ids,
+            key=key,
+            limit=limit,
+        )
+    )
+
+
 MAIL_ACTIONS = {
+    "mail_inbox_threads": _mail_inbox_threads,
+    "mail_thread_messages": _mail_thread_messages,
     "mail_list_connections": _mail_list_connections,
     "mail_get_connection": _mail_get_connection,
     "mail_save_connection": _mail_save_connection,

@@ -1,7 +1,5 @@
 /** Shapes for the agent inbox (read the mail → draft the reply). Client-safe. */
 
-export type InboxSource = "book" | "live";
-
 /** What the inbox needs from a person for this mail. */
 export type InboxOutcome = "draft_ready" | "needs_you" | "waiting" | "replied" | "fyi";
 
@@ -68,4 +66,31 @@ export type InboxItem = {
   /** Our person who signs the reply. */
   signer: string;
   draft: ReplyDraft | null;
+  /** processed_deals id when the thread is linked to a deal in the book. */
+  dealId?: string | null;
+  /** Where `latest` lives — the mailbox a reply is sent from. */
+  mailbox: InboxMailboxRef;
 };
+
+export type InboxMailboxRef = {
+  connectionId: string;
+  mailboxEmail: string;
+  mailboxName: string | null;
+  /** Sync ref of `latest` (imap:<folder>:<uidvalidity>:<uid>). */
+  messageId: string;
+  internetMessageId: string | null;
+  threadKey: string;
+};
+
+/** A connected team mailbox (shared workspace — everyone sees every mailbox). */
+export type InboxMailbox = {
+  id: string;
+  email: string;
+  displayName: string | null;
+  status: string;
+  lastSyncAt: string | null;
+  lastError: string | null;
+};
+
+/** Keyset cursor: the last conversation of the previous page. */
+export type InboxCursor = { at: string; key: string };

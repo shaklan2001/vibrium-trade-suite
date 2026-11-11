@@ -7,7 +7,7 @@
  *   MAIL_SYNC_EVERY=60 node --env-file=.env.local scripts/mail-sync-loop.mjs
  */
 const base = (process.env.MAIL_SYNC_URL || process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000").replace(/\/$/, "");
-const secret = process.env.CRON_SECRET || process.env.MAIL_CRON_SECRET;
+const secret = process.env.CRON_SECRET;
 const every = Math.max(Number(process.env.MAIL_SYNC_EVERY || 120), 30) * 1000;
 
 if (!secret) {
