@@ -17,6 +17,9 @@ export {
 export const USD_TO_INR = Number(
   process.env.NEXT_PUBLIC_USD_INR_RATE || 96,
 );
+/** USD per 1 EUR / GBP — the rates mailbox extracts are converted at. */
+export const EUR_TO_USD = 1.08;
+export const GBP_TO_USD = 1.27;
 
 let current: CommissionCurrencyFilter = "all";
 
@@ -50,7 +53,7 @@ export function formatMoney(
     return `₹${n.toLocaleString("en-IN")}`;
   }
   const n = Math.round(amountUsd);
-  return `$${n.toLocaleString()}`;
+  return `$${n.toLocaleString("en-US")}`;
 }
 
 /** Format with an explicit USD→INR rate (agreed email rate for that deal). */
@@ -78,5 +81,40 @@ export function formatMoneyWithRate(
     return `₹${n.toLocaleString("en-IN")}`;
   }
   const n = Math.round(amountUsd);
-  return `$${n.toLocaleString()}`;
+  return `$${n.toLocaleString("en-US")}`;
+}
+
+const DOC_CURRENCY: Record<string, { symbol: string; locale: string; perUsd: number }> = {
+  INR: { symbol: "₹", locale: "en-IN", perUsd: USD_TO_INR },
+  EUR: { symbol: "€", locale: "en-US", perUsd: 1 / EUR_TO_USD },
+  GBP: { symbol: "£", locale: "en-US", perUsd: 1 / GBP_TO_USD },
+};
+
+function docCurrencyCode(currency?: string | null): string {
+  const c = String(currency || "").trim().toUpperCase();
+  if (c === "₹" || c === "RS" || c === "RS.") return "INR";
+  if (c === "$" || c === "US$") return "USD";
+  return c;
+}
+
+/** True when the deal's documents are in INR / EUR / GBP. */
+export function isNonUsdDocCurrency(currency?: string | null): boolean {
+  return docCurrencyCode(currency) in DOC_CURRENCY;
+}
+
+/**
+ * Show a deal amount in the currency its document was written in.
+ * Amounts are stored in USD; INR / EUR / GBP are converted back at the rate
+ * they were stored with, so ₹38,764.11 shows as ₹38,764.11, not $404.
+ * USD (or unknown) falls back to formatMoney and the book's currency filter.
+ */
+export function formatDocMoney(amountUsd: number, currency?: string | null): string {
+  const spec = DOC_CURRENCY[docCurrencyCode(currency)];
+  if (!spec || !Number.isFinite(amountUsd)) return formatMoney(amountUsd);
+  const native = Math.round(amountUsd * spec.perUsd * 100) / 100;
+  const decimals = Number.isInteger(native) ? 0 : 2;
+  return `${spec.symbol}${native.toLocaleString(spec.locale, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: 2,
+  })}`;
 }

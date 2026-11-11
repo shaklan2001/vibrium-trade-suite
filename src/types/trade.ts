@@ -567,6 +567,12 @@ export interface CommercialDocument {
   confidence?: number;
   executionId?: string;
   raw?: Record<string, unknown>;
+  /** buyer = what the buyer owes; factory = what is owed to the factory; freight = forwarder charges */
+  side?: "buyer" | "factory" | "freight";
+  /** Attachment the figures came from */
+  fileName?: string;
+  /** When the document was sent (email date) — newest wins, so a revised PI replaces the old one */
+  sentAt?: string;
 }
 
 export interface DiscrepancyItem {
@@ -797,6 +803,8 @@ export interface Deal {
   mailboxPoNumbers?: string[];
   /** agency_commission (SNSPL referee) | trader_principal (Global Praise) */
   commercialModel?: "agency_commission" | "trader_principal";
+  /** True when a person set the book by hand (deal_overrides); rules do not change it. */
+  commercialModelPinned?: boolean;
   /** Worker slot that produced the latest extract */
   mailboxSlot?: string;
   /**
@@ -809,8 +817,14 @@ export interface Deal {
   recommendedFactoryIds?: string[];
   artwork?: ArtworkChecklist;
   samples?: SampleRequestSummary;
+  /** Factory-side commercial document (factory PI, or Global Praise's PO to the factory) */
   pi?: CommercialDocument;
+  /** Buyer-side commercial document (buyer PO, or Global Praise's PI / invoice to the buyer) */
   po?: CommercialDocument;
+  /** Forwarder / handling charges — not order value */
+  freightDoc?: CommercialDocument;
+  /** Every PI / PO / invoice extracted on this deal, newest first */
+  commercialDocs?: CommercialDocument[];
   discrepancy?: PiPoDiscrepancy;
   upcMatch?: UpcBarcodeMatch;
   packaging?: PackagingChecklist;

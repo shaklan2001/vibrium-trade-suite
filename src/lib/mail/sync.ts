@@ -17,6 +17,13 @@ import { MAIL_LIMITS } from "./config";
 import { decryptSecret } from "./crypto";
 import { buildDealPack, buildEvidence, dealContextNotes, type DealPack } from "./dealPack";
 import { attachmentBucket, parseRawMail, storeAttachment } from "./parse";
+import { isRdsProxyEnabled } from "@/lib/rdsProxy";
+import {
+  documentExtractionEnabled,
+  finalizeDealDocuments,
+  planDealDocuments,
+  startDealDocuments,
+} from "@/lib/trade/documentExtraction";
 import { MailAuthError, PROVIDER_SESSIONS } from "./providers";
 import type { ProviderSession } from "./providers/types";
 import { getMailStore, type MailStore, type ProcessedDealUpsert } from "./store";
@@ -70,6 +77,8 @@ export type JobsResult = {
   skipped: number;
   failed: number;
   error?: string;
+  /** Deals whose worker finished this run (their documents are read next). */
+  finalizedKeys?: string[];
 };
 
 /* ------------------------------------------------------------------ */
@@ -594,7 +603,10 @@ export async function processJobs(opts: {
       if (Date.now() > opts.deadline) break;
       try {
         const r = await finalizeJob(store, job);
-        if (r === "done") out.finalized += 1;
+        if (r === "done") {
+          out.finalized += 1;
+          (out.finalizedKeys ||= []).push(job.deal_key);
+        }
         else if (r === "failed") out.failed += 1;
         else if (r === "skipped") out.skipped += 1;
       } catch (err) {
@@ -669,5 +681,25 @@ export async function runMailCycle(opts: {
     }
   }
   const jobs = await processJobs({ deadline: opts.deadline, store, all });
-  return { connections, jobs, job_counts: await store.jobCounts() };
+  const documents = await runDocumentStep(opts.deadline, jobs.finalizedKeys || []);
+  return { connections, jobs, documents, job_counts: await store.jobCounts() };
+}
+
+/**
+ * Collect finished per-document reads, then (MAIL_DOCUMENT_EXTRACTION=on) read
+ * every PI / PO / invoice on the deals whose worker just finished.
+ */
+async function runDocumentStep(deadline: number, finalizedKeys: string[]) {
+  if (!isRdsProxyEnabled() || Date.now() > deadline) return null;
+  try {
+    const finalized = await finalizeDealDocuments({ deadline });
+    if (!documentExtractionEnabled() || !finalizedKeys.length || Date.now() > deadline) {
+      return { ...finalized, started: 0 };
+    }
+    const plan = await planDealDocuments(finalizedKeys.slice(0, 10));
+    const started = await startDealDocuments(plan.toRead, { deadline, limit: 10 });
+    return { ...finalized, ...started, missing: plan.skipped.length };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
 }

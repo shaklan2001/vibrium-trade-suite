@@ -20,6 +20,7 @@ import { OpenableFileLink } from "@/components/ops/openable-file-link";
 import { DealPaymentsPanel } from "@/components/ops/deal-payments-panel";
 import { DealOverviewCard } from "@/components/ops/deal-overview-card";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
+import { BookSwitch } from "@/components/ops/book-switch";
 
 export default function DealRoomPage() {
   const params = useParams<{ id: string }>();
@@ -163,6 +164,12 @@ export default function DealRoomPage() {
             ? "Trader · Global Praise"
             : "Agency · SNSPL referee"}
         </Badge>
+        <BookSwitch
+          deal={deal}
+          onChange={(next, pinned) =>
+            updateDeal(deal.id, { commercialModel: next, commercialModelPinned: pinned })
+          }
+        />
         {deal.mailboxSlot ? <Badge>{deal.mailboxSlot}</Badge> : null}
         {deal.mailboxSourceId ? (
           <span className="font-mono text-[11px] text-zinc-500">

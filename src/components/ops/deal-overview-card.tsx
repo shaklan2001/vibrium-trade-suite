@@ -4,7 +4,11 @@ import { Badge, Card, CardHeader } from "@/components/ui/primitives";
 import type { Deal, SourceMessage } from "@/types/trade";
 import { STAGE_LABELS } from "@/types/trade";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
-import { formatMoney } from "@/lib/trade/currencyDisplay";
+import {
+  formatDocMoney,
+  formatMoney,
+  isNonUsdDocCurrency,
+} from "@/lib/trade/currencyDisplay";
 import { OpenableFileLink } from "@/components/ops/openable-file-link";
 
 function recentSources(sources: SourceMessage[], limit = 5) {
@@ -35,20 +39,23 @@ function overviewBullets(deal: Deal): string[] {
     bullets.push(`Factory: ${factory.company || factory.name}`);
   }
 
-  const value =
-    deal.po?.totalAmount ||
-    deal.pi?.totalAmount ||
-    deal.payment?.amountUsd ||
-    deal.economics?.commercialValueUsd;
-  if (value) {
+  // Value and currency come from the same document.
+  const valued = [
+    { usd: deal.po?.totalAmount, currency: deal.po?.currency },
+    { usd: deal.pi?.totalAmount, currency: deal.pi?.currency },
+    { usd: deal.payment?.amountUsd, currency: deal.payment?.currency },
+    { usd: deal.economics?.commercialValueUsd, currency: undefined },
+  ].find((v) => v.usd);
+  if (valued?.usd) {
     bullets.push(
-      `Commercial value: ${formatMoney(value)}${
-        deal.po?.currency || deal.pi?.currency || deal.payment?.currency
-          ? ` (${deal.po?.currency || deal.pi?.currency || deal.payment?.currency})`
-          : ""
-      }`,
+      isNonUsdDocCurrency(valued.currency)
+        ? `Commercial value: ${formatDocMoney(valued.usd, valued.currency)} (≈ ${formatMoney(valued.usd, "USD")})`
+        : `Commercial value: ${formatMoney(valued.usd)}`,
     );
   }
+
+  const pos = deal.mailboxPoNumbers || [];
+  if (pos.length > 1) bullets.push(`PO numbers: ${pos.join(", ")}`);
 
   if (deal.payment?.dueDate) {
     bullets.push(
