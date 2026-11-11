@@ -81,6 +81,8 @@ FACTORY_DOMAINS = {
     "ykindustries.co.in": "YK Industries",
     "protectools.cn": "Protectools",
     "agrofoods.net": "Agro Foods",
+    # Britannia Industries mails from britindia.com; it ships Waldos orders (PO 4329707).
+    "britindia.com": "Britannia",
 }
 
 FORWARDER_DOMAINS = {
@@ -90,7 +92,6 @@ FORWARDER_DOMAINS = {
     "wacbangladesh.com": "WAC Logistics",
     "c-air.com": "C-Air",
     "expeditors.com": "Expeditors",
-    "britindia.com": "Brit India",
     "cardinalgl.com": "Cardinal",
     "deigratialogistics.com": "Dei Gratia",
     "avmcargo.com": "AVM Cargo",
@@ -227,6 +228,51 @@ def po_key(text: str) -> str | None:
     if not match:
         return None
     return re.sub(r"\s+", "", match.group(1)).upper().strip("-/")
+
+
+PO_ANCHOR_RE = re.compile(
+    r"\b(?:purchase\s+orders?|p\.?o\.?(?![a-z])|pono)(?:\s*(?:#|nos?\b\.?|numbers?\b|num\b))?[\s#:.\-]*",
+    re.I,
+)
+PO_FIRST_RE = re.compile(r"([A-Z]{1,2})?\s?(\d{4,12})[A-Z]{0,3}(?![0-9A-Z])", re.I)
+PO_NEXT_RE = re.compile(r"\s*(?:,|&|\band\b|/)\s*([A-Z]{1,2})?\s?(\d{2,12})[A-Z]{0,3}(?![0-9A-Z])", re.I)
+
+
+def po_numbers_in(text: str | None) -> list[str]:
+    """Every PO number after a "PO" marker, including lists.
+
+    "PO # G 2625017, G 2625076" -> G2625017, G2625076; "po no. 3793464, 467" ->
+    3793464, 3793467. A list stops at a number of another length. Keep in step
+    with poNumbersIn() in src/lib/trade/dealReference.ts.
+    """
+    src = text or ""
+    out: list[str] = []
+    for anchor in PO_ANCHOR_RE.finditer(src):
+        rest = src[anchor.end() : anchor.end() + 200]
+        first = PO_FIRST_RE.match(rest)
+        if not first:
+            continue
+        prefix = (first.group(1) or "").upper()
+        digits = first.group(2)
+        found = [prefix + digits]
+        rest = rest[first.end() :]
+        while True:
+            nxt = PO_NEXT_RE.match(rest)
+            if not nxt:
+                break
+            p = (nxt.group(1) or "").upper()
+            d = nxt.group(2)
+            if len(d) == len(digits):
+                found.append((p or prefix) + d)
+            elif not p and len(d) < len(digits) and len(d) <= 3:
+                found.append(prefix + digits[: -len(d)] + d)
+            else:
+                break
+            rest = rest[nxt.end() :]
+        for po in found:
+            if po not in out:
+                out.append(po)
+    return out
 
 
 def booking_key(text: str) -> str | None:

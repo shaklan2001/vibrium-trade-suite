@@ -11,6 +11,9 @@ import type {
   SourceMessage,
   SourceMessageKind,
 } from "@/types/trade";
+import { EUR_TO_USD, GBP_TO_USD, USD_TO_INR } from "./currencyDisplay";
+import { cleanPoNumbers, dealCodeFor, poNumbersIn } from "./dealReference";
+import { documentSide, isNonCommercialFile, isTraderParty } from "./documentSide";
 import { ingestFileOpenUrl } from "./ingestFiles";
 import { isLocalChargesNarrative } from "./localCharges";
 
@@ -41,6 +44,10 @@ export type ProcessedDealRow = {
   result_json?: Record<string, unknown> | null;
   cost_usd?: number | null;
   commercial_model?: string | null;
+  /** Book set by hand on the Deal Board (deal_overrides); wins over every rule. */
+  commercial_model_override?: string | null;
+  /** Per-document PI / PO / invoice extracts (deal_documents, completed only). */
+  documents_json?: DealDocumentRow[] | string | null;
   evidence_json?: EvidencePayload | null;
   document?: string | null;
   document_name?: string | null;
@@ -153,15 +160,13 @@ function num(value: unknown): number | undefined {
   return undefined;
 }
 
-/** Shared display FX — keep ingest convert aligned with Finance INR formatting. */
-const MAPPER_USD_INR = Number(process.env.NEXT_PUBLIC_USD_INR_RATE || 96);
-
+/** Same rates as currencyDisplay, so a deal's own currency can be shown back exactly. */
 function toUsd(amount: number, currency?: string): number {
   const c = (currency || "").toUpperCase();
   if (!c || c === "USD" || c === "US$") return amount;
-  if (c === "INR" || c === "RS" || c === "₹") return amount / MAPPER_USD_INR;
-  if (c === "EUR") return amount * 1.08;
-  if (c === "GBP") return amount * 1.27;
+  if (c === "INR" || c === "RS" || c === "₹") return amount / USD_TO_INR;
+  if (c === "EUR") return amount * EUR_TO_USD;
+  if (c === "GBP") return amount * GBP_TO_USD;
   // Unknown currency — do not invent USD (caller should supply currency)
   return amount;
 }
@@ -293,12 +298,32 @@ function textIsGlobalPraise(value: unknown): boolean {
   return false;
 }
 
+/**
+ * Britannia → Waldos (Mexico) exports ship on Global Praise paper, even when
+ * the thread itself never names Global Praise (PO 4329707).
+ */
+const BRITANNIA_RE = /britt?ann?ia|britindia\.com/i;
+const WALDOS_LANE_RE = /waldos|grupo\s*vizion|grupovizion|lazaro\s*cardenas|mexico/i;
+
+/** Global Praise named anywhere in the deal's headers, subjects, parties or summary. */
+function textNamesTrader(text: string): boolean {
+  if (GLOBAL_PRAISE_RE.test(text) || /globalpraise/i.test(text)) return true;
+  return BRITANNIA_RE.test(text) && WALDOS_LANE_RE.test(text);
+}
+
 function partyIsGlobalPraise(
   row: ProcessedDealRow,
   result: Record<string, unknown>,
 ): boolean {
   const json = row.parties_json || {};
+  const headerText = [
+    row.subject || "",
+    row.summary || "",
+    str(result.summary) || "",
+    buildDealSearchText(row),
+  ].join(" ");
   return (
+    textNamesTrader(headerText) ||
     textIsGlobalPraise(result.factory) ||
     textIsGlobalPraise(result.shipper) ||
     textIsGlobalPraise(result.buyer) ||
@@ -367,7 +392,8 @@ function statedBuyerSplit(deal: Deal): StatedSplit | null {
   return { advance, balance, blDeferred };
 }
 
-function slugId(id: string) {
+/** Deal Board id for a processed_deals row id (po:…, topic:…). */
+export function slugId(id: string) {
   const slug = id
     .replace(/[^a-zA-Z0-9._-]+/g, "_")
     .replace(/_+/g, "_")
@@ -376,14 +402,17 @@ function slugId(id: string) {
   return `mb-${slug || "deal"}`;
 }
 
-function dealCode(row: ProcessedDealRow): string {
-  const po = row.po_numbers?.find(Boolean);
-  if (po) return `PO-${String(po).replace(/\s+/g, "").slice(0, 12)}`;
-  const slug = (row.id || "")
-    .replace(/[^a-zA-Z0-9]/g, "")
-    .slice(-8)
-    .toUpperCase();
-  return `MB-${slug || "DEAL"}`;
+function dealCode(
+  row: ProcessedDealRow,
+  result: Record<string, unknown>,
+  poNumbers: string[],
+): string {
+  return dealCodeFor({
+    id: row.id,
+    poNumbers,
+    subject: row.subject,
+    bookingNumber: str(result.bookingNumber),
+  });
 }
 
 function parties(
@@ -405,17 +434,23 @@ function parties(
           : "Savvy Net Sourcing",
     },
   ];
-  const buyerName =
-    str(result.buyerCompany) ||
-    str(result.buyer) ||
-    str(result.consignee) ||
-    buyers[0];
+  // Global Praise is the trader in the middle, never the buyer or the factory
+  // (its PI to Shetler names it as "factory"; its PO to Anupama as "buyer").
+  const firstParty = (...names: (string | undefined)[]) =>
+    names.find((n) => n && !isTraderParty(n));
+  const buyerName = firstParty(
+    str(result.buyerCompany),
+    str(result.buyer),
+    str(result.consignee),
+    ...buyers,
+  );
   if (buyerName) out.push({ role: "buyer", name: buyerName, company: buyerName });
-  const factoryName =
-    str(result.factory) ||
-    str(result.factoryName) ||
-    str(result.shipper) ||
-    factories[0];
+  const factoryName = firstParty(
+    str(result.factory),
+    str(result.factoryName),
+    str(result.shipper),
+    ...factories,
+  );
   if (factoryName)
     out.push({ role: "factory", name: factoryName, company: factoryName });
   for (const t of traders) {
@@ -678,6 +713,145 @@ function commercialFrom(
   };
 }
 
+export type DealDocumentRow = {
+  name?: string | null;
+  sha256?: string | null;
+  sent_at?: string | null;
+  slot?: string | null;
+  result?: unknown;
+};
+
+const INVOICE_NAME_RE = /\b(commercial\s+invoice|comm\.?\s*inv|tax\s+invoice|invoice|inv)\b/i;
+const PROFORMA_NAME_RE = /\b(pro\s*-?\s*forma|performa|pi)\b/i;
+const REVISION_NAME_RE = /\b(revised|revision|rev\.?\s*\d*|final|amended|updated)\b/i;
+
+function isInvoiceDoc(doc: CommercialDocument) {
+  const name = doc.fileName || "";
+  return INVOICE_NAME_RE.test(name) && !PROFORMA_NAME_RE.test(name);
+}
+
+function sentAtFor(name: string | undefined, evidence: EvidencePayload) {
+  if (!name) return undefined;
+  const hit = (evidence.messages || []).find((m) =>
+    (m.attachments || []).some((a) => a.name === name),
+  );
+  return hit?.date;
+}
+
+function parseDocRows(value: unknown): DealDocumentRow[] {
+  if (typeof value === "string") {
+    try {
+      return parseDocRows(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(value) ? (value as DealDocumentRow[]) : [];
+}
+
+/** Newest first; on the same send time a "revised" / "final" file wins. */
+function newerFirst(a: CommercialDocument, b: CommercialDocument) {
+  const ta = Date.parse(a.sentAt || "") || 0;
+  const tb = Date.parse(b.sentAt || "") || 0;
+  if (ta !== tb) return tb - ta;
+  return Number(REVISION_NAME_RE.test(b.fileName || "")) - Number(REVISION_NAME_RE.test(a.fileName || ""));
+}
+
+type SideTotal = { usd: number; doc: CommercialDocument; count: number };
+
+/**
+ * Total for one side. Commercial invoices are what was billed, so they win over
+ * PIs / POs when present. Documents with the same number are versions of one
+ * document (PI 013 and its revision; Shetler's PO and GP's PI for the same
+ * order): only the newest counts. Different numbers are different orders and add up.
+ */
+function sideTotal(docs: CommercialDocument[], side: "buyer" | "factory"): SideTotal | undefined {
+  const priced = docs.filter(
+    (d) =>
+      d.side === side &&
+      (d.totalAmount || 0) > 0 &&
+      !isNonCommercialFile(d.fileName),
+  );
+  if (!priced.length) return undefined;
+  const invoices = priced.filter(isInvoiceDoc);
+  const pool = invoices.length ? invoices : priced;
+  const seen = new Set<string>();
+  const counted: CommercialDocument[] = [];
+  for (const d of pool) {
+    const key = (d.docNumber || d.fileName || `${counted.length}`).replace(/\s+/g, "").toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    counted.push(d);
+  }
+  const usd = counted.reduce((n, d) => n + (d.totalAmount || 0), 0);
+  const currencies = new Set(counted.map((d) => (d.currency || "USD").toUpperCase()));
+  const newest = counted[0]!;
+  const doc: CommercialDocument = {
+    ...newest,
+    totalAmount: usd,
+    currency: currencies.size === 1 ? [...currencies][0] : "USD",
+    summary:
+      counted.length > 1
+        ? `${counted.length} ${side} documents: ${counted.map((d) => d.fileName || d.docNumber).join(", ")}`
+        : newest.summary,
+  };
+  return { usd, doc, count: counted.length };
+}
+
+/**
+ * Put every extracted PI / PO / invoice on the deal: the main extract plus the
+ * per-document extracts in documents_json. deal.po becomes the buyer side and
+ * deal.pi the factory side, whatever the files are called.
+ */
+function applyCommercialDocs(
+  deal: Deal,
+  row: ProcessedDealRow,
+  result: Record<string, unknown>,
+  slot: string,
+  executionId: string | undefined,
+  evidence: EvidencePayload,
+): { buyerTotalUsd?: number; factoryTotalUsd?: number; freightOnly: boolean } {
+  const docs: CommercialDocument[] = [];
+  const primaryName = evidence.document_name || row.document_name || undefined;
+  if (slot === "pi_extractor" || slot === "po_extractor") {
+    docs.push({
+      ...commercialFrom(result, slot === "po_extractor" ? "po" : "pi", executionId),
+      fileName: primaryName,
+      sentAt: sentAtFor(primaryName, evidence) || row.date_end || undefined,
+    });
+  }
+  for (const d of parseDocRows(row.documents_json)) {
+    const res = asResult(d.result);
+    if (!Object.keys(res).length) continue;
+    const fileName = d.name || undefined;
+    const extract: CommercialDocument = {
+      ...commercialFrom(res, d.slot === "po_extractor" ? "po" : "pi"),
+      fileName,
+      sentAt: d.sent_at || sentAtFor(fileName, evidence) || undefined,
+    };
+    const same = docs.findIndex((x) => x.fileName && x.fileName === fileName);
+    if (same >= 0) docs[same] = extract; // a per-document re-read replaces the main extract
+    else docs.push(extract);
+  }
+  if (!docs.length) return { freightOnly: false };
+
+  for (const d of docs) d.side = documentSide(d);
+  docs.sort(newerFirst);
+  deal.commercialDocs = docs;
+
+  const buyer = sideTotal(docs, "buyer");
+  const factory = sideTotal(docs, "factory");
+  if (buyer) deal.po = buyer.doc;
+  if (factory) deal.pi = factory.doc;
+  const freight = docs.find((d) => d.side === "freight");
+  if (freight) deal.freightDoc = freight;
+  return {
+    buyerTotalUsd: buyer?.usd,
+    factoryTotalUsd: factory?.usd,
+    freightOnly: !buyer && !factory && Boolean(freight),
+  };
+}
+
 export function mapProcessedDeal(
   row: ProcessedDealRow,
   opts?: { fullEvidence?: boolean },
@@ -724,11 +898,22 @@ export function mapProcessedDeal(
       : "agency_commission";
   const gpOverride =
     storedModel !== "trader_principal" && partyIsGlobalPraise(row, result);
-  const commercialModel = gpOverride ? "trader_principal" : storedModel;
+  const pinnedModel =
+    row.commercial_model_override === "trader_principal" ||
+    row.commercial_model_override === "agency_commission"
+      ? row.commercial_model_override
+      : undefined;
+  const commercialModel = pinnedModel || (gpOverride ? "trader_principal" : storedModel);
   /** Local freight / origin-charges extracts are not trade order value. */
-  const localChargesOnly = isLocalChargesNarrative(summary);
+  let localChargesOnly = isLocalChargesNarrative(summary);
 
   const evidence = evidenceFrom(row);
+  // Stored PO first, then every PO written in the thread's subjects / summary
+  // ("PO # G 2625017, G 2625076, G 2625077, G 2525089" is four orders).
+  const poNumbers = cleanPoNumbers([
+    ...(row.po_numbers || []),
+    ...poNumbersIn(`${row.subject || ""} ${buildDealSearchText(row, evidence)}`),
+  ]);
   const sources = buildSources(
     row,
     result,
@@ -743,19 +928,18 @@ export function mapProcessedDeal(
 
   const deal: Deal = {
     id: slugId(row.id),
-    code: dealCode(row),
+    code: dealCode(row, result, poNumbers),
     title: betterTitle,
     stage,
     createdAt: created,
     updatedAt: updated,
     mailboxIngest: true,
     mailboxSourceId: row.id,
-    mailboxPoNumbers: (row.po_numbers || [])
-      .map((p) => String(p).trim())
-      .filter(Boolean),
+    mailboxPoNumbers: poNumbers,
     mailboxSlot: slot || undefined,
     searchText: buildDealSearchText(row, evidence),
     commercialModel,
+    commercialModelPinned: Boolean(pinnedModel),
     agentResult: Object.keys(result).length ? result : undefined,
     parties: parties(row, result, commercialModel),
     documents:
@@ -850,11 +1034,13 @@ export function mapProcessedDeal(
     deal.quote = quote;
   }
 
-  if (slot === "pi_extractor") {
-    deal.pi = commercialFrom(result, "pi", executionId);
-  }
-  if (slot === "po_extractor") {
-    deal.po = commercialFrom(result, "po", executionId);
+  // Every PI / PO / invoice on the deal, sorted into buyer, factory and freight.
+  const commercial = applyCommercialDocs(deal, row, result, slot, executionId, evidence);
+  if (commercial.freightOnly) localChargesOnly = true;
+  if (commercial.buyerTotalUsd != null || commercial.factoryTotalUsd != null) {
+    extractedAmount = commercial.buyerTotalUsd ?? commercial.factoryTotalUsd;
+    const cur = deal.po?.currency || deal.pi?.currency;
+    if (cur) settlementCurrency = cur.toUpperCase();
   }
 
   if (slot === "booking_extractor") {
@@ -978,10 +1164,7 @@ export function mapProcessedDeal(
       sources: [],
       summary,
     };
-    deal.paymentSchedule = inferSchedule(deal, extractedAmount, paid, {
-      // Relabeling Global Praise as principal must not invent an 88% factory bill.
-      factoryEstimate: !gpOverride,
-    });
+    deal.paymentSchedule = inferSchedule(deal, extractedAmount, paid);
     const deployed =
       paid || deal.stage === "docs_payment" || deal.stage === "booking"
         ? extractedAmount
@@ -1032,6 +1215,15 @@ export function mapProcessedDeal(
   return deal;
 }
 
+/**
+ * Keep sub-cent precision: amounts are stored in USD and shown back in the
+ * document's currency, and whole-dollar rounding turned ₹38,764.11 into ₹38,784.
+ * Display rounds.
+ */
+function cents(value: number) {
+  return Math.round(value * 1e6) / 1e6;
+}
+
 function isoDay(value?: string, fallback?: string) {
   const raw = value || fallback || new Date().toISOString();
   const d = new Date(raw);
@@ -1043,15 +1235,16 @@ function inferSchedule(
   deal: Deal,
   amount: number,
   paid: boolean,
-  opts?: { factoryEstimate?: boolean },
 ): Deal["paymentSchedule"] {
   const model = deal.commercialModel || "agency_commission";
-  const buyerAmount = deal.po?.totalAmount || amount;
-  const factoryAmount =
-    deal.pi?.totalAmount ||
-    (model === "trader_principal" && opts?.factoryEstimate !== false
-      ? Math.round(amount * 0.88)
-      : undefined);
+  // A Global Praise deal with only factory-side documents has no buyer amount
+  // yet: don't present what GP owes the factory as what the buyer owes GP.
+  const buyerAmount: number | undefined =
+    deal.po?.totalAmount ||
+    (model === "trader_principal" && deal.pi?.totalAmount && !deal.payment ? undefined : amount);
+  // Only a factory PI gives a factory amount. No estimate from the buyer value:
+  // an 88% guess showed up on the boards as a real factory bill (PO G 2625134).
+  const factoryAmount = deal.pi?.totalAmount;
   const currency =
     deal.payment?.currency ||
     deal.po?.currency ||
@@ -1106,7 +1299,7 @@ function inferSchedule(
           side: "buyer",
           label: "Outstanding invoice",
           percent: 100,
-          amountUsd: Math.round(buyerAmount * 100) / 100,
+          amountUsd: Math.round((buyerAmount ?? amount) * 100) / 100,
           dueDate: due,
           status,
           receivedAt: status === "received" ? due : undefined,
@@ -1132,15 +1325,17 @@ function inferSchedule(
   const blDeferred = Boolean(stated?.blDeferred && !blKnown);
   const buyerTerms =
     deal.po?.paymentTerms ||
-    deal.pi?.paymentTerms ||
-    (stated
-      ? "Payment terms stated on the order"
-      : "30% on PO acknowledgement · 70% T/T against B/L (inferred default)");
+    (buyerAmount != null ? deal.pi?.paymentTerms : undefined) ||
+    (buyerAmount == null
+      ? "Buyer terms not read yet"
+      : stated
+        ? "Payment terms stated on the order"
+        : "30% on PO acknowledgement · 70% T/T against B/L (inferred default)");
   const factoryTerms = deal.pi?.paymentTerms
     ? deal.pi.paymentTerms
     : factoryAmount != null
       ? "30% advance on PI · 70% against shipping docs (inferred default)"
-      : "Factory PI not extracted — agency book uses buyer commercial only";
+      : "Factory PI not extracted yet — no factory amount on this deal";
 
   // Advance due: prefer explicit payment due / ETD — never createdAt (that
   // made every historic advance look years overdue).
@@ -1163,13 +1358,13 @@ function inferSchedule(
         ? "upcoming"
         : openStatus(balanceDue);
 
-  const buyerAdvance = Math.round((buyerAmount * advancePct) / 100);
-  const buyerBalance = Math.max(0, Math.round(buyerAmount - buyerAdvance));
+  const buyerAdvance = cents(((buyerAmount ?? 0) * advancePct) / 100);
+  const buyerBalance = Math.max(0, cents((buyerAmount ?? 0) - buyerAdvance));
   const buyerDue = (when: string | undefined) =>
     blDeferred ? undefined : when;
 
   const checkpoints: NonNullable<Deal["paymentSchedule"]>["checkpoints"] = [];
-  if (advancePct > 0) {
+  if (buyerAmount != null && advancePct > 0) {
     checkpoints.push({
       id: `${deal.id}-b1`,
       side: "buyer",
@@ -1190,7 +1385,7 @@ function inferSchedule(
       termsExcerpt: buyerTerms.slice(0, 180),
     });
   }
-  checkpoints.push({
+  if (buyerAmount != null) checkpoints.push({
     id: `${deal.id}-b2`,
     side: "buyer",
     label:
@@ -1220,10 +1415,10 @@ function inferSchedule(
   // Factory legs only when we have PI amount (or trader principal estimate).
   // Never mark factory paid just because buyer remittance confirmed (agency).
   if (factoryAmount != null && factoryAmount > 0) {
-    const factoryAdvance = Math.round(factoryAmount * 0.3);
+    const factoryAdvance = cents(factoryAmount * 0.3);
     const factoryBalance = Math.max(
       0,
-      Math.round(factoryAmount - factoryAdvance),
+      cents(factoryAmount - factoryAdvance),
     );
     const factoryPaid =
       model === "trader_principal" && remittanceConfirmed

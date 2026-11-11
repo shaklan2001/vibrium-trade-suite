@@ -31,6 +31,7 @@ from cluster_threads import (  # noqa: E402
     TRAVEL_ADMIN_RE,
     TRADER_MARKERS,
     party_role,
+    po_numbers_in,
     useful_attachments,
 )
 
@@ -390,7 +391,11 @@ def main() -> int:
             dates = [m.get("date") for m in packed if m.get("date")]
             subjects = [t.get("subject") for t in group if t.get("subject")]
             mailboxes = sorted({t.get("mailbox") for t in group if t.get("mailbox")})
-            pos = sorted({po_from_thread(t) for t in group if po_from_thread(t)})
+            # Every PO in every subject, not just the first one per thread.
+            pos = sorted(
+                {po_from_thread(t) for t in group if po_from_thread(t)}
+                | {po for t in group for po in po_numbers_in(t.get("subject") or "")}
+            )
             model = resolve_commercial_model(group, packed, parties)
             text = agent_text(packed)
             chain = [

@@ -47,7 +47,7 @@ export function MailboxHydrator() {
       }
     }
     void load();
-    // Slow poll — only useful while PST ingest is running.
+    // Slow poll — picks up PST ingest progress and deals from connected inboxes.
     const poll = window.setInterval(() => void load(), 30_000);
     return () => {
       cancelled = true;

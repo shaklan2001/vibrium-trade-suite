@@ -14,7 +14,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const API = (process.env.VIBRIUM_API_BASE_URL || "").replace(/\/$/, "");
+const API = (process.env.VIBRIUM_API_BASE_URL || "https://api-staging.vibrium.ai").replace(/\/$/, "");
 const CUSTOMER = process.env.VIBRIUM_CUSTOMER_ID;
 const USER = process.env.VIBRIUM_SERVICE_USERNAME;
 const PASS = process.env.VIBRIUM_SERVICE_PASSWORD;

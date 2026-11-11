@@ -1,19 +1,41 @@
 @import "tailwindcss";
-
-:root {
-  --background: #fafafa;
-  --foreground: #18181b;
-}
+@import "../styles/suite.css";
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --font-sans: var(--font-jakarta), "Segoe UI", sans-serif;
+  --color-background: #f4f9fb;
+  --color-foreground: #1a333c;
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --color-zinc-50: #f4f9fb;
+  --color-zinc-100: #eef5f8;
+  --color-zinc-200: #dde6ea;
+  --color-zinc-300: #c5d4db;
+  --color-zinc-400: #8aa0a8;
+  --color-zinc-500: #657880;
+  --color-zinc-600: #4d636c;
+  --color-zinc-700: #35505a;
+  --color-zinc-800: #243e48;
+  --color-zinc-900: #1a333c;
+  --color-zinc-950: #102028;
+
+  --color-teal-50: #eef4ff;
+  --color-teal-100: #dbe7ff;
+  --color-teal-200: #c5d6ff;
+  --color-teal-300: #9dbaf8;
+  --color-teal-400: #5b8def;
+  --color-teal-500: #3b78f0;
+  --color-teal-600: #2b6df6;
+  --color-teal-700: #2c70f6;
+  --color-teal-800: #1d4ed8;
+  --color-teal-900: #1e3a8a;
+  --color-teal-950: #172554;
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.7rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.1rem;
+
+  --shadow-sm: 0 1px 2px rgba(26, 51, 60, 0.04), 0 8px 24px rgba(43, 109, 246, 0.06);
+  --shadow-md: 0 2px 4px rgba(26, 51, 60, 0.05), 0 16px 36px -8px rgba(43, 109, 246, 0.18);
 }

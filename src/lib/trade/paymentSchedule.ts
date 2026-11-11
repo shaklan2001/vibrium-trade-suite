@@ -131,7 +131,7 @@ function scheduleSources(
       pushMsg(
         match,
         cp.status === "received"
-          ? `Confirmed ${cp.label}: ${cp.amountUsd ? `$${cp.amountUsd.toLocaleString()}` : ""} received${cp.receivedAt ? ` on ${cp.receivedAt}` : ""}`
+          ? `Confirmed ${cp.label}: ${cp.amountUsd ? `$${cp.amountUsd.toLocaleString("en-US")}` : ""} received${cp.receivedAt ? ` on ${cp.receivedAt}` : ""}`
           : match.extractedSummary,
       );
     }
@@ -380,7 +380,7 @@ export function buildPaymentScheduleReport(
   );
   const factoryOverdueUsd = sum(factory, (l) => l.status === "overdue");
 
-  const fmt = (n: number) => `$${Math.round(n).toLocaleString()}`;
+  const fmt = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
   return {
     asOf,

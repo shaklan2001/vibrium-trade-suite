@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { startSession } from "@/lib/vibrium/chat";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getVibriumConfig } from "@/lib/vibrium/config";
+import { warmCopilotBook } from "@/lib/trade/copilot/book";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,6 +32,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Load the book in the background so the first question doesn't wait for it.
+    warmCopilotBook();
     const session = await startSession(contactId, opsCopilotBotId);
     return NextResponse.json({ success: true, data: session });
   } catch (err) {

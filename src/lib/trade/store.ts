@@ -57,10 +57,13 @@ interface TradeState {
   /** Live mailbox hydrate lifecycle — avoid flashing 0 KPIs before load */
   mailboxBookStatus: MailboxBookStatus;
   mailboxBookError: string | null;
+  /** `counts.byStatus.failed` from the last successful mailbox list. */
+  mailboxFailedCount: number;
   setMailboxBookStatus: (
     status: MailboxBookStatus,
     error?: string | null,
   ) => void;
+  setMailboxFailedCount: (count: number) => void;
   createDeal: (partial?: Partial<Deal>) => Deal;
   upsertDeal: (deal: Deal) => Deal;
   mergeMailboxDeals: (deals: Deal[]) => void;
@@ -215,8 +218,10 @@ export const useTradeStore = create<TradeState>()(
       setDealsSearchQuery: (query) => set({ dealsSearchQuery: query }),
       mailboxBookStatus: "idle" as MailboxBookStatus,
       mailboxBookError: null as string | null,
+      mailboxFailedCount: 0,
       setMailboxBookStatus: (status, error = null) =>
         set({ mailboxBookStatus: status, mailboxBookError: error }),
+      setMailboxFailedCount: (count) => set({ mailboxFailedCount: count }),
 
       createDeal: (partial) => {
         const { code, nextSeq } = ensureCode(partial, get().dealCodeSeq);

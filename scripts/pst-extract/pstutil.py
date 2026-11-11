@@ -34,6 +34,51 @@ class OutlookAttach:
     extension: str | None = None
 
 
+META_CHARSET_RE = re.compile(rb"charset\s*=\s*[\"']?([A-Za-z0-9_\-]+)", re.I)
+
+
+def _looks_utf16(data: bytes) -> tuple[bool, str]:
+    """ASCII-heavy UTF-16 has a NUL in every other byte; 8-bit text has almost none."""
+    if len(data) < 4:
+        return False, ""
+    odd, even = data[1::2], data[0::2]
+    if odd.count(0) > len(odd) * 0.3:
+        return True, "utf-16le"
+    if even.count(0) > len(even) * 0.3:
+        return True, "utf-16be"
+    return False, ""
+
+
+def decode_body_bytes(data: bytes) -> str:
+    """Decode a PST body or property.
+
+    Trying UTF-16 before cp1252 turned every 8-bit (iso-8859-1 / cp1252) HTML body
+    into Chinese characters, because almost any even-length byte string is "valid"
+    UTF-16. Order now: BOM, UTF-8, UTF-16 only when the bytes look like UTF-16,
+    the charset the HTML declares, cp1252, latin-1.
+    """
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    is16, enc16 = _looks_utf16(data)
+    if is16:
+        try:
+            return data.decode(enc16)
+        except UnicodeDecodeError:
+            pass
+    declared = META_CHARSET_RE.search(data[:4096])
+    candidates = [declared.group(1).decode("ascii", "ignore")] if declared else []
+    for enc in [*candidates, "cp1252", "latin-1"]:
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def as_str(value: Any) -> str | None:
     if value is None:
         return None
@@ -42,14 +87,7 @@ def as_str(value: Any) -> str | None:
     elif isinstance(value, memoryview):
         return as_str(value.tobytes())
     elif isinstance(value, (bytes, bytearray)):
-        for enc in ("utf-8", "utf-16le", "utf-16be", "cp1252", "latin-1"):
-            try:
-                text = value.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            text = value.decode("utf-8", errors="replace")
+        text = decode_body_bytes(bytes(value))
     else:
         text = str(value)
     text = text.replace("\x00", "").strip()

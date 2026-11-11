@@ -35,7 +35,7 @@ function CellBlock({
     return (
       <div
         className={cn(
-          "h-9 min-w-[4.5rem]",
+          "h-8 min-w-[4.25rem]",
           highlight && "rounded-sm bg-teal-50/60",
         )}
       />
@@ -53,7 +53,7 @@ function CellBlock({
           : `${isPlan ? "Terms · " : ""}${flowAmountLabel(cell.amountUsd)}`
       }
       className={cn(
-        "relative flex h-9 min-w-[4.5rem] flex-col items-center justify-center rounded-sm border px-1.5 text-[11px] font-semibold tabular-nums leading-tight",
+        "relative flex h-8 min-w-[4.25rem] flex-col items-center justify-center rounded-md border px-1.5 text-[11px] font-semibold tabular-nums leading-tight",
         tone === "rcv" && "border-slate-300 bg-slate-200/80 text-slate-800",
         tone === "pay" && "border-zinc-200 bg-zinc-100 text-zinc-700",
         tone === "rcv-plan" &&
@@ -98,7 +98,7 @@ function TotalCell({
 }) {
   if (!amount) {
     return (
-      <div className="flex h-9 min-w-[4.5rem] items-center justify-center text-[11px] tabular-nums text-zinc-300">
+      <div className="flex h-8 min-w-[4.25rem] items-center justify-center text-[11px] tabular-nums text-zinc-300">
         —
       </div>
     );
@@ -107,7 +107,7 @@ function TotalCell({
     <div
       title={title || flowAmountLabel(amount)}
       className={cn(
-        "flex h-9 min-w-[4.5rem] items-center justify-center rounded-sm border px-1.5 text-[11px] font-bold tabular-nums",
+        "flex h-8 min-w-[4.25rem] items-center justify-center rounded-md border px-1.5 text-[11px] font-bold tabular-nums",
         tone === "rcv" && "border-slate-400 bg-slate-100 text-slate-900",
         tone === "pay" && "border-zinc-300 bg-zinc-50 text-zinc-900",
         tone === "rcv-plan" &&
@@ -206,18 +206,18 @@ function FooterLaneRow({
   const byMonth = colTotals[laneKey];
   const grand = sumMonthMap(byMonth, months);
   return (
-    <tr className="border-t border-zinc-300 bg-zinc-50/90 align-middle">
+    <tr className="flow-total border-t border-zinc-200 align-middle">
       {showOrderCell ? (
         <td
           rowSpan={rowSpan}
-          className="sticky left-0 z-10 border-r border-zinc-200 bg-zinc-100 px-2 py-1 align-middle text-[10px] font-bold uppercase tracking-wide text-zinc-700"
+          className="flow-order align-middle text-xs font-semibold text-zinc-700"
         >
           Total
         </td>
       ) : null}
       <td
         className={cn(
-          "px-1 py-1 text-[10px] font-bold uppercase",
+          "flow-lane text-xs font-semibold",
           tone === "rcv-plan" && "text-sky-800",
           tone === "rcv" && "text-slate-700",
           tone === "pay-plan" && "text-amber-900",
@@ -451,27 +451,22 @@ export function OrderPaymentFlowGrid({
         : "Default";
 
   return (
-    <div className="overflow-x-auto">
-      <div className="mb-2 flex flex-wrap items-end justify-between gap-2 px-1">
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-            Order-wise payment flow
-          </div>
-          <p className="text-[11px] text-zinc-500">
-            RCV = buyer · PAY = factory
-            {showTerms ? " · dashed = PO/PI terms by due month" : ""} · row &
-            column totals · current month highlighted
-          </p>
-        </div>
+    <div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1">
+        <p className="text-xs text-zinc-500">
+          RCV = buyer · PAY = factory
+          {showTerms ? " · dashed = PO/PI terms by due month" : ""} · current month highlighted
+        </p>
         <LaneMultiselect selected={visibleLanes} onChange={setVisibleLanes} />
       </div>
-      <table className="w-full min-w-[720px] border-collapse text-left">
+      <div className="flow-scroll">
+      <table className="text-left">
         <thead>
-          <tr className="border-b border-zinc-200 text-[10px] uppercase tracking-wide text-zinc-500">
-            <th className="sticky left-0 z-10 bg-white px-2 py-2 font-medium">
+          <tr className="text-xs text-zinc-500">
+            <th className="flow-order font-medium">
               Order
             </th>
-            <th className="px-1 py-2 font-medium">
+            <th className="flow-lane font-medium">
               <button
                 type="button"
                 className="inline-flex items-center gap-1 hover:text-zinc-800"
@@ -544,7 +539,7 @@ export function OrderPaymentFlowGrid({
                       {laneIdx === 0 ? (
                         <td
                           rowSpan={rowSpan}
-                          className="sticky left-0 z-10 border-r border-zinc-100 bg-white px-2 py-1 align-middle"
+                          className="flow-order align-middle"
                         >
                           <button
                             type="button"
@@ -557,7 +552,7 @@ export function OrderPaymentFlowGrid({
                       ) : null}
                       <td
                         className={cn(
-                          "px-1 py-1 text-[10px] font-semibold uppercase",
+                          "flow-lane text-xs font-semibold",
                           lane.headerClass,
                         )}
                       >
@@ -595,6 +590,7 @@ export function OrderPaymentFlowGrid({
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

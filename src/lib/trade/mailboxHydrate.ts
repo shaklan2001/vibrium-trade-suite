@@ -44,6 +44,7 @@ export async function hydrateMailboxBook(): Promise<MailboxHydrateResult> {
   const allRows: ProcessedDealRow[] = [];
   const seen = new Set<string>();
   let spendUsd = 0;
+  let failedExtracts: number | null = null;
   let progress: MailboxProgress | null = null;
   let offset = 0;
   let totalHint = Number.POSITIVE_INFINITY;
@@ -57,7 +58,11 @@ export async function hydrateMailboxBook(): Promise<MailboxHydrateResult> {
       const body = (await res.json()) as {
         error?: string;
         deals?: ProcessedDealRow[];
-        counts?: { spendUsd?: number; total?: number };
+        counts?: {
+          spendUsd?: number;
+          total?: number;
+          byStatus?: { failed?: number };
+        };
         progress?: MailboxProgress | null;
       };
       if (!res.ok) {
@@ -80,6 +85,9 @@ export async function hydrateMailboxBook(): Promise<MailboxHydrateResult> {
         fresh += 1;
       }
       spendUsd = Number(body.counts?.spendUsd || spendUsd);
+      if (typeof body.counts?.byStatus?.failed === "number") {
+        failedExtracts = body.counts.byStatus.failed;
+      }
       progress = body.progress || progress;
       if (typeof body.counts?.total === "number") {
         totalHint = body.counts.total;
@@ -105,6 +113,7 @@ export async function hydrateMailboxBook(): Promise<MailboxHydrateResult> {
       // Real mailbox book replaces synthetic portfolio seeds.
       store.mergeMailboxDeals(mapped);
     }
+    if (failedExtracts != null) store.setMailboxFailedCount(failedExtracts);
     store.setMailboxBookStatus("ready");
 
     return {

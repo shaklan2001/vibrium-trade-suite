@@ -2,17 +2,15 @@
 
 import { CopilotPanel } from "@/components/copilot/copilot-panel";
 import { PageHeader } from "@/components/layout/app-shell";
-import { useTradeStore } from "@/lib/trade/store";
 
 export default function CopilotPage() {
-  const dealId = useTradeStore((s) => s.deals[0]?.id);
   return (
     <div>
       <PageHeader
         title="Ops Copilot"
-        description="Savvy — answers attention, todos, product, process, and deal questions. Grounded on Command Center pulse + current deal."
+        description="Savvy — ask about any deal or PO, parties, payments, shipments, or what needs attention. Answers come from the live mailbox book."
       />
-      <CopilotPanel dealId={dealId} />
+      <CopilotPanel />
     </div>
   );
 }
