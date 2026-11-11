@@ -28,12 +28,15 @@ import {
   KpiTile,
   ProvenanceList,
 } from "@/components/ops/command-center-ui";
+import { EarlyWarningBody } from "@/components/ops/early-warnings-card";
 import {
   ChartDrillPanel,
   type DrillPayload,
 } from "@/components/ops/chart-drill-panel";
 import { useTradeStore } from "@/lib/trade/store";
 import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
+import { filterDealsByCommercialModel } from "@/lib/trade/commercialModel";
+import { collectEarlyWarnings } from "@/lib/trade/earlyWarnings";
 import { companyPulse } from "@/lib/trade/opsIntelligence";
 import { hydrateMailboxBook } from "@/lib/trade/mailboxHydrate";
 import {
@@ -42,24 +45,13 @@ import {
 } from "@/lib/trade/commandCenterMetrics";
 import { refreshOpsIntelligence } from "@/lib/trade/refreshOpsIntelligence";
 import type { CashDrillDeal } from "@/lib/trade/cashExposure";
-import {
-  STAGE_LABELS,
-  type AttentionSeverity,
-} from "@/types/trade";
+import { STAGE_LABELS } from "@/types/trade";
 
 const TEAL = "#0f766e";
 const AMBER = "#d97706";
 const RED = "#dc2626";
 const SKY = "#0284c7";
 const EMERALD = "#059669";
-
-function severityTone(
-  s: AttentionSeverity,
-): "danger" | "warning" | "info" | "neutral" {
-  if (s === "critical") return "danger";
-  if (s === "warning") return "warning";
-  return "neutral";
-}
 
 function shortCode(code?: string) {
   if (!code) return "—";
@@ -69,12 +61,16 @@ function shortCode(code?: string) {
 
 export default function OperationsDashboardPage() {
   const deals = useVisibleDeals();
+  const allDeals = useTradeStore((s) => s.deals);
+  const filter = useTradeStore((s) => s.commercialModelFilter);
   const routing = useTradeStore((s) => s.routing);
   const opsIntel = useTradeStore((s) => s.opsIntel);
   const setOpsIntel = useTradeStore((s) => s.setOpsIntel);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const mailboxStatus = useTradeStore((s) => s.mailboxBookStatus);
+  const mailboxError = useTradeStore((s) => s.mailboxBookError);
+  const failedExtracts = useTradeStore((s) => s.mailboxFailedCount);
   const [drill, setDrill] = useState<DrillPayload | null>(null);
 
   useEffect(() => {
@@ -102,15 +98,22 @@ export default function OperationsDashboardPage() {
     });
   }, [opsIntel.dealEconomics, deals]);
 
-  const attention = useMemo(
-    () => (opsIntel.attention || []).filter((a) => a.severity !== "info"),
-    [opsIntel.attention],
+  const warnings = useMemo(
+    () =>
+      collectEarlyWarnings(filterDealsByCommercialModel(allDeals, filter), {
+        failedExtracts,
+      }),
+    [allDeals, filter, failedExtracts],
   );
-  const todos = useMemo(() => opsIntel.todos || [], [opsIntel.todos]);
+  const pinned = warnings.filter((row) => row.dealId == null);
+  const dealWarnings = warnings.filter((row) => row.dealId != null);
+  const priorityRows = [...pinned, ...dealWarnings.slice(0, 5)];
+  const hiddenDealRows = Math.max(0, dealWarnings.length - 5);
   const rankedView = useMemo(() => opsIntel.ranked || [], [opsIntel.ranked]);
   const brief = opsIntel.briefMarkdown || "";
-  const criticalN = attention.filter((a) => a.severity === "critical").length;
-  const warningN = attention.filter((a) => a.severity === "warning").length;
+  const criticalN = warnings.filter((row) => row.severity === "critical").length;
+  const warningN = warnings.filter((row) => row.severity === "warning").length;
+  const countTone = mailboxStatus === "error" ? "neutral" : undefined;
 
   const stageBars = useMemo(() => {
     return Object.entries(pulse.byStage)
@@ -267,13 +270,13 @@ export default function OperationsDashboardPage() {
           size="lg"
           label="Critical"
           value={criticalN}
-          tone={criticalN ? "danger" : "success"}
+          tone={countTone || (criticalN ? "danger" : "success")}
         />
         <KpiTile
           size="lg"
           label="Warnings"
           value={warningN}
-          tone={warningN ? "warning" : "neutral"}
+          tone={countTone || (warningN ? "warning" : "neutral")}
         />
         <KpiTile
           size="lg"
@@ -314,47 +317,15 @@ export default function OperationsDashboardPage() {
         <Card className="lg:col-span-2">
           <CardHeader
             title="Priority now"
-            description={`${attention.length} alerts · ${todos.length} todos`}
+            description={`${dealWarnings.length} deal warnings`}
           />
-          <div className="max-h-56 divide-y divide-zinc-100 overflow-auto">
-            {attention.slice(0, 5).map((a) => (
-              <Link
-                key={a.id}
-                href={a.href}
-                className="block px-4 py-2.5 hover:bg-zinc-50"
-              >
-                <div className="flex flex-wrap gap-1.5">
-                  <Badge tone={severityTone(a.severity)}>{a.severity}</Badge>
-                  <span className="font-mono text-[11px] text-zinc-500">
-                    {a.dealCode}
-                  </span>
-                </div>
-                <div className="text-sm font-medium">{a.title}</div>
-                <div className="text-xs text-teal-800">→ {a.nextStep}</div>
-              </Link>
-            ))}
-            {todos.slice(0, 3).map((t, i) => (
-              <Link
-                key={t.id}
-                href={t.href}
-                className="flex gap-2 px-4 py-2.5 hover:bg-zinc-50"
-              >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px] text-white">
-                  {i + 1}
-                </span>
-                <div>
-                  <div className="text-sm font-medium">{t.nextStep}</div>
-                  <div className="font-mono text-[11px] text-zinc-500">
-                    {t.dealCode}
-                  </div>
-                </div>
-              </Link>
-            ))}
-            {!attention.length && !todos.length ? (
-              <p className="px-4 py-3 text-sm text-zinc-500">
-                No open priorities. Refresh intelligence when the book changes.
-              </p>
-            ) : null}
+          <div className="max-h-56 overflow-auto">
+            <EarlyWarningBody
+              rows={priorityRows}
+              status={mailboxStatus}
+              error={mailboxError}
+              moreHref={hiddenDealRows > 0 ? "/home" : null}
+            />
           </div>
         </Card>
       </div>
