@@ -10,6 +10,10 @@ export const maxDuration = 120;
 
 const USER_MESSAGE_MAX = 2000;
 const GROUNDED_MESSAGE_MAX = 16000;
+const VOICE_TURN_HINT =
+  "[Voice turn: the user spoke this question and the reply will be read aloud. " +
+  "Keep it short enough to hear (2-4 sentences), in plain spoken English. " +
+  "Lead with the answer; avoid tables, long lists, and reading out IDs or menus.]";
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,6 +24,7 @@ export async function POST(req: NextRequest) {
       contactId?: string;
       message?: string;
       focusDealId?: string;
+      voice?: boolean;
     };
 
     const contactId = (body.contactId || "").trim();
@@ -46,9 +51,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const grounded = (
+    let grounded = (
       await buildGroundedChatMessage(userMessage, body.focusDealId)
     ).slice(0, GROUNDED_MESSAGE_MAX);
+    if (body.voice === true) {
+      grounded += `\n\n${VOICE_TURN_HINT}`;
+    }
 
     const stream = await streamCompletion(
       contactId,

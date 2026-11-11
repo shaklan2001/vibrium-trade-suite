@@ -46,6 +46,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from pstutil import (  # noqa: E402
+    decode_body_bytes,
     display_name,
     is_likely_inline,
     outlook_attachment_meta,
@@ -112,14 +113,9 @@ def as_str(value: Any) -> str | None:
     elif isinstance(value, memoryview):
         return as_str(value.tobytes())
     elif isinstance(value, (bytes, bytearray)):
-        for enc in ("utf-8", "utf-16le", "utf-16be", "cp1252", "latin-1"):
-            try:
-                text = value.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            text = value.decode("utf-8", errors="replace")
+        # Same order as pstutil: UTF-16 only when the bytes look like UTF-16,
+        # otherwise 8-bit HTML bodies came out as Chinese characters.
+        text = decode_body_bytes(bytes(value))
     else:
         text = str(value)
     text = text.replace("\x00", "").strip()

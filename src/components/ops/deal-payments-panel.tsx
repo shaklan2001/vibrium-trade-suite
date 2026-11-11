@@ -5,7 +5,7 @@ import { ChevronsUpDown } from "lucide-react";
 import { Badge, Card, CardHeader } from "@/components/ui/primitives";
 import { SourceEmailsPanel } from "@/components/ops/source-emails-panel";
 import type { Deal, PaymentCheckpoint } from "@/types/trade";
-import { usd } from "@/lib/trade/commandCenterMetrics";
+import { formatDocMoney } from "@/lib/trade/currencyDisplay";
 import {
   computeDaysLate,
   ensurePaymentSchedule,
@@ -83,6 +83,8 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
 
   const buyer = sideTotals(schedule.checkpoints, "buyer");
   const factory = sideTotals(schedule.checkpoints, "factory");
+  // Amounts in the currency the deal's documents use (₹ for an INR invoice).
+  const money = (n: number) => formatDocMoney(n, schedule.currency);
   const sortHint =
     sideSort === "buyer-first"
       ? "Buyer first"
@@ -100,16 +102,22 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
         <div className="grid gap-3 border-b border-zinc-100 px-4 py-3 sm:grid-cols-2">
           <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-3">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Buyer terms (PO)
+              Buyer side
             </div>
             <p className="mt-1 text-sm text-zinc-800">
               {schedule.buyerTerms || deal.po?.paymentTerms || "—"}
             </p>
+            {buyer.list.length === 0 ? (
+              <p className="mt-3 text-xs text-amber-800">
+                No buyer document read yet — what the factory is owed is not
+                shown as what the buyer owes.
+              </p>
+            ) : (
             <div className="mt-3 grid grid-cols-3 gap-2 text-center">
               <div>
                 <div className="text-[10px] uppercase text-zinc-500">Agreed</div>
                 <div className="font-mono text-sm font-semibold">
-                  {usd(buyer.agreed)}
+                  {money(buyer.agreed)}
                 </div>
               </div>
               <div>
@@ -117,67 +125,80 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
                   Received
                 </div>
                 <div className="font-mono text-sm font-semibold text-emerald-700">
-                  {usd(buyer.received)}
+                  {money(buyer.received)}
                 </div>
               </div>
               <div>
                 <div className="text-[10px] uppercase text-zinc-500">Open</div>
                 <div className="font-mono text-sm font-semibold text-amber-700">
-                  {usd(buyer.outstanding)}
+                  {money(buyer.outstanding)}
                 </div>
               </div>
             </div>
+            )}
           </div>
           <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-3">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Factory terms (PI)
+              Factory side
             </div>
             <p className="mt-1 text-sm text-zinc-800">
               {schedule.factoryTerms || deal.pi?.paymentTerms || "—"}
             </p>
             {factory.list.length === 0 ? (
               <p className="mt-3 text-xs text-amber-800">
-                No factory PI extract on this deal yet — buyer PO value is not
-                mirrored as factory payable.
+                No factory PI or PO read yet — the buyer value is not shown as
+                what the factory is owed.
               </p>
             ) : (
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                 <div>
                   <div className="text-[10px] uppercase text-zinc-500">Agreed</div>
                   <div className="font-mono text-sm font-semibold">
-                    {usd(factory.agreed)}
+                    {money(factory.agreed)}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] uppercase text-zinc-500">Paid</div>
                   <div className="font-mono text-sm font-semibold text-emerald-700">
-                    {usd(factory.received)}
+                    {money(factory.received)}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] uppercase text-zinc-500">Still due</div>
                   <div className="font-mono text-sm font-semibold text-amber-700">
-                    {usd(factory.outstanding)}
+                    {money(factory.outstanding)}
                   </div>
                 </div>
               </div>
             )}
           </div>
         </div>
-        <p className="border-b border-zinc-100 px-4 py-2 text-[11px] text-zinc-500">
-          Source:{" "}
-          {deal.po?.docNumber || deal.mailboxSlot === "po_extractor"
-            ? "buyer PO extract"
-            : deal.pi?.docNumber
-              ? "factory PI extract"
-              : deal.mailboxSlot || "mailbox extract"}
-          {deal.po?.totalAmount
-            ? ` · PO ${usd(deal.po.totalAmount)}`
-            : ""}
-          {deal.pi?.totalAmount
-            ? ` · PI ${usd(deal.pi.totalAmount)}`
-            : ""}
-        </p>
+        {deal.commercialDocs?.length ? (
+          <div className="border-b border-zinc-100 px-4 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              Documents read ({deal.commercialDocs.length})
+            </div>
+            <ul className="mt-1 space-y-0.5 text-[11px] text-zinc-600">
+              {deal.commercialDocs.map((d, i) => (
+                <li key={`${d.fileName || d.docNumber || "doc"}-${i}`} className="flex flex-wrap gap-x-2">
+                  <span className="font-medium text-zinc-800">{d.fileName || d.docNumber || "extract"}</span>
+                  <span>
+                    {d.side === "buyer" ? "Buyer side" : d.side === "factory" ? "Factory side" : "Freight charges"}
+                  </span>
+                  {d.docNumber ? <span>#{d.docNumber}</span> : null}
+                  {d.totalAmount ? (
+                    <span className="font-mono">{formatDocMoney(d.totalAmount, d.currency)}</span>
+                  ) : null}
+                  {d.sentAt ? <span className="text-zinc-400">{d.sentAt.slice(0, 10)}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="border-b border-zinc-100 px-4 py-2 text-[11px] text-zinc-500">
+            Source: {deal.mailboxSlot || "mailbox extract"}
+          </p>
+        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -250,7 +271,7 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
                       {cp.checkpoint || "—"}
                     </td>
                     <td className="px-4 py-2.5 text-right font-mono text-xs font-semibold">
-                      {usd(cp.amountUsd)}
+                      {money(cp.amountUsd)}
                       {cp.percent != null ? (
                         <div className="font-sans font-normal text-zinc-500">
                           {cp.percent}%

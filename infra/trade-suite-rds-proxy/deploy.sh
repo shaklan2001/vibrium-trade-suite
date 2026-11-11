@@ -81,7 +81,13 @@ $AWS_BIN lambda wait function-updated --region "$REGION" --function-name "$FN_NA
 echo "Deployed ${FN_NAME}"
 echo "Invoking migrate..."
 printf '%s' '{"action":"migrate"}' > /tmp/ts-migrate.json
+# fileb:// sends the JSON as raw bytes. With file://, AWS CLI v2 expects base64
+# ("Invalid base64") and the migrate never runs, leaving new code without its tables.
 $AWS_BIN lambda invoke --region "$REGION" --function-name "$FN_NAME" \
-  --payload file:///tmp/ts-migrate.json /tmp/ts-migrate-out.json >/dev/null
+  --payload fileb:///tmp/ts-migrate.json /tmp/ts-migrate-out.json >/dev/null
 cat /tmp/ts-migrate-out.json
 echo
+grep -q '"success": *true' /tmp/ts-migrate-out.json || {
+  echo "migrate FAILED: the deployed code may need tables that do not exist yet" >&2
+  exit 1
+}
