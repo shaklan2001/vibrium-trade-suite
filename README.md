@@ -20,6 +20,7 @@ All product context, process maps, BRD, sample client files, architecture, and P
 | [docs/CONTINUATION_GUIDE.md](./docs/CONTINUATION_GUIDE.md) | How to keep building |
 | [docs/CONTEXT.md](./docs/CONTEXT.md) | One-page snapshot for agents |
 | [docs/samples/](./docs/samples/README.md) | Client artefacts (Sourcing + Trading) |
+| [docs/EMAIL_CONNECT.md](./docs/EMAIL_CONNECT.md) | Live Gmail / Outlook / IMAP sync (no more PST uploads) |
 
 Do **not** continue from `export_automation` — that demo UI is obsolete; its docs/samples were copied here.
 

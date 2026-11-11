@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
+import { SITE_URL } from "@/lib/legal";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,10 +14,15 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const googleSiteVerification = process.env.GOOGLE_SITE_VERIFICATION?.trim();
+
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "Vibrium Trade — Sourcing Suite",
   description:
     "Buying-agency sourcing automation powered by Vibrium worker and conversational agents",
+  // Google Search Console ownership proof for the OAuth consent screen's authorised domain.
+  ...(googleSiteVerification ? { verification: { google: googleSiteVerification } } : {}),
 };
 
 export default function RootLayout({

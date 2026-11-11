@@ -367,7 +367,8 @@ function statedBuyerSplit(deal: Deal): StatedSplit | null {
   return { advance, balance, blDeferred };
 }
 
-function slugId(id: string) {
+/** Deal Board id for a processed_deals row id (po:…, topic:…). */
+export function slugId(id: string) {
   const slug = id
     .replace(/[^a-zA-Z0-9._-]+/g, "_")
     .replace(/_+/g, "_")
