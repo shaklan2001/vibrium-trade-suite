@@ -71,14 +71,59 @@ function spaceParagraphs(text: string) {
   return sign.length ? `${joined}\n\n${sign.join("\n")}` : joined;
 }
 
-export function replyPrompt(item: InboxItem, signer: string) {
-  const thread = item.thread
+function threadText(item: InboxItem) {
+  return item.thread
     .slice(-6)
     .map(
       (m) =>
         `--- ${m.internal ? "US" : "THEM"} · ${m.fromName || m.from} <${m.from}> · ${m.date?.slice(0, 16) ?? ""}\nSubject: ${m.subject}\n${m.body.slice(0, 1500)}`,
     )
     .join("\n\n");
+}
+
+/**
+ * v2 (Nov 2026). The deal-book backtest (scripts/eval-reply-backtest.ts) showed v1 drafts
+ * hedged ("we are checking and will revert") where our people decided, added topics
+ * nobody asked about, and ran twice as long as real SNSPL replies. v2 answers only the
+ * newest mail, decides when the thread allows it, and writes the way SNSPL writes.
+ */
+export function replyPrompt(item: InboxItem, signer: string) {
+  const facts = item.facts.map((f) => `${f.label}: ${f.value}`).join("; ");
+  const background = [
+    item.slot || item.summary ? `Deal stage: ${item.stage || "unknown"}. ${item.agentName} found: ${item.summary || "no summary"}` : "",
+    facts ? `Extracted facts: ${facts}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return [
+    `You are drafting an email reply for ${signer} at Savvy Net Sourcing (SNSPL), a buying agency between overseas buyers and Indian factories. ${signer} reviews the draft and sends it.`,
+    "Write ONLY the reply body in plain text: no markdown, no subject line, no notes to me.",
+    "",
+    "Write the way SNSPL replies:",
+    "- Short and direct: usually 1–4 sentences, 15–70 words. No filler such as \"Thank you for your email\" and do not restate their mail.",
+    "- Answer exactly what the newest email from THEM asks or tells us. Do not bring up other topics, reminders, missing documents or requests they did not raise.",
+    "- Be decisive. If they ask us to approve, confirm, schedule, accept or send something and nothing in the thread argues against it, write it as done (\"The inspection on 29 May is confirmed.\"). " +
+      `${signer} changes it if the answer is different.`,
+    "- If they only share information or files, acknowledge it in one line and give the next step (\"We will share these with the buyer for approval.\").",
+    "- If figures in their mail (quantity, price, weight, dates) differ from the PO or earlier mails in the thread, point out the difference and ask them to correct it instead of accepting it.",
+    "- If they chase for an update and the thread does not have it, give a firm commitment (\"We will share the status by tomorrow.\") rather than \"we are checking\".",
+    "- Use only facts from the thread. Never invent prices, quantities, dates, PO numbers or payment status. If the reply needs a figure that is not in the thread, write a placeholder like [date] or [price].",
+    "- Greet them the way our side greeted them earlier in the thread; otherwise \"Dear <first name> ji,\" for Indian contacts and \"Dear <first name>,\" for others.",
+    "",
+    `Reply to: ${item.latest.fromName || item.latest.from} <${item.latest.from}>.`,
+    background ? `Background for you only — do not raise it unless their mail asks about it:\n${background}` : "",
+    `End with:\nRegards,\n${signer}`,
+    "",
+    "Email thread (oldest to newest):",
+    threadText(item),
+  ]
+    .filter((l) => l !== null)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+/** v1 prompt, kept only so the backtest can compare against it. */
+export function replyPromptV1(item: InboxItem, signer: string) {
   const facts = item.facts.map((f) => `${f.label}: ${f.value}`).join("; ");
   return [
     `You are drafting an email reply for ${signer} at Savvy Net Sourcing (SNSPL), a buying agency between overseas buyers and Indian factories.`,
@@ -95,24 +140,32 @@ export function replyPrompt(item: InboxItem, signer: string) {
     `End with:\nBest regards,\n${signer}\nSavvy Net Sourcing`,
     "",
     "Email thread (oldest to newest):",
-    thread,
+    threadText(item),
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-export async function copilotRewrite(item: InboxItem, signer: string): Promise<string> {
-  const contact = `inbox-draft-${item.id.replace(/[^a-z0-9]/gi, "").slice(0, 40)}-${Date.now()}`;
+/** One prompt → the Copilot's full text answer, in a fresh chat session. */
+export async function askCopilot(prompt: string, contactPrefix: string, timeoutMs = TIMEOUT_MS): Promise<string> {
+  const contact = `${contactPrefix.replace(/[^a-z0-9-]/gi, "").slice(0, 50)}-${Date.now()}`;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     await startSession(contact);
-    const text = spaceParagraphs(
-      stripMarkdown(await collect(await streamCompletion(contact, replyPrompt(item, signer), ctrl.signal))),
-    );
-    if (text.length < 30) throw new Error("Copilot returned an empty draft");
-    return text;
+    return await collect(await streamCompletion(contact, prompt, ctrl.signal));
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function copilotRewrite(
+  item: InboxItem,
+  signer: string,
+  prompt: (item: InboxItem, signer: string) => string = replyPrompt,
+): Promise<string> {
+  const raw = await askCopilot(prompt(item, signer), `inbox-draft-${item.id.replace(/[^a-z0-9]/gi, "").slice(0, 40)}`);
+  const text = spaceParagraphs(stripMarkdown(raw));
+  if (text.length < 30) throw new Error("Copilot returned an empty draft");
+  return text;
 }
