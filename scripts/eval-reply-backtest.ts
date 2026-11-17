@@ -6,6 +6,8 @@
  *   npx tsx --env-file=.env.local scripts/eval-reply-backtest.ts --facts        # also give deal facts (leaks the future)
  *   npx tsx --env-file=.env.local scripts/eval-reply-backtest.ts --no-judge     # wording + facts only
  *   npx tsx --env-file=.env.local scripts/eval-reply-backtest.ts --prompts v1,v2 # old vs new prompt, same mails
+ *   npx tsx --env-file=.env.local scripts/eval-reply-backtest.ts --source mailboxes --prompts v2,v3,v5
+ *       # test on the connected mailboxes' own recent replies instead of the deal book
  *
  * For each sampled pair (a mail from outside → the reply an SNSPL person sent):
  *   1. Copilot drafts a reply with the inbox prompt, seeing ONLY the thread up to
@@ -14,12 +16,12 @@
  * Writes data/reply-eval/<run>.json and data/reply-eval/latest.json (gitignored:
  * it contains mail text). scripts/reply-eval-report.ts turns a run into CSV + numbers.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { invokeTradeSuiteRds } from "../src/lib/rdsProxy";
 import { freshText } from "../src/lib/mail/inbox";
 import type { InboxItem, InboxMessage } from "../src/lib/mail/inboxTypes";
-import { askCopilot, copilotRewrite, replyPrompt, replyPromptV1 } from "../src/lib/mail/replyAgent";
+import { askCopilot, copilotRewrite, drafterRewrite, replyPrompt, replyPromptV1 } from "../src/lib/mail/replyAgent";
 import { AGENT_NAMES, firstName } from "../src/lib/mail/replyDraft";
 import {
   coreText,
@@ -31,7 +33,9 @@ import {
   type ReplyEvalCase,
   type ReplyEvalRun,
 } from "../src/lib/mail/replyEval";
+import { getMailStore } from "../src/lib/mail/store";
 import { threadKeyFor } from "../src/lib/mail/thread";
+import { ReplyLibrary, dealNotesAsOf, type ReplyLearning, type ReplyPair } from "../src/lib/mail/replyLearning";
 import type { EvidenceMessage, ProcessedDealRow } from "../src/lib/trade/processedDealMapper";
 
 const args = process.argv.slice(2);
@@ -43,13 +47,17 @@ const opt = (name: string, fallback: number) => {
 const LIMIT = opt("limit", 40);
 const SEED = opt("seed", 1);
 const CONCURRENCY = opt("concurrency", 4);
-const PROMPTS = { v1: replyPromptV1, v2: replyPrompt } as const;
+/** v3 = current prompt + Stage 1 learning (past replies, usual length, deal notes as of the mail date). */
+/** v4 = v3 brief, drafted by the dedicated email worker (VIBRIUM_REPLY_DRAFTER_AGENT_ID) instead of the chat Copilot. */
+/** v5 = v3 + the connected mailboxes' replies in the library + each person's style profile. */
+const PROMPTS = { v1: replyPromptV1, v2: replyPrompt, v3: replyPrompt, v4: replyPrompt, v5: replyPrompt } as const;
 type Variant = keyof typeof PROMPTS;
 const VARIANTS = ((args.includes("--prompts") ? args[args.indexOf("--prompts") + 1] : "") || "v2")
   .split(",")
   .filter((v): v is Variant => v in PROMPTS);
 const WITH_FACTS = flag("facts");
 const JUDGE = !flag("no-judge");
+const SOURCE = args.includes("--source") ? args[args.indexOf("--source") + 1] : "deals";
 
 const INTERNAL = /@snspl\.(in|ml)\s*>?\s*$/i;
 const FORWARD = /^\s*(fw|fwd)\s*:/i;
@@ -105,10 +113,11 @@ function toInbox(m: EvidenceMessage): InboxMessage {
   };
 }
 
-type Pair = { deal: ProcessedDealRow; history: InboxMessage[]; incoming: InboxMessage; human: InboxMessage };
+type Pair = { deal: ProcessedDealRow; history: InboxMessage[]; incoming: InboxMessage; human: InboxMessage; all: InboxMessage[] };
 
 /** Real "their mail → our direct reply" pairs in one deal. */
-function pairsIn(deal: ProcessedDealRow, messages: EvidenceMessage[]): Pair[] {
+/** `loose` (library only): any reply that answers their mail, not just strict test pairs. */
+function pairsIn(deal: ProcessedDealRow, messages: EvidenceMessage[], loose = false): Pair[] {
   const seen = new Set<string>();
   const msgs = messages
     .filter((m) => m.date && m.from && !seen.has(m.id || `${m.from}${m.date}`) && seen.add(m.id || `${m.from}${m.date}`))
@@ -118,22 +127,22 @@ function pairsIn(deal: ProcessedDealRow, messages: EvidenceMessage[]): Pair[] {
   msgs.forEach((human, i) => {
     if (!human.internal || FORWARD.test(human.subject)) return;
     const core = coreText(human.body);
-    if (core.length < 30 || core.length > 1200) return;
+    if (core.length < (loose ? 15 : 30) || core.length > (loose ? 2500 : 1200)) return;
     const key = threadKeyFor(human.subject, human.id);
     const thread = msgs.slice(0, i).filter((m) => threadKeyFor(m.subject, m.id) === key);
     const last = thread[thread.length - 1];
     // Direct answer: the newest mail in the thread is theirs, and our reply goes to them.
     if (!last || last.internal || NOISE.test(`${last.from} ${last.subject}`)) return;
     if (coreText(last.body).length < 20 || /^-+\s*forwarded message/im.test(last.body.slice(0, 80))) return;
-    if (Date.parse(human.date!) - Date.parse(last.date!) > MAX_GAP_MS) return;
+    if (Date.parse(human.date!) - Date.parse(last.date!) > (loose ? 3 : 1) * MAX_GAP_MS) return;
     // Addressed to them (To, not only Cc) — otherwise it is a forward to someone else, not an answer.
-    if (!human.to.toLowerCase().includes(last.from)) return;
-    pairs.push({ deal, history: thread.slice(-HISTORY), incoming: last, human });
+    if (!(loose ? `${human.to} ${human.cc}` : human.to).toLowerCase().includes(last.from)) return;
+    pairs.push({ deal, history: thread.slice(-HISTORY), incoming: last, human, all: msgs });
   });
   return pairs;
 }
 
-function itemFor(p: Pair): InboxItem {
+function itemFor(p: Pair, learning?: ReplyLearning): InboxItem {
   // The deal row holds its FINAL stage and summary — handing those over would tell the draft how the deal ends
   // (and mislabel early mails, e.g. an inspection mail as "commission"). Thread-only unless --facts.
   const slot = WITH_FACTS ? p.deal.slot || null : null;
@@ -155,15 +164,154 @@ function itemFor(p: Pair): InboxItem {
     signer: firstName(p.human.fromName.includes("@") ? "" : p.human.fromName, p.human.from),
     draft: null,
     dealId: p.deal.id,
+    learning,
     mailbox: { connectionId: "backtest", mailboxEmail: p.human.from, mailboxName: null, messageId: "", internetMessageId: null, threadKey: "" },
   };
 }
 
+let LIB: ReplyLibrary | null = null;
+/** Deal book + connected mailboxes (v5). */
+let LIB_ALL: ReplyLibrary | null = null;
+
+function learningFor(p: Pair, variant: Variant): ReplyLearning {
+  const lib = variant === "v5" ? LIB_ALL! : LIB!;
+  const key = threadKeyFor(p.incoming.subject, p.incoming.id);
+  const before = p.incoming.date!;
+  return {
+    examples: lib.similar({ by: p.human.from, subject: p.incoming.subject, theirs: p.incoming.body, before, excludeThreadKey: key }),
+    typicalWords: lib.typicalWords(p.human.from, before),
+    dealNotes: dealNotesAsOf(p.all, before, (m) => threadKeyFor(m.subject, m.id) === key),
+    style: variant === "v5" ? lib.style(p.human.from, before) : null,
+  };
+}
+
+function libraryPairs(pairs: Pair[]): ReplyPair[] {
+  return pairs.map((p) => ({
+    by: p.human.from,
+    threadKey: threadKeyFor(p.incoming.subject, p.incoming.id),
+    dealId: p.deal.id,
+    subject: p.incoming.subject,
+    theirs: p.incoming.body.slice(0, 1500),
+    reply: coreText(p.human.body),
+    date: p.human.date!,
+  }));
+}
+
+/**
+ * Every conversation in the connected mailboxes, grouped by deal (or thread when unlinked), as
+ * deal-book-shaped messages so the same pair rules apply. Cached: data/reply-eval/mailboxes.json.
+ */
+async function loadMailboxes(): Promise<{ deal: ProcessedDealRow; messages: EvidenceMessage[] }[]> {
+  const file = path.join(process.cwd(), "data", "reply-eval", "mailboxes.json");
+  if (!flag("refresh")) {
+    try {
+      return JSON.parse(await readFile(file, "utf8"));
+    } catch {
+      /* build */
+    }
+  }
+  const store = getMailStore();
+  const conns = (await store.listConnections()).filter((c) => c.status === "active");
+  const connectionIds = conns.map((c) => c.id);
+  console.log(`Mailboxes: ${conns.map((c) => c.email).join(", ")}`);
+  const keys: string[] = [];
+  let before: { at: string; key: string } | null = null;
+  for (;;) {
+    const page = await store.inboxPage({ connectionIds, limit: 100, before });
+    keys.push(...page.threads.map((t) => t.thread_key));
+    const last = page.threads[page.threads.length - 1];
+    if (!page.has_more || !last) break;
+    before = { at: last.last_at, key: last.thread_key };
+  }
+  const groups = new Map<string, EvidenceMessage[]>();
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: 6 }, async () => {
+      while (next < keys.length) {
+        const threadKey = keys[next++]!;
+        const rows = await store.threadMessages({ connectionIds, threadKey, limit: 80 }).catch(() => []);
+        for (const r of rows) {
+          const group = r.deal_key || `thread:${threadKey}`;
+          groups.set(group, [
+            ...(groups.get(group) || []),
+            {
+              id: r.internet_message_id || `${r.connection_id}:${r.provider_message_id}`,
+              subject: r.subject || "",
+              from: r.from_email || "",
+              from_name: r.from_name || "",
+              to: r.to_text || "",
+              cc: r.cc_text || "",
+              date: r.sent_at || undefined,
+              body: r.body_text || "",
+              attachments: (r.attachments_json || []).map((a) => ({ name: a.filename })),
+            },
+          ]);
+        }
+      }
+    }),
+  );
+  const out = [...groups.entries()].map(([id, messages]) => ({
+    deal: { id, primary_stage: null, slot: null, summary: null, agent_id: null } as unknown as ProcessedDealRow,
+    messages,
+  }));
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(out));
+  console.log(`Mailboxes: ${keys.length} conversations · ${out.length} deals/threads`);
+  return out;
+}
+
+/** Every reply pair in the book, for examples. Cached: fetching all deals takes a few minutes. */
+async function loadLibrary(deals: ProcessedDealRow[]) {
+  const file = path.join(process.cwd(), "data", "reply-eval", "library.json");
+  try {
+    const pairs = JSON.parse(await readFile(file, "utf8")) as ReplyPair[];
+    console.log(`Reply library: ${pairs.length} past replies (cached)`);
+    return new ReplyLibrary(pairs);
+  } catch {
+    /* build */
+  }
+  const pairs: ReplyPair[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      while (next < deals.length) {
+        const deal = deals[next++]!;
+        const row = await rds<ProcessedDealRow>({ action: "get_evidence", id: deal.id }).catch(() => null);
+        for (const p of pairsIn(deal, row?.evidence_json?.messages || [], true)) {
+          pairs.push({
+            by: p.human.from,
+            threadKey: threadKeyFor(p.incoming.subject, p.incoming.id),
+            dealId: deal.id,
+            subject: p.incoming.subject,
+            theirs: p.incoming.body.slice(0, 1500),
+            reply: coreText(p.human.body),
+            date: p.human.date!,
+          });
+        }
+        if (next % 200 === 0) console.log(`  library: ${next}/${deals.length} deals · ${pairs.length} replies`);
+      }
+    }),
+  );
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(pairs));
+  console.log(`Reply library: ${pairs.length} past replies from ${deals.length} deals`);
+  return new ReplyLibrary(pairs);
+}
+
 async function runCase(p: Pair, n: number, variant: Variant): Promise<ReplyEvalCase> {
-  const item = itemFor(p);
+  const learning = variant === "v3" || variant === "v4" || variant === "v5" ? learningFor(p, variant) : undefined;
+  const item = itemFor(p, learning);
   const base: ReplyEvalCase = {
     id: `${p.deal.id}#${p.human.id}`,
     variant,
+    learning: learning
+      ? {
+          examples: learning.examples.length,
+          typicalWords: learning.typicalWords,
+          dealNotes: Boolean(learning.dealNotes),
+          style: Boolean(learning.style),
+        }
+      : undefined,
     dealId: p.deal.id,
     stage: p.deal.primary_stage || null,
     slot: p.deal.slot || null,
@@ -180,14 +328,21 @@ async function runCase(p: Pair, n: number, variant: Variant): Promise<ReplyEvalC
   };
   const t0 = Date.now();
   try {
-    base.draft = await copilotRewrite(item, item.signer, PROMPTS[variant]);
+    base.draft =
+      variant === "v4"
+        ? await drafterRewrite(item, item.signer, PROMPTS[variant])
+        : await copilotRewrite(item, item.signer, PROMPTS[variant]);
     base.draftMs = Date.now() - t0;
   } catch (err) {
     base.error = `draft: ${err instanceof Error ? err.message : String(err)}`;
     console.log(`  [${n}] ✗ draft failed — ${base.error}`);
     return base;
   }
-  const context = [...p.history.map((m) => `${m.subject}\n${m.body}`), WITH_FACTS ? p.deal.summary || "" : ""].join("\n");
+  const context = [
+    ...p.history.map((m) => `${m.subject}\n${m.body}`),
+    WITH_FACTS ? p.deal.summary || "" : "",
+    learning?.dealNotes || "",
+  ].join("\n");
   base.similarity = similarity(base.draft, p.human.body);
   base.facts = scoreFacts(base.draft, p.human.body, context);
   if (JUDGE) {
@@ -210,8 +365,10 @@ async function main() {
   const startedAt = new Date().toISOString();
   const rand = rng(SEED);
   console.log(`Reply backtest · prompts ${VARIANTS.join("+")} · limit ${LIMIT} · seed ${SEED} · facts ${WITH_FACTS ? "on (leaks future)" : "off"} · judge ${JUDGE ? "on" : "off"}`);
-  const deals = (await allDeals()).filter((d) => d.status === "completed" && (d.message_count || 0) >= 2);
-  console.log(`${deals.length} deals with mail`);
+  const needsBook = SOURCE !== "mailboxes";
+  const deals = needsBook ? (await allDeals()).filter((d) => d.status === "completed" && (d.message_count || 0) >= 2) : [];
+  if (needsBook) console.log(`${deals.length} deals with mail`);
+  const boxes = SOURCE === "mailboxes" || VARIANTS.includes("v5") ? await loadMailboxes() : [];
 
   // Round-robin across stages so one busy stage doesn't dominate; one pair per deal.
   const byStage = new Map<string, ProcessedDealRow[]>();
@@ -223,6 +380,16 @@ async function main() {
   const picked: Pair[] = [];
   let scanned = 0;
   let found = 0;
+  if (SOURCE === "mailboxes") {
+    // Every strict pair in the connected mailboxes, at most 2 per deal/thread, in seeded random order.
+    for (const b of shuffle(boxes, rand)) {
+      scanned++;
+      const pairs = pairsIn(b.deal, b.messages);
+      found += pairs.length;
+      for (const pr of shuffle(pairs, rand).slice(0, 2)) if (picked.length < LIMIT) picked.push(pr);
+    }
+    queues.length = 0;
+  }
   while (picked.length < LIMIT && queues.some((q) => q.length)) {
     for (const q of queues) {
       const deal = q.shift();
@@ -235,6 +402,16 @@ async function main() {
     }
   }
   console.log(`Scanned ${scanned} deals · ${found} reply pairs · testing ${picked.length}\n`);
+
+  if (VARIANTS.some((v) => v === "v3" || v === "v4" || v === "v5")) {
+    LIB = await loadLibrary(deals);
+    const bookPairs = JSON.parse(await readFile(path.join(process.cwd(), "data", "reply-eval", "library.json"), "utf8")) as ReplyPair[];
+    const boxPairs = libraryPairs(boxes.flatMap((b) => pairsIn(b.deal, b.messages, true)));
+    LIB_ALL = new ReplyLibrary([...bookPairs, ...boxPairs]);
+    const per = new Map<string, number>();
+    for (const bp of boxPairs) per.set(bp.by, (per.get(bp.by) || 0) + 1);
+    console.log(`Mailbox replies added to the library: ${boxPairs.length} · ${JSON.stringify(Object.fromEntries(per))}`);
+  }
 
   const jobs = picked.flatMap((p, i) => VARIANTS.map((v) => ({ p, n: i + 1, v })));
   const cases: ReplyEvalCase[] = new Array(jobs.length);
@@ -253,7 +430,7 @@ async function main() {
     id: startedAt.replace(/[:.]/g, "-"),
     startedAt,
     finishedAt: new Date().toISOString(),
-    mode: "backtest",
+    mode: SOURCE === "mailboxes" ? "backtest-mailboxes" : "backtest",
     withFacts: WITH_FACTS,
     seed: SEED,
     pairsFound: found,
