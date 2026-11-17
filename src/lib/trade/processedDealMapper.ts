@@ -11,6 +11,7 @@ import type {
   SourceMessage,
   SourceMessageKind,
 } from "@/types/trade";
+import { mailHref } from "@/lib/mail/mailLink";
 import { EUR_TO_USD, GBP_TO_USD, USD_TO_INR } from "./currencyDisplay";
 import { cleanPoNumbers, dealCodeFor, poNumbersIn } from "./dealReference";
 import { documentSide, isNonCommercialFile, isTraderParty } from "./documentSide";
@@ -68,6 +69,8 @@ export type EvidenceMessage = {
   date?: string;
   body?: string;
   attachments?: { name?: string; url?: string; path?: string }[];
+  /** Synced from a connected mailbox (openable in the inbox), not only in the PST deal book. */
+  live?: boolean;
 };
 
 export type EvidencePayload = {
@@ -548,6 +551,8 @@ function buildSources(
   const primaryName = evidence.document_name || row.document_name || row.document || undefined;
 
   if (messages.length > 0) {
+    // Older evidence has no live flag: treat its ids as linkable and let /api/mail/open say when one is not in the inbox.
+    const hasLiveFlags = messages.some((m) => m.live);
     return messages.map((m, i) => {
       const body = (m.body || "").trim();
       const preview =
@@ -556,6 +561,7 @@ function buildSources(
           : body;
       return {
         id: `${row.id}-msg-${m.id || i}`,
+        messageId: m.id && (m.live || !hasLiveFlags) && !m.id.startsWith("book-") ? m.id : undefined,
         kind: i === 0 ? kind : "other",
         subject: m.subject || row.subject || undefined,
         from: m.from_name
@@ -975,7 +981,9 @@ export function mapProcessedDeal(
     sources,
     timeline: buildTimelineFromSources(row, sources, summary, updated),
     outreach: [],
+    recordAsOf: row.processed_at || undefined,
   };
+  for (const s of deal.sources) if (s.messageId) s.mailHref = mailHref(deal, s.messageId);
 
   if (slot === "requirement_extractor" || stage === "requirement") {
     const req: RequirementFields = {

@@ -1,6 +1,7 @@
 import type { ProcessedDealRow } from "@/lib/trade/processedDealMapper";
 import { partyRole, type ClassifyContext } from "./classify";
 import { freshText, outcomeFor, parse } from "./inbox";
+import { mailRef } from "./mailLink";
 import type { InboxItem, InboxMessage, InboxOutcome } from "./inboxTypes";
 import { AGENT_NAMES, cleanSubject, factsFor, firstName, templateDraft } from "./replyDraft";
 import type { InboxMessageRow, MailConnectionRow, StoredAttachment } from "./types";
@@ -41,6 +42,7 @@ function toMessage(row: InboxMessageRow, ctx: ItemContext): InboxMessage {
   const from = (row.from_email || "").toLowerCase();
   return {
     id: `${row.connection_id}|${row.provider_message_id}`,
+    ref: mailRef(row.internet_message_id || row.provider_message_id),
     from,
     fromName: (row.from_name || "").replace(/["']/g, "").trim(),
     to: row.to_text || "",

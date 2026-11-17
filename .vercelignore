@@ -36,8 +36,7 @@ scripts/pst-extract/.venv
 .neon
 
 # Local tooling / audits not needed at runtime
-scripts/audit-*.ts
-scripts/pst-extract/
+scripts/
 infra/**/function.zip
 /tmp/
 

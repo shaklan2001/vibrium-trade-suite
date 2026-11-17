@@ -1,6 +1,8 @@
 import { getSql } from "@/lib/db";
 import { invokeTradeSuiteRds, isRdsProxyEnabled } from "@/lib/rdsProxy";
 import type { ProcessedDealRow } from "@/lib/trade/processedDealMapper";
+import type { DraftLogInsert, DraftLogRow, EditLevel } from "./draftLog";
+import type { PaymentRow } from "./paymentJobs";
 import type {
   InboxMessageRow,
   InboxPage,
@@ -94,6 +96,96 @@ export interface MailStore {
   inboxPage(opts: InboxPageQuery): Promise<InboxPage>;
   /** One conversation, copies deduped, oldest → newest, full bodies. */
   threadMessages(opts: { connectionIds: string[]; threadKey: string; limit: number }): Promise<InboxMessageRow[]>;
+  /** Reply accuracy: log an AI draft shown in the Inbox. */
+  logDraft(row: DraftLogInsert): Promise<void>;
+  getDraft(id: string): Promise<DraftLogRow | null>;
+  /** Attach the reply actually sent (first send wins); false when the draft id is unknown or already sent. */
+  recordDraftSent(id: string, sent: { body: string; similarity: number; editLevel: EditLevel }): Promise<boolean>;
+  listDrafts(opts: { limit: number; since?: string | null }): Promise<DraftLogRow[]>;
+  /** Deal keys that have mail in a connected mailbox (openable in the inbox). */
+  liveDealKeys(): Promise<string[]>;
+  /** Payment ledger (mail_payments): insert or replace rows. */
+  upsertPayments(rows: PaymentRow[]): Promise<void>;
+  listPayments(opts: { status?: PaymentRow["status"]; ids?: string[]; limit: number }): Promise<PaymentRow[]>;
+}
+
+type PaymentDbRow = Record<string, unknown>;
+
+function paymentToDb(r: PaymentRow): PaymentDbRow {
+  return {
+    id: r.id,
+    deal_key: r.dealKey,
+    connection_id: r.connectionId,
+    mailbox: r.mailbox,
+    subject: r.subject,
+    from_text: r.from,
+    to_text: r.to,
+    cc_text: r.cc,
+    mail_date: r.mailDate,
+    attachment: r.attachment,
+    status: r.status,
+    execution_id: r.executionId,
+    kind: r.kind,
+    side: r.side,
+    payer: r.payer,
+    payee: r.payee,
+    amount: r.amount,
+    currency: r.currency,
+    value_date: r.valueDate,
+    reference: r.reference,
+    allocations_json: r.allocations,
+    summary: r.summary,
+    confidence: r.confidence,
+    error: r.error,
+    input_json: r.input,
+    updated_at: r.updatedAt,
+  };
+}
+
+function paymentFromDb(d: PaymentDbRow): PaymentRow {
+  const s = (k: string) => (d[k] == null ? null : String(d[k]));
+  const n = (k: string) => (d[k] == null || d[k] === "" ? null : Number(d[k]));
+  const iso = (k: string) => (d[k] ? new Date(String(d[k])).toISOString() : null);
+  function json<T>(k: string, fallback: T): T {
+    const v = d[k];
+    if (v == null) return fallback;
+    if (typeof v === "string") {
+      try {
+        return JSON.parse(v) as T;
+      } catch {
+        return fallback;
+      }
+    }
+    return v as T;
+  }
+  return {
+    id: String(d.id),
+    dealKey: s("deal_key"),
+    connectionId: s("connection_id") || "",
+    mailbox: s("mailbox") || "",
+    subject: s("subject") || "",
+    from: s("from_text") || "",
+    to: s("to_text") || "",
+    cc: s("cc_text") || "",
+    mailDate: iso("mail_date") || "",
+    attachment: s("attachment"),
+    status: (s("status") || "pending") as PaymentRow["status"],
+    executionId: s("execution_id"),
+    kind: s("kind") as PaymentRow["kind"],
+    side: s("side") as PaymentRow["side"],
+    payer: s("payer"),
+    payee: s("payee"),
+    amount: n("amount"),
+    currency: s("currency"),
+    valueDate: s("value_date")?.slice(0, 10) || null,
+    reference: s("reference"),
+    allocations: json("allocations_json", [] as PaymentRow["allocations"]),
+    summary: s("summary"),
+    confidence: n("confidence"),
+    error: s("error"),
+    updatedAt: iso("updated_at") || new Date().toISOString(),
+    input: json("input_json", null as PaymentRow["input"]),
+  };
 }
 
 export type InboxPageQuery = {
@@ -236,6 +328,44 @@ const rdsStore: MailStore = {
       })) || [];
     return rows.reverse();
   },
+  async logDraft(row) {
+    await rds("mail_draft_log", { row });
+  },
+  async getDraft(id) {
+    return (await rds<DraftLogRow | null>("mail_draft_get", { id })) ?? null;
+  },
+  async recordDraftSent(id, sent) {
+    const data = await rds<{ updated: number }>("mail_draft_sent", {
+      id,
+      sent_body: sent.body,
+      similarity: sent.similarity,
+      edit_level: sent.editLevel,
+    });
+    return Boolean(data?.updated);
+  },
+  async listDrafts({ limit, since }) {
+    return (await rds<DraftLogRow[]>("mail_draft_list", { limit, since: since || null })) || [];
+  },
+  async upsertPayments(rows) {
+    for (let i = 0; i < rows.length; i += 100) {
+      await rds("mail_payments_upsert", { rows: rows.slice(i, i + 100).map(paymentToDb) });
+    }
+  },
+  async listPayments({ status, ids, limit }) {
+    const rows = (await rds<PaymentDbRow[]>("mail_payments_list", { status: status || null, ids: ids || null, limit })) || [];
+    return rows.map(paymentFromDb);
+  },
+  async liveDealKeys() {
+    const connection_ids = (await rdsStore.listConnections()).map((c) => c.id);
+    if (!connection_ids.length) return [];
+    const out: string[] = [];
+    for (let offset = 0; offset < 20_000; offset += 500) {
+      const page = (await rds<{ id: string }[]>("list_deals", { connection_ids, limit: 500, offset })) || [];
+      out.push(...page.map((r) => r.id));
+      if (page.length < 500) break;
+    }
+    return out;
+  },
 };
 
 /* ------------------------------------------------------------------ */
@@ -328,6 +458,31 @@ const NEON_SCHEMA = [
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS mail_deal_jobs_status ON mail_deal_jobs (status, dirty)`,
+  `CREATE TABLE IF NOT EXISTS mail_reply_drafts (
+    id TEXT PRIMARY KEY,
+    thread_key TEXT,
+    deal_key TEXT,
+    connection_id TEXT,
+    message_id TEXT,
+    signer TEXT,
+    drafted_by TEXT NOT NULL,
+    prompt_version TEXT,
+    draft_body TEXT NOT NULL,
+    drafted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_body TEXT,
+    sent_at TIMESTAMPTZ,
+    similarity REAL,
+    edit_level TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS mail_reply_drafts_drafted ON mail_reply_drafts (drafted_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS mail_payments (
+    id TEXT PRIMARY KEY, deal_key TEXT, connection_id TEXT, mailbox TEXT, subject TEXT, from_text TEXT,
+    to_text TEXT, cc_text TEXT, mail_date TIMESTAMPTZ, attachment TEXT, status TEXT NOT NULL, execution_id TEXT,
+    kind TEXT, side TEXT, payer TEXT, payee TEXT, amount NUMERIC, currency TEXT, value_date DATE, reference TEXT,
+    allocations_json JSONB NOT NULL DEFAULT '[]', summary TEXT, confidence REAL, error TEXT, input_json JSONB,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS mail_payments_status ON mail_payments (status, updated_at)`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -712,6 +867,58 @@ const neonStore: MailStore = {
     );
     return rows.reverse();
   },
+  async logDraft(r) {
+    await q(
+      `INSERT INTO mail_reply_drafts
+         (id, thread_key, deal_key, connection_id, message_id, signer, drafted_by, prompt_version, draft_body)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
+      [r.id, r.thread_key, r.deal_key, r.connection_id, r.message_id, r.signer, r.drafted_by, r.prompt_version, r.draft_body],
+    );
+  },
+  async getDraft(id) {
+    const rows = await q<DraftLogRow>(`SELECT * FROM mail_reply_drafts WHERE id = $1`, [id]);
+    return rows[0] ?? null;
+  },
+  async recordDraftSent(id, sent) {
+    const rows = await q(
+      `UPDATE mail_reply_drafts
+       SET sent_body = $2, sent_at = now(), similarity = $3, edit_level = $4
+       WHERE id = $1 AND sent_at IS NULL RETURNING id`,
+      [id, sent.body, sent.similarity, sent.editLevel],
+    );
+    return rows.length > 0;
+  },
+  async upsertPayments(rows) {
+    for (const r of rows) {
+      const d = paymentToDb(r);
+      const cols = Object.keys(d);
+      const vals = cols.map((c) => (c.endsWith("_json") ? (d[c] == null ? null : JSON.stringify(d[c])) : d[c]));
+      const marks = cols.map((c, i) => "$" + (i + 1) + (c.endsWith("_json") ? "::jsonb" : "")).join(", ");
+      const sets = cols.slice(1).map((c) => c + " = EXCLUDED." + c).join(", ");
+      await q("INSERT INTO mail_payments (" + cols.join(", ") + ") VALUES (" + marks + ") ON CONFLICT (id) DO UPDATE SET " + sets, vals);
+    }
+  },
+  async listPayments({ status, ids, limit }) {
+    const order = status === "pending" || status === "running" ? "updated_at ASC" : "mail_date DESC NULLS LAST";
+    const rows = await q<PaymentDbRow>(
+      "SELECT * FROM mail_payments WHERE ($1::text IS NULL OR status = $1) AND ($2::text[] IS NULL OR id = ANY($2::text[])) ORDER BY " +
+        order +
+        " LIMIT $3",
+      [status || null, ids?.length ? ids : null, Math.max(1, Math.min(limit, 5000))],
+    );
+    return rows.map(paymentFromDb);
+  },
+  liveDealKeys: async () =>
+    (await q<{ deal_key: string }>(`SELECT DISTINCT deal_key FROM mail_messages WHERE deal_key IS NOT NULL`)).map(
+      (r) => r.deal_key,
+    ),
+  listDrafts: ({ limit, since }) =>
+    q<DraftLogRow>(
+      `SELECT * FROM mail_reply_drafts
+       WHERE ($2::timestamptz IS NULL OR drafted_at >= $2::timestamptz)
+       ORDER BY drafted_at DESC LIMIT $1`,
+      [Math.max(1, Math.min(limit, 5000)), since || null],
+    ),
   recentDeals: (limit) =>
     q<ProcessedDealRow>(
       `SELECT id, po_numbers, subject, primary_stage, slot, agent_id, status,

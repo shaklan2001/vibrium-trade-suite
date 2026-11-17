@@ -186,6 +186,8 @@ def _migrate(conn: pg8000.native.Connection) -> dict:
                 "mail_connections",
                 "mail_messages",
                 "mail_deal_jobs",
+                "mail_reply_drafts",
+                "mail_payments",
             ],
             "processed_deals_count": count,
         }
@@ -759,6 +761,59 @@ def _migrate_mail(conn: pg8000.native.Connection) -> None:
         """,
         f"CREATE INDEX IF NOT EXISTS mail_messages_conn_sent ON {SCHEMA}.mail_messages (connection_id, sent_at DESC)",
         f"CREATE INDEX IF NOT EXISTS mail_messages_thread ON {SCHEMA}.mail_messages (thread_key, sent_at DESC)",
+        # Reply accuracy (Stage 2): every AI draft shown in the Inbox, and what the person sent.
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.mail_reply_drafts (
+          id TEXT PRIMARY KEY,
+          thread_key TEXT,
+          deal_key TEXT,
+          connection_id TEXT,
+          message_id TEXT,
+          signer TEXT,
+          drafted_by TEXT NOT NULL,
+          prompt_version TEXT,
+          draft_body TEXT NOT NULL,
+          drafted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          sent_body TEXT,
+          sent_at TIMESTAMPTZ,
+          similarity REAL,
+          edit_level TEXT
+        )
+        """,
+        f"CREATE INDEX IF NOT EXISTS mail_reply_drafts_drafted ON {SCHEMA}.mail_reply_drafts (drafted_at DESC)",
+        # Payment ledger: one row per payment email, read by the Payment Reader worker.
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.mail_payments (
+          id TEXT PRIMARY KEY,
+          deal_key TEXT,
+          connection_id TEXT,
+          mailbox TEXT,
+          subject TEXT,
+          from_text TEXT,
+          to_text TEXT,
+          cc_text TEXT,
+          mail_date TIMESTAMPTZ,
+          attachment TEXT,
+          status TEXT NOT NULL,
+          execution_id TEXT,
+          kind TEXT,
+          side TEXT,
+          payer TEXT,
+          payee TEXT,
+          amount NUMERIC,
+          currency TEXT,
+          value_date DATE,
+          reference TEXT,
+          allocations_json JSONB NOT NULL DEFAULT '[]',
+          summary TEXT,
+          confidence REAL,
+          error TEXT,
+          input_json JSONB,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        f"CREATE INDEX IF NOT EXISTS mail_payments_status ON {SCHEMA}.mail_payments (status, updated_at)",
+        f"CREATE INDEX IF NOT EXISTS mail_payments_deal ON {SCHEMA}.mail_payments (deal_key)",
     ):
         conn.run(stmt)
 
@@ -1071,6 +1126,131 @@ def _mail_job_update(conn, payload):
     return _ok({"updated": 1})
 
 
+def _mail_draft_log(conn, payload):
+    r = payload.get("row") or {}
+    if not r.get("id") or not r.get("draft_body") or not r.get("drafted_by"):
+        return _err("row.id, draft_body, drafted_by required")
+    conn.run(
+        f"""
+        INSERT INTO {SCHEMA}.mail_reply_drafts (
+          id, thread_key, deal_key, connection_id, message_id, signer, drafted_by, prompt_version, draft_body
+        ) VALUES (
+          :id, :thread_key, :deal_key, :connection_id, :message_id, :signer, :drafted_by, :prompt_version, :draft_body
+        ) ON CONFLICT (id) DO NOTHING
+        """,
+        id=r["id"],
+        thread_key=r.get("thread_key"),
+        deal_key=r.get("deal_key"),
+        connection_id=r.get("connection_id"),
+        message_id=r.get("message_id"),
+        signer=r.get("signer"),
+        drafted_by=r["drafted_by"],
+        prompt_version=r.get("prompt_version"),
+        draft_body=r["draft_body"],
+    )
+    return _ok({"id": r["id"]})
+
+
+def _mail_draft_sent(conn, payload):
+    """Attach the reply actually sent; the first send wins."""
+    rows = _rows(
+        conn,
+        f"""
+        UPDATE {SCHEMA}.mail_reply_drafts
+        SET sent_body = :sent_body, sent_at = now(), similarity = :similarity, edit_level = :edit_level
+        WHERE id = :id AND sent_at IS NULL
+        RETURNING id
+        """,
+        id=payload.get("id"),
+        sent_body=payload.get("sent_body"),
+        similarity=payload.get("similarity"),
+        edit_level=payload.get("edit_level"),
+    )
+    return _ok({"updated": len(rows)})
+
+
+def _mail_draft_get(conn, payload):
+    rows = _rows(conn, f"SELECT * FROM {SCHEMA}.mail_reply_drafts WHERE id = :id", id=payload.get("id"))
+    return _ok(rows[0] if rows else None)
+
+
+def _mail_draft_list(conn, payload):
+    limit = max(1, min(int(payload.get("limit") or 1000), 5000))
+    since = payload.get("since")
+    return _ok(
+        _rows(
+            conn,
+            f"""
+            SELECT * FROM {SCHEMA}.mail_reply_drafts
+            WHERE (CAST(:since AS timestamptz) IS NULL OR drafted_at >= CAST(:since AS timestamptz))
+            ORDER BY drafted_at DESC LIMIT :limit
+            """,
+            since=since,
+            limit=limit,
+        )
+    )
+
+
+PAYMENT_FIELDS = {
+    "deal_key": "", "connection_id": "", "mailbox": "", "subject": "", "from_text": "", "to_text": "",
+    "cc_text": "", "mail_date": "", "attachment": "", "status": "", "execution_id": "", "kind": "", "side": "",
+    "payer": "", "payee": "", "amount": "", "currency": "", "value_date": "", "reference": "",
+    "allocations_json": "jsonb", "summary": "", "confidence": "", "error": "", "input_json": "jsonb",
+}
+
+
+def _mail_payments_upsert(conn, payload):
+    """Insert or replace payment rows (one per payment email); updated_at is the caller's clock."""
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list):
+        return _err("rows must be a list")
+    n = 0
+    for r in rows[:200]:
+        if not isinstance(r, dict) or not r.get("id") or not r.get("status"):
+            continue
+        cols = ["id", *PAYMENT_FIELDS.keys(), "updated_at"]
+        params: dict[str, Any] = {"id": r["id"], "updated_at": r.get("updated_at")}
+        values = [":id"]
+        for field, cast in PAYMENT_FIELDS.items():
+            v = r.get(field)
+            if cast == "jsonb":
+                params[field] = None if v is None else json.dumps(v)
+                values.append(f"CAST(:{field} AS jsonb)")
+            else:
+                params[field] = v
+                values.append(f":{field}")
+        values.append("COALESCE(CAST(:updated_at AS timestamptz), now())")
+        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols[1:])
+        conn.run(
+            f"INSERT INTO {SCHEMA}.mail_payments ({', '.join(cols)}) VALUES ({', '.join(values)}) "
+            f"ON CONFLICT (id) DO UPDATE SET {updates}",
+            **params,
+        )
+        n += 1
+    return _ok({"upserted": n})
+
+
+def _mail_payments_list(conn, payload):
+    limit = max(1, min(int(payload.get("limit") or 500), 5000))
+    status = (payload.get("status") or "").strip() or None
+    ids = _str_list(payload.get("ids"), 2000)
+    return _ok(
+        _rows(
+            conn,
+            f"""
+            SELECT * FROM {SCHEMA}.mail_payments
+            WHERE (CAST(:status AS text) IS NULL OR status = :status)
+              AND (CAST(:ids AS text[]) IS NULL OR id = ANY(CAST(:ids AS text[])))
+            ORDER BY {"updated_at ASC" if status in ("pending", "running") else "mail_date DESC NULLS LAST"}
+            LIMIT :limit
+            """,
+            status=status,
+            ids=ids or None,
+            limit=limit,
+        )
+    )
+
+
 INBOX_MESSAGE_COLS = (
     "connection_id, provider_message_id, internet_message_id, in_reply_to, thread_key, folder, "
     "deal_key, subject, from_email, from_name, to_text, cc_text, sent_at, attachments_json, "
@@ -1193,6 +1373,12 @@ MAIL_ACTIONS = {
     "mail_jobs_running": _mail_jobs_running,
     "mail_jobs_counts": _mail_jobs_counts,
     "mail_job_update": _mail_job_update,
+    "mail_draft_log": _mail_draft_log,
+    "mail_draft_get": _mail_draft_get,
+    "mail_draft_sent": _mail_draft_sent,
+    "mail_draft_list": _mail_draft_list,
+    "mail_payments_upsert": _mail_payments_upsert,
+    "mail_payments_list": _mail_payments_list,
 }
 
 
