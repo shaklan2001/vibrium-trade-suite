@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { v4 as uuid } from "uuid";
 import { Button, Card, CardHeader, Input } from "@/components/ui/primitives";
 import { MarkdownMessage } from "@/components/copilot/markdown-message";
-import { ArrowUpRight, Loader2, MessageSquare, Mic, Square, Volume2, X } from "lucide-react";
+import { ArrowUpRight, MessageSquare, Mic, Square, Volume2, X } from "lucide-react";
 import { useTradeStore } from "@/lib/trade/store";
 import type { CopilotDealRef } from "@/lib/trade/copilotGrounding";
 import { toast } from "sonner";
@@ -17,6 +17,7 @@ import {
 } from "@/lib/voice/voice-draft";
 import {
   isVoiceSessionSupported,
+  prefetchVoiceCredentials,
   startVoiceSession,
   type VoiceSessionHandle,
 } from "@/lib/voice/voice-session";
@@ -95,24 +96,23 @@ async function readStreamText(res: Response, onChunk: (t: string) => void) {
   }
 }
 
-const VOICE_SILENCE_MS = 1600; // after any interim update
-const VOICE_SILENCE_AFTER_FINAL_MS = 700; // after a final segment
-
-type VoicePhase =
-  | "idle"
-  | "connecting"
-  | "reconnecting"
-  | "listening"
-  | "thinking"
-  | "speaking";
+type VoicePhase = "idle" | "reconnecting" | "listening" | "thinking" | "speaking";
 
 const VOICE_STRIP: Record<Exclude<VoicePhase, "idle">, string> = {
-  connecting: "Starting microphone… hang on a moment",
-  reconnecting: "Reconnecting voice…",
-  listening: "Listening… speak when ready",
-  thinking: "Got it — Savvy is answering…",
+  reconnecting: "Reconnecting voice… keep talking",
+  listening: "Listening — press Enter or Send when you're done",
+  thinking: "Savvy is answering…",
   speaking: "Speaking the reply… tap ■ to stop",
 };
+
+/** Join typed/edited text with the live transcript. */
+function joinDraft(base: string, spoken: string): string {
+  const b = base.replace(/\s+$/, "");
+  const t = spoken.trim();
+  if (!b) return t;
+  if (!t) return base;
+  return `${b} ${t}`;
+}
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -161,11 +161,15 @@ export function CopilotPanel({
   const voiceModeRef = useRef(false);
   const voicePausedRef = useRef(false);
   const voiceSessionRef = useRef<VoiceSessionHandle | null>(null);
+  /** Live transcript of the current utterance (merged STT segments). */
   const voiceDraftRef = useRef("");
   const voiceDraftStateRef = useRef<VoiceDraftState>(createVoiceDraftState());
-  const voiceSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  /** Text the user typed or edited while talking — transcript appends after it. */
+  const voiceBaseRef = useRef("");
+  /** Segments already folded into an edit, so late revisions don't re-add them. */
+  const voiceFoldedSegmentsRef = useRef<Set<string>>(new Set());
+  const inputRef = useRef(input);
+  inputRef.current = input;
 
   const voiceActive = voicePhase !== "idle";
 
@@ -176,6 +180,29 @@ export function CopilotPanel({
   useEffect(() => {
     setVoiceSupported(isVoiceSessionSupported());
   }, []);
+
+  /** Who/where for the voice room — same values for prefetch and start. */
+  function voiceInput() {
+    return {
+      contactId,
+      contactName: "Trade Suite user",
+      user: { contact_id: contactId, name: "Trade Suite user", language: "en" },
+      context: {
+        device: "web",
+        platform: "trade-suite",
+        screen: "copilot",
+        ...(dealId ? { focus_deal_id: dealId } : {}),
+      },
+    };
+  }
+
+  // Warm voice when the Copilot opens: token + LiveKit SDK, so the mic click
+  // starts recording immediately instead of waiting on the server.
+  useEffect(() => {
+    if (!voiceSupported) return;
+    prefetchVoiceCredentials(voiceInput());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceSupported, contactId]);
 
   /**
    * Send one turn through the normal /api/chat path.
@@ -240,8 +267,8 @@ export function CopilotPanel({
 
   async function send() {
     if (voiceModeRef.current) {
-      // In voice mode the Send button commits the spoken draft right away.
-      void commitVoiceTranscript();
+      // Speak as long as you like; Enter / Send is the only thing that sends.
+      void commitVoiceTurn(input);
       return;
     }
     const text = input.trim();
@@ -252,34 +279,31 @@ export function CopilotPanel({
 
   // ---------------------------------------------------------------- voice
 
-  function clearSilenceTimer() {
-    if (voiceSilenceTimerRef.current) {
-      clearTimeout(voiceSilenceTimerRef.current);
-      voiceSilenceTimerRef.current = null;
-    }
-  }
-
   function resetVoiceDraft() {
     voiceDraftStateRef.current = createVoiceDraftState();
     voiceDraftRef.current = "";
+    voiceBaseRef.current = "";
+    voiceFoldedSegmentsRef.current = new Set();
   }
 
   function tearDownVoiceSession() {
     voiceModeRef.current = false;
     voicePausedRef.current = false;
-    clearSilenceTimer();
     cancelTalkback();
     const session = voiceSessionRef.current;
     voiceSessionRef.current = null;
     void session?.stop().catch(() => undefined);
     resetVoiceDraft();
     setVoicePhase("idle");
+    // Stay warm for the next tap.
+    prefetchVoiceCredentials(voiceInput());
   }
 
   async function resumeVoiceListening() {
     if (!voiceModeRef.current) return;
     resetVoiceDraft();
-    setInput("");
+    // Keep anything typed while Savvy was answering; speech continues after it.
+    voiceBaseRef.current = inputRef.current;
     voicePausedRef.current = false;
     setVoicePhase("listening");
     try {
@@ -289,18 +313,10 @@ export function CopilotPanel({
     }
   }
 
-  async function commitVoiceTranscript() {
-    clearSilenceTimer();
-    const text = voiceDraftRef.current.trim();
-    if (!voiceModeRef.current || voicePausedRef.current || !text) return;
-    if (busyRef.current) {
-      // A turn is still streaming; try again shortly.
-      voiceSilenceTimerRef.current = setTimeout(
-        () => void commitVoiceTranscript(),
-        VOICE_SILENCE_MS,
-      );
-      return;
-    }
+  /** Send what's in the composer (spoken and/or edited), then listen again. */
+  async function commitVoiceTurn(raw: string) {
+    const text = raw.trim();
+    if (!voiceModeRef.current || voicePausedRef.current || !text || busyRef.current) return;
 
     voicePausedRef.current = true;
     setVoicePhase("thinking");
@@ -325,21 +341,27 @@ export function CopilotPanel({
     }
   }
 
+  /** Live transcript → composer. Nothing is sent until Enter / Send. */
   function applyVoiceTranscript(
     text: string,
     meta?: { isFinal?: boolean; segmentId?: string },
   ) {
     if (!voiceModeRef.current || voicePausedRef.current) return;
+    if (meta?.segmentId && voiceFoldedSegmentsRef.current.has(meta.segmentId)) return;
     const draft = applyVoiceSegment(voiceDraftStateRef.current, text, meta);
     voiceDraftRef.current = draft;
-    setInput(draft);
-    clearSilenceTimer();
-    if (!draft) return;
-    // Finals only shorten the wait — they never send on their own.
-    voiceSilenceTimerRef.current = setTimeout(
-      () => void commitVoiceTranscript(),
-      meta?.isFinal ? VOICE_SILENCE_AFTER_FINAL_MS : VOICE_SILENCE_MS,
-    );
+    setInput(joinDraft(voiceBaseRef.current, draft));
+  }
+
+  /** The user edited the composer while talking: keep their text, keep listening. */
+  function editWhileListening(value: string) {
+    for (const key of voiceDraftStateRef.current.segments.keys()) {
+      voiceFoldedSegmentsRef.current.add(key);
+    }
+    voiceDraftStateRef.current = createVoiceDraftState();
+    voiceDraftRef.current = "";
+    voiceBaseRef.current = value;
+    setInput(value);
   }
 
   async function startVoice() {
@@ -350,39 +372,31 @@ export function CopilotPanel({
     }
     setError(null);
     resetVoiceDraft();
-    setInput("");
+    // Keep anything already typed; speech continues after it.
+    voiceBaseRef.current = input;
     voiceModeRef.current = true;
     voicePausedRef.current = false;
-    setVoicePhase("connecting");
+    // No loader: the mic opens in a few hundred ms and records from the start.
+    setVoicePhase("listening");
 
     try {
       const session = await startVoiceSession({
-        contactId,
-        contactName: "Trade Suite user",
+        ...voiceInput(),
         playAgentAudio: false,
-        user: {
-          contact_id: contactId,
-          name: "Trade Suite user",
-          language: "en",
-        },
-        context: {
-          device: "web",
-          platform: "trade-suite",
-          screen: "copilot",
-          ...(dealId ? { focus_deal_id: dealId } : {}),
-        },
         handlers: {
           onStatus: (s) => {
-            if (!voiceModeRef.current) return;
+            if (!voiceModeRef.current || voicePausedRef.current) return;
             if (s === "reconnecting") setVoicePhase("reconnecting");
-            else if (s === "connected" && !voicePausedRef.current) {
-              setVoicePhase("listening");
-            }
+            else if (s === "ready") setVoicePhase("listening");
           },
           onTranscript: (role, text, meta) => {
             if (role === "user") applyVoiceTranscript(text, meta);
           },
-          onError: (message) => setError(message),
+          onError: (message) => {
+            if (!voiceModeRef.current) return;
+            tearDownVoiceSession();
+            setError(message);
+          },
           onEnded: () => {
             // Unexpected end (network / server hang-up) while still in voice mode.
             if (voiceModeRef.current && voiceSessionRef.current) {
@@ -393,12 +407,11 @@ export function CopilotPanel({
         },
       });
       if (!voiceModeRef.current) {
-        // User tapped stop while we were still connecting.
+        // User tapped stop before the mic opened.
         await session.stop();
         return;
       }
       voiceSessionRef.current = session;
-      if (!voicePausedRef.current) setVoicePhase("listening");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Voice failed to start";
       tearDownVoiceSession();
@@ -407,12 +420,9 @@ export function CopilotPanel({
     }
   }
 
+  /** ■ stops listening and leaves the text in the composer to review or send. */
   function stopVoice() {
-    const pendingDraft = voiceDraftRef.current.trim();
-    const wasPaused = voicePausedRef.current;
     tearDownVoiceSession();
-    setInput("");
-    if (pendingDraft && !wasPaused) void sendText(pendingDraft);
   }
 
   function onVoice() {
@@ -424,7 +434,6 @@ export function CopilotPanel({
   useEffect(() => {
     return () => {
       voiceModeRef.current = false;
-      if (voiceSilenceTimerRef.current) clearTimeout(voiceSilenceTimerRef.current);
       cancelTalkback();
       void voiceSessionRef.current?.stop().catch(() => undefined);
       voiceSessionRef.current = null;
@@ -512,13 +521,11 @@ export function CopilotPanel({
           role="status"
           aria-live="polite"
         >
-          {voicePhase === "connecting" || voicePhase === "reconnecting" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : voicePhase === "speaking" ? (
+          {voicePhase === "speaking" ? (
             <Volume2 className="h-3.5 w-3.5" />
           ) : (
             <span className="relative flex h-2 w-2">
-              {voicePhase === "listening" ? (
+              {voicePhase === "listening" || voicePhase === "reconnecting" ? (
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal-500 opacity-75" />
               ) : null}
               <span className="relative inline-flex h-2 w-2 rounded-full bg-teal-600" />
@@ -531,19 +538,19 @@ export function CopilotPanel({
         <Input
           value={input}
           onChange={(e) => {
-            if (!voiceModeRef.current) setInput(e.target.value);
+            // Editing while talking is allowed — the transcript continues after it.
+            if (voiceModeRef.current && !voicePausedRef.current) editWhileListening(e.target.value);
+            else setInput(e.target.value);
           }}
-          readOnly={voiceActive}
           disabled={voiceActive && busy}
           placeholder={
-            voiceActive
-              ? voicePhase === "connecting"
-                ? "Starting microphone…"
-                : "Listening…"
-              : "Ask Savvy about Trade Suite…"
+            voiceActive ? "Listening… speak, then press Enter" : "Ask Savvy about Trade Suite…"
           }
           onKeyDown={(e) => {
-            if (e.key === "Enter") void send();
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void send();
+            }
           }}
         />
         <button
@@ -552,7 +559,6 @@ export function CopilotPanel({
           disabled={micDisabled}
           aria-label={voiceActive ? "Stop voice" : "Speak to Copilot"}
           aria-pressed={voiceActive}
-          aria-busy={voicePhase === "connecting"}
           title={
             !voiceSupported
               ? "Voice needs microphone access (HTTPS)"
@@ -570,9 +576,7 @@ export function CopilotPanel({
           {voicePhase === "listening" ? (
             <span className="absolute inset-0 animate-pulse rounded-md ring-2 ring-teal-400" />
           ) : null}
-          {voicePhase === "connecting" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : voiceActive ? (
+          {voiceActive ? (
             <Square className="h-3.5 w-3.5 fill-current" />
           ) : (
             <Mic className="h-4 w-4" />

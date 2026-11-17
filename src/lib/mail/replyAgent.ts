@@ -1,4 +1,6 @@
+import { vibriumFetch } from "@/lib/vibrium/auth";
 import { startSession, streamCompletion } from "@/lib/vibrium/chat";
+import { getVibriumConfig } from "@/lib/vibrium/config";
 import type { InboxItem } from "./inboxTypes";
 
 /**
@@ -87,7 +89,28 @@ function threadText(item: InboxItem) {
  * nobody asked about, and ran twice as long as real SNSPL replies. v2 answers only the
  * newest mail, decides when the thread allows it, and writes the way SNSPL writes.
  */
+function learningText(item: InboxItem, signer: string) {
+  const l = item.learning;
+  if (!l) return { examples: "", deal: "", style: "" };
+  const examples = l.examples
+    .map(
+      (e, i) =>
+        `Example ${i + 1} (${e.date.slice(0, 10)}) · "${e.subject}"\nTHEM: ${e.theirs.replace(/\s+/g, " ").slice(0, 500)}\nUS: ${e.reply.replace(/\s+/g, " ").slice(0, 600)}`,
+    )
+    .join("\n\n");
+  return {
+    examples: examples
+      ? `How ${signer} and the team answered similar mails before. Match their tone, length, greeting and the kind of points they raise. ` +
+        `These are other deals: never copy names, figures, dates or PO numbers from them.\n\n${examples}`
+      : "",
+    deal: l.dealNotes ? `What else happened on this deal before this mail (background only):\n${l.dealNotes}` : "",
+    style: l.style ? `How ${signer} writes. Follow these habits where they fit this mail; never force a phrase that does not fit:\n${l.style}` : "",
+  };
+}
+
 export function replyPrompt(item: InboxItem, signer: string) {
+  const learned = learningText(item, signer);
+  const words = item.learning?.typicalWords;
   const facts = item.facts.map((f) => `${f.label}: ${f.value}`).join("; ");
   const background = [
     item.slot || item.summary ? `Deal stage: ${item.stage || "unknown"}. ${item.agentName} found: ${item.summary || "no summary"}` : "",
@@ -100,8 +123,11 @@ export function replyPrompt(item: InboxItem, signer: string) {
     "Write ONLY the reply body in plain text: no markdown, no subject line, no notes to me.",
     "",
     "Write the way SNSPL replies:",
-    "- Short and direct: usually 1–4 sentences, 15–70 words. No filler such as \"Thank you for your email\" and do not restate their mail.",
-    "- Answer exactly what the newest email from THEM asks or tells us. Do not bring up other topics, reminders, missing documents or requests they did not raise.",
+    words
+      ? `- Length: ${signer}'s replies are usually about ${words} words. Aim for that; go longer only when the mail needs a detailed update. No filler such as \"Thank you for your email\" and do not restate their mail.`
+      : "- Short and direct: usually 1–4 sentences, 15–70 words. No filler such as \"Thank you for your email\" and do not restate their mail.",
+    "- Answer exactly what the newest email from THEM asks or tells us. Do not bring up unrelated topics or reminders." +
+      (learned.examples ? ` Do raise the related points ${signer} usually adds in mails like this (see the examples).` : ""),
     "- Be decisive. If they ask us to approve, confirm, schedule, accept or send something and nothing in the thread argues against it, write it as done (\"The inspection on 29 May is confirmed.\"). " +
       `${signer} changes it if the answer is different.`,
     "- If they only share information or files, acknowledge it in one line and give the next step (\"We will share these with the buyer for approval.\").",
@@ -112,6 +138,9 @@ export function replyPrompt(item: InboxItem, signer: string) {
     "",
     `Reply to: ${item.latest.fromName || item.latest.from} <${item.latest.from}>.`,
     background ? `Background for you only — do not raise it unless their mail asks about it:\n${background}` : "",
+    learned.deal,
+    learned.style,
+    learned.examples ? `\n${learned.examples}` : "",
     `End with:\nRegards,\n${signer}`,
     "",
     "Email thread (oldest to newest):",
@@ -168,4 +197,56 @@ export async function copilotRewrite(
   const text = spaceParagraphs(stripMarkdown(raw));
   if (text.length < 30) throw new Error("Copilot returned an empty draft");
   return text;
+}
+
+/** Id of the dedicated email drafter worker (scripts/provision-reply-drafter.mjs); empty when not set up. */
+export function replyDrafterId() {
+  return process.env.VIBRIUM_REPLY_DRAFTER_AGENT_ID?.trim() || "";
+}
+
+/**
+ * Drafts with the dedicated email worker instead of the chat Copilot. The Copilot keeps
+ * its short chat style whatever the prompt says; this worker is written for email only.
+ */
+export async function drafterRewrite(
+  item: InboxItem,
+  signer: string,
+  prompt: (item: InboxItem, signer: string) => string = replyPrompt,
+  timeoutMs = 120_000,
+): Promise<string> {
+  const agentId = replyDrafterId();
+  if (!agentId) throw new Error("VIBRIUM_REPLY_DRAFTER_AGENT_ID is not set");
+  const { apiBaseUrl, customerId } = getVibriumConfig();
+  const base = `${apiBaseUrl}/v1/customers/${customerId}/agent-executions`;
+  type Execution = { execution_id?: string; id?: string; status?: string; result?: unknown; output?: unknown; error?: unknown };
+  const unwrap = async (res: Response) => {
+    const json = (await res.json().catch(() => ({}))) as { data?: Execution } & Execution;
+    if (!res.ok) throw new Error(`Reply drafter ${res.status}: ${JSON.stringify(json).slice(0, 200)}`);
+    return json.data || json;
+  };
+  const started = await unwrap(
+    await vibriumFetch(base, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: agentId, input: { brief: prompt(item, signer) } }),
+    }),
+  );
+  const execId = started.execution_id || started.id;
+  if (!execId) throw new Error("Reply drafter returned no execution id");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2_000));
+    const ex = await unwrap(await vibriumFetch(`${base}/${encodeURIComponent(execId)}`));
+    if (ex.status === "completed") {
+      const out = (ex.result || ex.output) as { reply?: unknown } | string | undefined;
+      const raw = typeof out === "string" ? out : typeof out?.reply === "string" ? out.reply : "";
+      const text = spaceParagraphs(stripMarkdown(raw));
+      if (text.length < 30) throw new Error("Reply drafter returned an empty draft");
+      return text;
+    }
+    if (ex.status && ["failed", "cancelled", "timed_out"].includes(ex.status)) {
+      throw new Error(`Reply drafter ${ex.status}: ${JSON.stringify(ex.error ?? "").slice(0, 200)}`);
+    }
+  }
+  throw new Error("Reply drafter timed out");
 }

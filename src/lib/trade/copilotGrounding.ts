@@ -10,6 +10,8 @@
 import type { CommercialModelFilter } from "@/lib/trade/commercialModel";
 import { getCopilotBook } from "@/lib/trade/copilot/book";
 import { buildContextBlock, dealHref } from "@/lib/trade/copilot/context";
+import { withMailTrail } from "@/lib/trade/copilot/mailTrail";
+import { getPaymentLedger, paymentLines } from "@/lib/trade/copilot/paymentsContext";
 import { parseCopilotQuery, type CopilotQuery } from "@/lib/trade/copilot/query";
 import { retrieveForQuery, type Retrieval } from "@/lib/trade/copilot/retrieve";
 
@@ -61,6 +63,18 @@ export async function buildGroundedChatMessage(
     focusDealId: opts.focusDealId,
     activeDealIds: opts.activeDealIds,
   });
+  // Deal answers get each deal's latest emails (with links) straight from the mail store.
+  if (retrieval.mode === "deal" && retrieval.deals.length) {
+    const ledger = await getPaymentLedger(book.deals);
+    const head = await Promise.all(
+      retrieval.deals.slice(0, 4).map(async (d) => {
+        const withMail = await withMailTrail(d);
+        const notes = ledger ? paymentLines(ledger, d) : [];
+        return notes.length ? { ...withMail, paymentNotes: notes } : withMail;
+      }),
+    );
+    retrieval.deals = [...head, ...retrieval.deals.slice(4)];
+  }
   const block = buildContextBlock(query, retrieval, {
     bookFilterLabel: BOOK_LABEL[query.model || opts.bookFilter || "all"],
   });

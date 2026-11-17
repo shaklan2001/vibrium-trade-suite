@@ -342,6 +342,7 @@ export function buildEvidence(
 ): EvidencePayload {
   const messages: EvidenceMessage[] = pack.messages.slice(-EVIDENCE_MESSAGES).map((m) => ({
     id: m.id,
+    live: m.source === "live" || undefined,
     subject: m.subject,
     from: m.from,
     from_name: m.from_name,

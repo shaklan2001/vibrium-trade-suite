@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Mail } from "lucide-react";
 import { Badge, Card, CardHeader } from "@/components/ui/primitives";
 import { friendlyMailboxError } from "@/lib/trade/mailboxHydrate";
 import type { EarlyWarning } from "@/lib/trade/earlyWarnings";
@@ -31,23 +32,30 @@ export function EarlyWarningBody({
         <p className="px-4 py-3 text-sm text-zinc-500">Checking the book…</p>
       ) : null}
       {rows.map((row) => (
-        <Link
-          key={row.id}
-          href={row.href}
-          className="block px-4 py-2.5 hover:bg-zinc-50"
-        >
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Badge tone={row.severity === "critical" ? "danger" : "warning"}>
-              {row.title}
-            </Badge>
-            {row.dealCode ? (
-              <span className="font-mono text-[11px] text-zinc-500">
-                {row.dealCode}
-              </span>
-            ) : null}
-          </div>
-          <p className="mt-0.5 text-sm text-zinc-800">{row.reason}</p>
-        </Link>
+        <div key={row.id} className="relative px-4 py-2.5 hover:bg-zinc-50">
+          <Link href={row.href} className="block after:absolute after:inset-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge tone={row.severity === "critical" ? "danger" : "warning"}>
+                {row.title}
+              </Badge>
+              {row.dealCode ? (
+                <span className="font-mono text-[11px] text-zinc-500">
+                  {row.dealCode}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-0.5 text-sm text-zinc-800">{row.reason}</p>
+          </Link>
+          {row.mailHref ? (
+            <Link
+              href={row.mailHref}
+              className="relative z-10 mt-1 inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:underline"
+            >
+              <Mail className="h-3 w-3" aria-hidden />
+              Open latest email
+            </Link>
+          ) : null}
+        </div>
       ))}
       {!loading && !failed && rows.length === 0 ? (
         <p className="px-4 py-3 text-sm text-zinc-500">No open warnings.</p>

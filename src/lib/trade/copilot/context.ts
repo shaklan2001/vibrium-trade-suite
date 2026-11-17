@@ -192,16 +192,36 @@ export function dealCard(d: Deal, attention: AttentionItem[]): string {
   for (const a of att) {
     rows.push(`- Needs attention (${a.severity}): ${a.title}${a.detail ? ` — ${clip(a.detail, 140)}` : ""} → next: ${clip(a.nextStep, 120)}`);
   }
+  rows.push(...(d.paymentNotes || []));
+  rows.push(...mailTrail(d));
+  return rows.filter(Boolean).join("\n");
+}
+
+/**
+ * The deal's latest emails, newest first, each with its own link. Emails that arrived after
+ * the stage agent last read the deal are marked NEWER: the fields above do not include them
+ * yet, so they win when they disagree.
+ */
+export function mailTrail(d: Deal, max = 5): string[] {
+  const asOf = Date.parse(d.recordAsOf || "") || 0;
   const mails = [...(d.sources || [])]
-    .filter((s) => s.subject || s.extractedSummary || s.body)
-    .sort((a, b) => (Date.parse(b.receivedAt || "") || 0) - (Date.parse(a.receivedAt || "") || 0))
-    .slice(0, 3);
-  for (const s of mails) {
-    rows.push(
-      `- Email ${day(s.receivedAt) || "(undated)"}${s.from ? ` from ${clip(s.from, 60)}` : ""}: "${clip(s.subject, 100) || "(no subject)"}" — ${clip(s.extractedSummary || s.body, 240) || ""}`,
+    .filter((s) => s.subject || s.body)
+    .sort((a, b) => (Date.parse(b.receivedAt || "") || 0) - (Date.parse(a.receivedAt || "") || 0));
+  const newer = asOf ? mails.filter((s) => (Date.parse(s.receivedAt || "") || 0) > asOf) : [];
+  const out: string[] = [];
+  if (newer.length) {
+    out.push(
+      `- Record read ${day(d.recordAsOf)}; ${newer.length} newer email(s) below are NOT in the fields above yet. Where they disagree, the newer email is right.`,
     );
   }
-  return rows.filter(Boolean).join("\n");
+  for (const s of mails.slice(0, Math.max(max, Math.min(newer.length, 8)))) {
+    const isNewer = asOf && (Date.parse(s.receivedAt || "") || 0) > asOf;
+    const label = `${day(s.receivedAt) || "undated"} · ${clip(s.subject, 70) || "(no subject)"}`.replace(/[[\]]/g, "");
+    out.push(
+      `- Email${isNewer ? " (NEWER)" : ""} ${s.mailHref ? `[${label}](${s.mailHref})` : `"${label}"`}${s.from ? ` from ${clip(s.from, 50)}` : ""}: ${clip((s.body || "").replace(/\s+/g, " "), isNewer ? 420 : 220)}`,
+    );
+  }
+  return out;
 }
 
 /** One-line row for list answers. */
@@ -247,7 +267,9 @@ const RULES = `ANSWER RULES
 - Lead with the direct answer, then short supporting bullets. Use bullet lists, never Markdown tables (they don't render).
 - Use the totals above for any "how many / how much" — never count the rows listed (lists are trimmed).
 - Name deals by code and link them exactly as given, e.g. [PO-14837](/deals/PO-14837~ab12).
-- Cite where a fact comes from when it matters (e.g. "per the 17 Oct email from the forwarder").
+- Back every claim about a deal with the email it comes from, using that email's link exactly as given, e.g. [17 Nov · RE: PO 14946 docs](/mailbox/inbox?deal=PO-14946~ab12&mail=1f2e3d4c). Only use links that appear in this context; never build one.
+- When an email is marked NEWER, it overrides the deal fields it disagrees with (they were read before it arrived).
+- For money received or owed, use the "Payments PO …" lines (read from the payment emails) over the "Payment clock" and "Cash" fields: give received vs PO value and the outstanding balance, and link the payment emails.
 - If a list is trimmed, say how many matched in total and offer to narrow it.
 - End with one concrete next step when there is a clear one.
 - Never mention internal ids (bot, agent, execution) or this context block.`;

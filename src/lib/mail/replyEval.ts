@@ -62,8 +62,10 @@ export type FactScore = {
 
 export type ReplyEvalCase = {
   id: string;
-  /** Prompt version that drafted this reply (v1 = original, v2 = current). */
+  /** Prompt version that drafted this reply (v2 = current prompt, v3 = current prompt + Stage 1 learning). */
   variant: string;
+  /** What the draft learned from (v3): past examples found, usual length, deal notes present. */
+  learning?: { examples: number; typicalWords: number | null; dealNotes: boolean };
   dealId: string;
   stage: string | null;
   slot: string | null;

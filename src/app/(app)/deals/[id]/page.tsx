@@ -17,6 +17,7 @@ import { DealTimeline } from "@/components/ops/deal-timeline";
 import { SourceEmailsPanel } from "@/components/ops/source-emails-panel";
 import { FactoryRecommendations } from "@/components/ops/factory-recommendations";
 import { OpenableFileLink } from "@/components/ops/openable-file-link";
+import { DealPaymentLedger } from "@/components/ops/deal-payment-ledger";
 import { DealPaymentsPanel } from "@/components/ops/deal-payments-panel";
 import { DealOverviewCard } from "@/components/ops/deal-overview-card";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
@@ -280,6 +281,7 @@ export default function DealRoomPage() {
       </div>
 
       <div className="mt-4">
+        <DealPaymentLedger deal={deal} />
         <DealPaymentsPanel deal={deal} />
       </div>
 

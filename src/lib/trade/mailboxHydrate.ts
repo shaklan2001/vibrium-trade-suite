@@ -109,6 +109,13 @@ export async function hydrateMailboxBook(): Promise<MailboxHydrateResult> {
         .filter((deal): deal is NonNullable<typeof deal> => Boolean(deal)),
     );
 
+    // Deals with mail in a connected mailbox: their emails open in the inbox (warnings link to them).
+    const live = await fetch("/api/mail/live-deals", { cache: "no-store" })
+      .then((r) => (r.ok ? (r.json() as Promise<{ ids?: string[] }>) : { ids: [] }))
+      .catch(() => ({ ids: [] as string[] }));
+    const liveIds = new Set(live.ids || []);
+    for (const d of mapped) if (d.mailboxSourceId && liveIds.has(d.mailboxSourceId)) d.liveMail = true;
+
     if (mapped.length > 0) {
       // Real mailbox book replaces synthetic portfolio seeds.
       store.mergeMailboxDeals(mapped);
