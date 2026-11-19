@@ -570,7 +570,19 @@ function AppShellInner({ children }: { children: ReactNode }) {
           </header>
           <div className="page-wide">{children}</div>
           <footer className="suite-footer">
-            <p>Vibrium Trade Suite</p>
+            <p>
+              Vibrium Trade Suite ·{" "}
+              <button
+                type="button"
+                className="cursor-pointer underline"
+                onClick={async () => {
+                  await fetch("/api/auth/sign-out", { method: "POST" }).catch(() => null);
+                  window.location.assign("/sign-in");
+                }}
+              >
+                Sign out
+              </button>
+            </p>
           </footer>
         </div>
       </div>
