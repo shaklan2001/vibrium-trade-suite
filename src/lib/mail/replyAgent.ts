@@ -108,6 +108,16 @@ function learningText(item: InboxItem, signer: string) {
   };
 }
 
+/** The conversation's files as text (document layer): the newest mail's attachments first. */
+function documentsText(item: InboxItem) {
+  const docs = item.documents || [];
+  if (!docs.length) return "";
+  return [
+    "Attachments in this conversation (text read from the files):",
+    ...docs.map((d) => `--- ${d.onLatest ? "attached to their newest mail" : "earlier in the thread"} · ${d.type} · ${d.name}\n${d.text}`),
+  ].join("\n");
+}
+
 export function replyPrompt(item: InboxItem, signer: string) {
   const learned = learningText(item, signer);
   const words = item.learning?.typicalWords;
@@ -133,13 +143,17 @@ export function replyPrompt(item: InboxItem, signer: string) {
     "- If they only share information or files, acknowledge it in one line and give the next step (\"We will share these with the buyer for approval.\").",
     "- If figures in their mail (quantity, price, weight, dates) differ from the PO or earlier mails in the thread, point out the difference and ask them to correct it instead of accepting it.",
     "- If they chase for an update and the thread does not have it, give a firm commitment (\"We will share the status by tomorrow.\") rather than \"we are checking\".",
-    "- Use only facts from the thread. Never invent prices, quantities, dates, PO numbers or payment status. If the reply needs a figure that is not in the thread, write a placeholder like [date] or [price].",
+    "- Use only facts from the thread and its attachments. Never invent prices, quantities, dates, PO numbers or payment status. If the reply needs a figure that is not there, write a placeholder like [date] or [price].",
+    item.documents?.length
+      ? "- Their attachments are below as text. Use them only to check and confirm: if they ask you to check or approve a file, confirm it or point out a figure (quantity, price, PO number, date, weight) that differs from the PO or earlier mails. Do not summarise or describe the attachments, and do not add figures from them that the reply does not need; a short acknowledgement plus the next step is usually right."
+      : "",
     "- Greet them the way our side greeted them earlier in the thread; otherwise \"Dear <first name> ji,\" for Indian contacts and \"Dear <first name>,\" for others.",
     "",
     `Reply to: ${item.latest.fromName || item.latest.from} <${item.latest.from}>.`,
     background ? `Background for you only — do not raise it unless their mail asks about it:\n${background}` : "",
     learned.deal,
     learned.style,
+    documentsText(item),
     learned.examples ? `\n${learned.examples}` : "",
     `End with:\nRegards,\n${signer}`,
     "",

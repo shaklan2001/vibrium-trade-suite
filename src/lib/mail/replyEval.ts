@@ -62,6 +62,8 @@ export type FactScore = {
 
 export type ReplyEvalCase = {
   id: string;
+  /** Text of the attachments on their mail / the thread (document layer), so grading can check figures taken from files. */
+  attachments?: string | null;
   /** Prompt version that drafted this reply (v2 = current prompt, v3 = current prompt + Stage 1 learning). */
   variant: string;
   /** What the draft learned from (v3): past examples found, usual length, deal notes present. */
@@ -210,7 +212,7 @@ export function scoreFacts(draft: string, human: string, context: string): FactS
 /* Judge                                                               */
 /* ------------------------------------------------------------------ */
 
-export function judgePrompt(c: Pick<ReplyEvalCase, "incoming" | "human" | "draft" | "subject">) {
+export function judgePrompt(c: Pick<ReplyEvalCase, "incoming" | "human" | "draft" | "subject" | "attachments">) {
   return [
     "You grade an AI-drafted business email reply against the reply a person actually sent.",
     "Context: Savvy Net Sourcing (SNSPL) is a buying agency between overseas buyers and Indian factories.",
@@ -234,6 +236,9 @@ export function judgePrompt(c: Pick<ReplyEvalCase, "incoming" | "human" | "draft
     "",
     `INCOMING MAIL from ${c.incoming.fromName || c.incoming.from}:`,
     c.incoming.body.slice(0, 1500),
+    ...(c.attachments
+      ? ["", "ATTACHMENTS on the mail / thread (text read from the files; figures taken from here are not invented):", c.attachments.slice(0, 4000)]
+      : []),
     "",
     "REAL REPLY (sent by our person):",
     coreText(c.human.body).slice(0, 1500),

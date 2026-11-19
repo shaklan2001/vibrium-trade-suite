@@ -28,9 +28,18 @@ export interface CashDrillDeal {
   title: string;
   amountUsd: number;
   meta?: string;
+  /** Structured chips for the drill panel; `meta` stays the flat text used for filtering. */
+  facts?: CashDrillFact[];
+  /** Longer free-text context (e.g. payment terms excerpt). */
+  note?: string;
   blockedAt?: CashBlockLocation;
   sources: ProvenanceCite[];
   href: string;
+}
+
+export interface CashDrillFact {
+  label: string;
+  tone?: "neutral" | "success" | "warning" | "info" | "danger";
 }
 
 export interface RollingBucket {

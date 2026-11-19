@@ -51,7 +51,13 @@ export function paymentLines(ledger: PaymentLedger, deal: Deal): string[] {
     const c = o.currency;
     out.push(
       `- Payments PO ${o.po} (from payment emails): ${STATUS[o.status]}` +
-        (o.poValue ? ` · PO value ${money(o.poValue, c)}` : o.invoiced ? ` · invoiced (payment requests) ${money(o.invoiced, c)}` : "") +
+        (o.poValue
+          ? ` · PO value ${money(o.poValue, c)}`
+          : o.basis === "factory_invoice"
+            ? ` · factory invoice ${money(o.factoryValue, c)}`
+            : o.invoiced
+              ? ` · invoiced (payment requests) ${money(o.invoiced, c)}`
+              : "") +
         ` · received ${money(o.buyer.received, c)}` +
         (o.buyer.sentUnconfirmed ? ` · sent, not yet confirmed ${money(o.buyer.sentUnconfirmed, c)}` : "") +
         (o.outstanding != null ? ` · outstanding ${money(Math.max(0, o.outstanding), c)}` : "") +

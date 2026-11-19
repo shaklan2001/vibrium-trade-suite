@@ -20,7 +20,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { invokeTradeSuiteRds } from "../src/lib/rdsProxy";
 import { freshText } from "../src/lib/mail/inbox";
-import type { InboxItem, InboxMessage } from "../src/lib/mail/inboxTypes";
+import type { InboxDocument, InboxItem, InboxMessage } from "../src/lib/mail/inboxTypes";
 import { askCopilot, copilotRewrite, drafterRewrite, replyPrompt, replyPromptV1 } from "../src/lib/mail/replyAgent";
 import { AGENT_NAMES, firstName } from "../src/lib/mail/replyDraft";
 import {
@@ -35,6 +35,9 @@ import {
 } from "../src/lib/mail/replyEval";
 import { getMailStore } from "../src/lib/mail/store";
 import { threadKeyFor } from "../src/lib/mail/thread";
+import { docTextsFor, type StoredFile } from "../src/lib/mail/docStore";
+import { DOC_TYPE_LABELS } from "../src/lib/mail/docText";
+import { digestFromIngestPath } from "../src/lib/trade/ingestFiles";
 import { ReplyLibrary, dealNotesAsOf, type ReplyLearning, type ReplyPair } from "../src/lib/mail/replyLearning";
 import type { EvidenceMessage, ProcessedDealRow } from "../src/lib/trade/processedDealMapper";
 
@@ -50,7 +53,8 @@ const CONCURRENCY = opt("concurrency", 4);
 /** v3 = current prompt + Stage 1 learning (past replies, usual length, deal notes as of the mail date). */
 /** v4 = v3 brief, drafted by the dedicated email worker (VIBRIUM_REPLY_DRAFTER_AGENT_ID) instead of the chat Copilot. */
 /** v5 = v3 + the connected mailboxes' replies in the library + each person's style profile. */
-const PROMPTS = { v1: replyPromptV1, v2: replyPrompt, v3: replyPrompt, v4: replyPrompt, v5: replyPrompt } as const;
+/** v6 = v2 + the text of the conversation's attachments (document layer, Phase 1). */
+const PROMPTS = { v1: replyPromptV1, v2: replyPrompt, v3: replyPrompt, v4: replyPrompt, v5: replyPrompt, v6: replyPrompt } as const;
 type Variant = keyof typeof PROMPTS;
 const VARIANTS = ((args.includes("--prompts") ? args[args.indexOf("--prompts") + 1] : "") || "v2")
   .split(",")
@@ -97,8 +101,28 @@ async function allDeals() {
 const email = (s: string | undefined) => (/[\w.+-]+@[\w.-]+/.exec(s || "")?.[0] || "").toLowerCase();
 const list = (v: string | string[] | undefined) => (Array.isArray(v) ? v.join(", ") : v || "");
 
+/** Stored files per message (sha256 from the attachment path), for the document-layer variant. */
+const FILES = new Map<string, StoredFile[]>();
+
+/** Text of the files on their mail and the thread before it: never anything sent later. */
+async function documentsFor(p: Pair): Promise<InboxDocument[]> {
+  const latest = FILES.get(p.incoming.id) || [];
+  const earlier = [...p.history].reverse().flatMap((m) => FILES.get(m.id) || []);
+  const docs = await docTextsFor([...latest, ...earlier], 4).catch(() => []);
+  return docs.map((d) => ({
+    name: d.name,
+    type: DOC_TYPE_LABELS[d.docType],
+    text: d.text.length > 2500 ? `${d.text.slice(0, 2500)}\n…` : d.text,
+    onLatest: latest.some((f) => f.name === d.name),
+  }));
+}
+
 function toInbox(m: EvidenceMessage): InboxMessage {
   const from = email(m.from);
+  const files = (m.attachments || [])
+    .map((a) => ({ name: a.name || "", sha256: digestFromIngestPath(a.path) || "", s3_key: "stored" }))
+    .filter((f) => f.name && f.sha256);
+  if (files.length) FILES.set(m.id || `${from}-${m.date}`, files);
   return {
     id: m.id || `${from}-${m.date}`,
     from,
@@ -243,7 +267,7 @@ async function loadMailboxes(): Promise<{ deal: ProcessedDealRow; messages: Evid
               cc: r.cc_text || "",
               date: r.sent_at || undefined,
               body: r.body_text || "",
-              attachments: (r.attachments_json || []).map((a) => ({ name: a.filename })),
+              attachments: (r.attachments_json || []).map((a) => ({ name: a.name, path: a.sha256 ? `mail/${a.sha256}${a.ext || ""}` : undefined })),
             },
           ]);
         }
@@ -301,10 +325,17 @@ async function loadLibrary(deals: ProcessedDealRow[]) {
 async function runCase(p: Pair, n: number, variant: Variant): Promise<ReplyEvalCase> {
   const learning = variant === "v3" || variant === "v4" || variant === "v5" ? learningFor(p, variant) : undefined;
   const item = itemFor(p, learning);
+  // Grading always sees the attachments (both variants), so figures taken from a file are not called invented.
+  const docs = FILES.size ? await documentsFor(p) : [];
+  if (variant === "v6") item.documents = docs;
+  const docCount = item.documents?.length || 0;
+  const attachmentText = docs.length ? docs.map((d) => `[${d.type}] ${d.name}\n${d.text}`).join("\n\n") : null;
   const base: ReplyEvalCase = {
     id: `${p.deal.id}#${p.human.id}`,
     variant,
-    learning: learning
+    learning: variant === "v6"
+      ? { examples: 0, typicalWords: null, dealNotes: false, docs: docCount, docsOnLatest: (item.documents || []).filter((d) => d.onLatest).length }
+      : learning
       ? {
           examples: learning.examples.length,
           typicalWords: learning.typicalWords,
@@ -319,6 +350,7 @@ async function runCase(p: Pair, n: number, variant: Variant): Promise<ReplyEvalC
     subject: p.incoming.subject,
     incoming: { from: p.incoming.from, fromName: p.incoming.fromName, date: p.incoming.date, body: p.incoming.body },
     human: { from: p.human.from, fromName: p.human.fromName, date: p.human.date, body: p.human.body },
+    attachments: attachmentText,
     draft: null,
     draftMs: null,
     error: null,
@@ -342,6 +374,7 @@ async function runCase(p: Pair, n: number, variant: Variant): Promise<ReplyEvalC
     ...p.history.map((m) => `${m.subject}\n${m.body}`),
     WITH_FACTS ? p.deal.summary || "" : "",
     learning?.dealNotes || "",
+    attachmentText || "",
   ].join("\n");
   base.similarity = similarity(base.draft, p.human.body);
   base.facts = scoreFacts(base.draft, p.human.body, context);

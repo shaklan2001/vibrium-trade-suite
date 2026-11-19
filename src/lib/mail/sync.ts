@@ -16,6 +16,8 @@ import { decryptSecret } from "./crypto";
 import { buildDealPack, buildEvidence, dealContextNotes, type DealPack } from "./dealPack";
 import { presign } from "./attachmentUrl";
 import { isBankStatementMail } from "./bankStatement";
+import { ensureDocText } from "./docStore";
+import { ocrEnabled, processOcr, startOcr, wantsOcr } from "./ocr";
 import { paymentReaderId, paymentRowFor, processPayments, type PaymentRow } from "./paymentJobs";
 import { parseRawMail, storeAttachment } from "./parse";
 import { isRdsProxyEnabled } from "@/lib/rdsProxy";
@@ -232,7 +234,9 @@ export async function syncConnection(
               files.push({ ...a.meta, skipped: "not_trade" });
               continue;
             }
-            files.push(await storeAttachment(a.meta, a.content).catch(() => ({ ...a.meta, skipped: "upload_failed" })));
+            const stored = await storeAttachment(a.meta, a.content).catch(() => ({ ...a.meta, skipped: "upload_failed" }));
+            files.push(stored);
+            await ensureDocText(stored, a.content).catch(() => null);
           }
           pending.push(
             messageRow(conn, ref.id, {
@@ -262,7 +266,17 @@ export async function syncConnection(
         const attachments: StoredAttachment[] = [];
         for (const att of mail.attachments) {
           try {
-            attachments.push(await storeAttachment(att.meta, att.content));
+            const stored = await storeAttachment(att.meta, att.content);
+            attachments.push(stored);
+            // Document layer: text for PDFs, sheets and Word files, cached by content (read once);
+            // scans and photographed documents go to OCR (collected on a later cycle).
+            const text = await ensureDocText(stored, att.content).catch((err) => {
+              console.warn("[docs] text failed", stored.name, err);
+              return null;
+            });
+            if (ocrEnabled() && wantsOcr(stored, text)) {
+              await startOcr(stored).catch((err) => console.warn("[ocr] not started", stored.name, err instanceof Error ? err.message : err));
+            }
           } catch (err) {
             attachments.push({
               ...att.meta,
@@ -709,11 +723,17 @@ export async function runMailCycle(opts: {
   }
   const jobs = await processJobs({ deadline: opts.deadline, store, all });
   const documents = await runDocumentStep(opts.deadline, jobs.finalizedKeys || []);
+  const ocr = ocrEnabled()
+    ? await processOcr({ deadline: opts.deadline }).catch((err) => {
+        console.warn("[ocr] round failed", err instanceof Error ? err.message : err);
+        return null;
+      })
+    : null;
   const payments = await processPayments(store, { deadline: opts.deadline }).catch((err) => {
     console.warn("[payments] round failed", err);
     return null;
   });
-  return { connections, jobs, documents, payments, job_counts: await store.jobCounts() };
+  return { connections, jobs, documents, ocr, payments, job_counts: await store.jobCounts() };
 }
 
 /**
