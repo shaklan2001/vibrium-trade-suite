@@ -13,6 +13,12 @@ import { getCopilotBook } from "../src/lib/trade/copilot/book";
 import { shortDealKey } from "../src/lib/trade/dealLink";
 import type { Deal } from "../src/types/trade";
 
+// Sent to the app; APP_API_TOKEN gets past src/middleware.ts without a browser session.
+const API_HEADERS: Record<string, string> = {
+  "Content-Type": "application/json",
+  ...(process.env.APP_API_TOKEN ? { Authorization: `Bearer ${process.env.APP_API_TOKEN}` } : {}),
+};
+
 type Case = {
   q: string;
   expectMode?: string;
@@ -155,12 +161,12 @@ async function main() {
       const contactId = `trade-eval-${Date.now()}-${i}`;
       await fetch("http://localhost:3000/api/chat/start", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: API_HEADERS,
         body: JSON.stringify({ contactId }),
       });
       const res = await fetch("http://localhost:3000/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: API_HEADERS,
         body: JSON.stringify({
           contactId,
           message: c.q,

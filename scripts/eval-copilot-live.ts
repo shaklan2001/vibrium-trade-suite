@@ -19,6 +19,12 @@ import type { Deal } from "../src/types/trade";
 
 const BASE = (process.env.COPILOT_BASE || "http://localhost:3000").replace(/\/$/, "");
 
+// Sent to the app; APP_API_TOKEN gets past src/middleware.ts without a browser session.
+const API_HEADERS: Record<string, string> = {
+  "Content-Type": "application/json",
+  ...(process.env.APP_API_TOKEN ? { Authorization: `Bearer ${process.env.APP_API_TOKEN}` } : {}),
+};
+
 type Expect = {
   /** Every pattern must match. */
   all?: RegExp[];
@@ -173,7 +179,7 @@ async function askOnce(
   const focusDeal = turn.focus ? book.deals.find((d) => d.code === turn.focus) : undefined;
   const res = await fetch(`${BASE}/api/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: API_HEADERS,
     body: JSON.stringify({
       contactId,
       message: turn.q,
@@ -226,7 +232,7 @@ async function main() {
     const contactId = `trade-e2e-${s.id}-${Date.now()}`;
     await fetch(`${BASE}/api/chat/start`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: API_HEADERS,
       body: JSON.stringify({ contactId }),
     }).catch(() => null);
     let active: string[] = [];
