@@ -27,6 +27,8 @@ import {
 import { getExecutionResult, runWorkerAndWait } from "@/services/agentsApi";
 import type { DealStage, WorkerSlot } from "@/types/trade";
 import { STAGE_LABELS } from "@/types/trade";
+import { Select } from "@/components/ui/select";
+import { dealOptions } from "@/lib/trade/dealCode";
 
 type StageKey =
   | "artwork"
@@ -142,18 +144,14 @@ export default function PipelinePage() {
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <Label>Deal</Label>
-            <select
-              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+            <Select
+              aria-label="Deal"
               value={dealId}
-              onChange={(e) => setDealId(e.target.value)}
-            >
-              <option value="">Select deal…</option>
-              {deals.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.code} · {d.title}
-                </option>
-              ))}
-            </select>
+              onChange={setDealId}
+              placeholder="Select deal…"
+              searchPlaceholder="Search deal code or summary…"
+              options={dealOptions(deals)}
+            />
           </div>
           <div>
             <Label>Current stage</Label>

@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { PageHeader } from "@/components/layout/app-shell";
 import { useWorkspaceProcess } from "@/components/layout/workspace-process";
 import { Badge, Card, CardHeader } from "@/components/ui/primitives";
@@ -33,14 +34,14 @@ const OPS_STEPS: OpsStep[] = [
   { id: "14", phase: "G · Close", title: "Docs & T/T clock", lane: "Agency (SNSPL)", detail: "CI/PL/BL · payment · commission" },
 ];
 
-const OPS_PHASES = [
-  { name: "Requirement → Quote", color: "bg-teal-700" },
-  { name: "Artwork & samples", color: "bg-emerald-700" },
-  { name: "PI / PO lock", color: "bg-cyan-800" },
-  { name: "Spec & packaging", color: "bg-sky-800" },
-  { name: "Production", color: "bg-indigo-800" },
-  { name: "Booking", color: "bg-violet-800" },
-  { name: "Docs · pay · commission", color: "bg-zinc-800" },
+const OPS_PHASES: readonly string[] = [
+  "Requirement → Quote",
+  "Artwork & samples",
+  "PI / PO lock",
+  "Spec & packaging",
+  "Production",
+  "Booking",
+  "Docs · pay · commission",
 ];
 
 const FINANCE_LANES = [
@@ -75,67 +76,157 @@ const FINANCE_STEPS: FinanceStep[] = [
   { id: "12", phase: "4 · Settle", title: "Close deal ledger", lane: "Agency · Sourcing", detail: "Sourcing + Accounts close the order" },
 ];
 
-const FINANCE_PHASES = [
-  { name: "PI / PO + terms", color: "bg-zinc-800" },
-  { name: "Deploy to factory", color: "bg-teal-700" },
-  { name: "Track exposure", color: "bg-amber-700" },
-  { name: "Buyer recoveries", color: "bg-sky-800" },
-  { name: "Commission settle", color: "bg-emerald-800" },
+const FINANCE_PHASES: readonly string[] = [
+  "PI / PO + terms",
+  "Deploy to factory",
+  "Track exposure",
+  "Buyer recoveries",
+  "Commission settle",
 ];
+
+/** "1 · Deploy" → "Deploy" (the band reads left-to-right, so the prefix is noise). */
+function phaseName(phase: string) {
+  const parts = phase.split("·");
+  return (parts.length > 1 ? parts.slice(1).join("·") : phase).trim();
+}
+
+function PhaseStepper({ phases }: { phases: readonly string[] }) {
+  return (
+    <ol className="phase-stepper" aria-label="Phases">
+      {phases.map((name, i) => (
+        <li key={name} className="phase-step">
+          <span className="phase-step-index">{i + 1}</span>
+          <span className="phase-step-name">{name}</span>
+          {i < phases.length - 1 ? (
+            <ChevronRight className="phase-step-arrow" aria-hidden />
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+type SwimlaneStep = { id: string; phase: string; title: string; lane: string; detail: string };
 
 function Swimlane({
   lanes,
   steps,
 }: {
   lanes: readonly string[];
-  steps: readonly { id: string; title: string; lane: string; detail: string }[];
+  steps: readonly SwimlaneStep[];
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+
+  const syncEdges = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setEdges({ left: el.scrollLeft > 2, right: el.scrollLeft < max - 2 });
+  }, []);
+
+  useEffect(() => {
+    syncEdges();
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(syncEdges);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [syncEdges]);
+
+  const scrollBy = (dir: 1 | -1) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.max(el.clientWidth * 0.7, 200), behavior: "smooth" });
+  };
+
+  // Consecutive steps that share a phase render as one spanning band cell.
+  const bands = steps.reduce<{ name: string; span: number }[]>((acc, step) => {
+    const last = acc[acc.length - 1];
+    if (last && last.name === step.phase) last.span += 1;
+    else acc.push({ name: step.phase, span: 1 });
+    return acc;
+  }, []);
+
+  const columns = { gridTemplateColumns: `repeat(${steps.length}, var(--swimlane-col))` };
+
   return (
-    <div className="overflow-x-auto px-5 pb-5 pt-2">
-      <div
-        className="grid gap-3"
-        style={{
-          gridTemplateColumns: `11rem repeat(${steps.length}, minmax(9.25rem, 1fr))`,
-          minWidth: `${11 + steps.length * 9.25}rem`,
-        }}
-      >
-        <div />
-        {steps.map((step) => (
-          <div
-            key={`h-${step.id}`}
-            className="pb-1 text-center text-xs font-semibold text-[var(--muted)]"
+    <div className="swimlane">
+      <div className="swimlane-toolbar">
+        <span>
+          {steps.length} steps · {lanes.length} lanes
+        </span>
+        <div className="swimlane-nav">
+          <button
+            type="button"
+            onClick={() => scrollBy(-1)}
+            disabled={!edges.left}
+            aria-label="Scroll steps left"
           >
-            {step.id}
-          </div>
-        ))}
-        {lanes.map((lane) => (
-          <Fragment key={lane}>
-            <div className="sticky left-0 z-[1] flex items-center rounded-xl bg-[var(--muted-bg)] px-3 py-3 text-[13px] font-semibold leading-snug text-[var(--ink)]">
+            <ChevronLeft aria-hidden />
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollBy(1)}
+            disabled={!edges.right}
+            aria-label="Scroll steps right"
+          >
+            <ChevronRight aria-hidden />
+          </button>
+        </div>
+      </div>
+      <div
+        className={`swimlane-frame${edges.left ? " has-left" : ""}${edges.right ? " has-right" : ""}`}
+      >
+        <div className="swimlane-labels">
+          <div className="swimlane-head-spacer" aria-hidden />
+          {lanes.map((lane) => (
+            <div key={lane} className="swimlane-label">
               {lane}
             </div>
-            {steps.map((step) =>
-              step.lane === lane ? (
-                <div
-                  key={`${lane}-${step.id}`}
-                  className="flex min-h-[7.5rem] flex-col gap-1.5 rounded-xl border border-[color-mix(in_srgb,var(--accent)_22%,var(--line))] bg-[var(--accent-soft)] p-3"
-                >
-                  <div className="text-[13px] font-semibold leading-snug text-[var(--ink)]">
-                    {step.title}
-                  </div>
-                  <div className="text-xs leading-relaxed text-[var(--muted)]">
-                    {step.detail}
-                  </div>
-                </div>
-              ) : (
-                <div
-                  key={`${lane}-${step.id}`}
-                  className="min-h-[7.5rem] rounded-xl bg-[color-mix(in_srgb,var(--muted-bg)_55%,transparent)]"
-                  aria-hidden
-                />
-              ),
-            )}
-          </Fragment>
-        ))}
+          ))}
+        </div>
+        <div
+          ref={scrollRef}
+          className="swimlane-scroll"
+          onScroll={syncEdges}
+          tabIndex={0}
+          aria-label="Process steps by lane"
+        >
+          <div className="swimlane-grid" style={columns}>
+            {bands.map((band, i) => (
+              <div
+                key={`band-${i}`}
+                className="swimlane-band"
+                style={{ gridColumn: `span ${band.span}` }}
+                title={band.name}
+              >
+                {phaseName(band.name)}
+              </div>
+            ))}
+            {steps.map((step) => (
+              <div key={`h-${step.id}`} className="swimlane-step-no">
+                <span>{step.id}</span>
+              </div>
+            ))}
+            {lanes.map((lane) => (
+              <Fragment key={lane}>
+                {steps.map((step) =>
+                  step.lane === lane ? (
+                    <div key={`${lane}-${step.id}`} className="swimlane-card">
+                      <div className="swimlane-card-title">{step.title}</div>
+                      <div className="swimlane-card-detail" title={step.detail}>
+                        {step.detail}
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={`${lane}-${step.id}`} className="swimlane-empty" aria-hidden />
+                  ),
+                )}
+              </Fragment>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -154,19 +245,12 @@ function OpsProcessMap() {
           title="End-to-end flow"
           description="Requirement → Development → Sample → PO → Production → Inspection → Packing → Booking → Docs → Payment → Commission"
         />
-        <div className="flex flex-wrap gap-2 px-5 pb-5">
-          {OPS_PHASES.map((p) => (
-            <span
-              key={p.name}
-              className={`${p.color} rounded-full px-3 py-1.5 text-xs font-semibold text-white`}
-            >
-              {p.name}
-            </span>
-          ))}
+        <div className="px-4 py-4">
+          <PhaseStepper phases={OPS_PHASES} />
         </div>
       </Card>
 
-      <Card className="mb-6">
+      <Card className="mb-6 overflow-hidden">
         <CardHeader title="Swimlanes" description="Who owns each handoff" />
         <Swimlane lanes={OPS_LANES} steps={OPS_STEPS} />
       </Card>
@@ -223,24 +307,17 @@ function FinanceProcessMap() {
           title="Cash cycle"
           description="PI/PO + payment terms → Deploy to factory → Track → Buyer recoveries (checkpoints + email confirm) → Commission settle"
         />
-        <div className="flex flex-wrap gap-2 px-5 pb-5">
-          {FINANCE_PHASES.map((p) => (
-            <span
-              key={p.name}
-              className={`${p.color} rounded-full px-3 py-1.5 text-xs font-semibold text-white`}
-            >
-              {p.name}
-            </span>
-          ))}
+        <div className="px-4 py-4">
+          <PhaseStepper phases={FINANCE_PHASES} />
         </div>
-        <p className="border-t border-zinc-100 px-5 py-4 text-sm leading-relaxed text-zinc-500">
-          <strong className="text-zinc-700">Agency · Sourcing</strong> and{" "}
-          <strong className="text-zinc-700">Agency · Accounts</strong> are both
+        <p className="border-t border-[var(--line)] px-5 py-4 text-sm leading-relaxed text-[var(--muted)]">
+          <strong className="text-[var(--ink)]">Agency · Sourcing</strong> and{" "}
+          <strong className="text-[var(--ink)]">Agency · Accounts</strong> are both
           Savvy Net Sourcing (SNSPL) — not separate legal entities.
         </p>
       </Card>
 
-      <Card className="mb-6">
+      <Card className="mb-6 overflow-hidden">
         <CardHeader
           title="Cash lanes"
           description="Buyer · SNSPL (Sourcing / Accounts) · Factory"
