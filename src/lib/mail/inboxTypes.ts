@@ -1,4 +1,5 @@
 /** Shapes for the agent inbox (read the mail → draft the reply). Client-safe. */
+import type { ReplyLearning } from "./replyLearning";
 
 /** What the inbox needs from a person for this mail. */
 export type InboxOutcome = "draft_ready" | "needs_you" | "waiting" | "replied" | "fyi";
@@ -21,6 +22,8 @@ export const INBOX_OUTCOME_LABELS: Record<InboxOutcome, string> = {
 
 export type InboxMessage = {
   id: string;
+  /** mailRef() of the message id — what email links (/mailbox/inbox?deal=…&mail=…) point at. */
+  ref?: string;
   from: string;
   fromName: string;
   to: string;
@@ -42,6 +45,8 @@ export type ReplyDraft = {
   subject: string;
   body: string;
   by: "template" | "copilot";
+  /** Reply-accuracy log id (mail_reply_drafts); sent back with the reply so the sent text is stored next to the draft. */
+  logId?: string;
 };
 
 export type InboxItem = {
@@ -70,6 +75,20 @@ export type InboxItem = {
   dealId?: string | null;
   /** Where `latest` lives — the mailbox a reply is sent from. */
   mailbox: InboxMailboxRef;
+  /** Past replies, usual length and deal background the draft learns from (server-side only). */
+  learning?: ReplyLearning;
+  /** The newest payment email in the conversation, as read by the Payment Reader. */
+  payment?: InboxPayment;
+};
+
+export type InboxPayment = {
+  kind: "payment_received" | "payment_sent" | "payment_request";
+  amount: number | null;
+  currency: string | null;
+  pos: string[];
+  summary: string | null;
+  /** Our person who handles the order (most active SNSPL sender in the conversation). */
+  owner: string | null;
 };
 
 export type InboxMailboxRef = {

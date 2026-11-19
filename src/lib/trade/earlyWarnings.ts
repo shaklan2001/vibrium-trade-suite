@@ -2,6 +2,7 @@
  * Team early warnings from the hydrated mailbox book.
  * Day windows use the Asia/Kolkata calendar. One deal can emit several rows.
  */
+import { latestMailHref } from "@/lib/mail/mailLink";
 import type { Deal } from "@/types/trade";
 
 export type EarlyWarningKind = "po_risk" | "delivery_risk" | "action_needed";
@@ -15,6 +16,8 @@ export interface EarlyWarning {
   title: string;
   reason: string;
   href: string;
+  /** The deal's newest email in the inbox (null for book-level rows). */
+  mailHref: string | null;
   sortBand: number;
   sortKey: string;
 }
@@ -85,6 +88,7 @@ function row(
     title: TITLE[kind],
     reason,
     href: deal ? `/deals/${deal.id}` : "/mailbox",
+    mailHref: deal?.mailboxSourceId && deal.liveMail ? latestMailHref(deal) : null,
     sortBand,
     sortKey,
   };

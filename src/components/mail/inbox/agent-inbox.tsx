@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { findDealByRef } from "@/lib/trade/dealLink";
 import { slugId } from "@/lib/trade/processedDealMapper";
 import { useTradeStore } from "@/lib/trade/store";
 import { syncMailNow } from "@/lib/mail/client";
@@ -32,7 +33,7 @@ import {
 import { ListSkeleton } from "@/components/ui/loading-block";
 import { ConnectPanel } from "./connect-panel";
 import { displayName, listTime, snippet } from "./format";
-import { InboxView, OutcomeChip, type DraftStatus, type SentReply } from "./inbox-view";
+import { InboxView, OutcomeChip, PaymentChip, type DraftStatus, type SentReply } from "./inbox-view";
 
 /**
  * The shared team inbox. Every connected mailbox is synced into the store; this
@@ -123,6 +124,11 @@ export function AgentInbox() {
   const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  /** Conversation opened from an email link (?deal=…&mail=…); may not be on the current page. */
+  const [linked, setLinked] = useState<InboxItem | null>(null);
+  const [focusRef, setFocusRef] = useState<string | null>(null);
+  const [pendingLink, setPendingLink] = useState<{ deal: string; mail: string } | null>(null);
+  const bookStatus = useTradeStore((s) => s.mailboxBookStatus);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [read, setRead] = useState<string[]>([]);
   const [sent, setSent] = useState<Record<string, SentReply>>({});
@@ -179,12 +185,37 @@ export function AgentInbox() {
   useEffect(() => {
     setRead(loadStored<string[]>(READ_KEY, []));
     setSent(loadStored<Record<string, SentReply>>(SENT_KEY, {}));
-    const fromUrl = new URLSearchParams(window.location.search).get("mailbox");
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("mailbox");
+    const linkDeal = params.get("deal");
+    const linkMail = params.get("mail");
+    if (linkDeal && linkMail) setPendingLink({ deal: linkDeal, mail: linkMail });
     const saved = loadStored<unknown>(CHOSEN_KEY, ALL);
     const first = fromUrl || (typeof saved === "string" && saved ? saved : ALL);
     setScope(first);
     void load({ scope: first, cursor: null, q: "" });
   }, [load]);
+
+  // Email link (?deal=…&mail=…): resolve the deal from the loaded book when we can (fast),
+  // else let the server look it up; then open the conversation on that message.
+  useEffect(() => {
+    if (!pendingLink) return;
+    const deal = findDealByRef(deals, pendingLink.deal);
+    if (!deal?.mailboxSourceId && bookStatus !== "ready" && bookStatus !== "error") return;
+    setPendingLink(null);
+    const where = deal?.mailboxSourceId
+      ? `key=${encodeURIComponent(deal.mailboxSourceId)}`
+      : `deal=${encodeURIComponent(pendingLink.deal)}`;
+    void fetch(`/api/mail/open?${where}&mail=${encodeURIComponent(pendingLink.mail)}`)
+      .then(async (res) => {
+        const body = (await res.json().catch(() => ({}))) as { item?: InboxItem; mailRef?: string; error?: string };
+        if (!res.ok || !body.item) throw new Error(body.error || `HTTP ${res.status}`);
+        setLinked(body.item);
+        setFocusRef(body.mailRef || null);
+        openRef.current?.(body.item);
+      })
+      .catch((err) => toast.error(err instanceof Error ? err.message : "Could not open that email"));
+  }, [pendingLink, deals, bookStatus]);
 
   // A saved choice that no longer exists falls back to all mailboxes.
   useEffect(() => {
@@ -287,7 +318,7 @@ export function AgentInbox() {
   const isUnread = useCallback((item: InboxItem) => !read.includes(readKey(item)), [read]);
   const unread = items.filter(isUnread).length;
 
-  const openItem = openId ? items.find((i) => i.id === openId) || null : null;
+  const openItem = openId ? items.find((i) => i.id === openId) || (linked?.id === openId ? linked : null) : null;
   const openIndex = openItem ? visible.findIndex((i) => i.id === openItem.id) : -1;
   const current = scope === ALL ? null : mailboxes.find((m) => m.id === scope) || null;
   const byId = useMemo(() => new Map(mailboxes.map((m) => [m.id, m])), [mailboxes]);
@@ -316,6 +347,10 @@ export function AgentInbox() {
     }
   }, []);
 
+  // The first-load effect opens linked mail through this ref (open() is redefined each render).
+  const openRef = useRef<(item: InboxItem) => void>(() => undefined);
+  openRef.current = open;
+
   function open(item: InboxItem) {
     setOpenId(item.id);
     const key = readKey(item);
@@ -343,6 +378,7 @@ export function AgentInbox() {
           body: draft.body,
           mode,
           draftId: savedDrafts[item.id]?.draftId || undefined,
+          draftLogId: draft.logId,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as { mailbox?: string; draftId?: string | null; error?: string };
@@ -502,7 +538,14 @@ export function AgentInbox() {
               sendLabel={`Send as ${mailboxLabel({ displayName: openItem.mailbox.mailboxName, email: openItem.mailbox.mailboxEmail })}`}
               sending={sending[openItem.id] || null}
               saveDraftLabel={savedDrafts[openItem.id] ? "Update draft" : "Save to Drafts"}
-              onBack={() => setOpenId(null)}
+              focusRef={focusRef}
+              onBack={() => {
+                setOpenId(null);
+                if (focusRef) {
+                  setFocusRef(null);
+                  window.history.replaceState(null, "", window.location.pathname);
+                }
+              }}
               onStep={(dir) => {
                 const next = visible[openIndex + dir];
                 if (next) open(next);
@@ -614,6 +657,7 @@ export function AgentInbox() {
                             </span>
                             <span className="flex min-w-0 flex-1 items-center gap-2">
                               <OutcomeChip outcome={outcome} />
+                              {item.payment ? <PaymentChip payment={item.payment} /> : null}
                               {scope === ALL && owner ? (
                                 <span
                                   className="hidden shrink-0 rounded bg-teal-50 px-1.5 py-0.5 text-[11px] font-medium text-teal-800 ring-1 ring-inset ring-teal-100 sm:inline"
