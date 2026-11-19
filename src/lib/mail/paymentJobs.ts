@@ -84,6 +84,21 @@ export function paymentRowFor(
   };
 }
 
+/**
+ * Queue payment emails that are not in the ledger yet. The same email often reaches several
+ * connected mailboxes (CC'd copies, synced at different times) and each copy is "new" to its
+ * mailbox's sync; without this check a later copy would reset an already-read row to pending
+ * and the Payment Reader would read it again. Returns how many rows were queued.
+ */
+export async function queueNewPayments(store: MailStore, rows: PaymentRow[]): Promise<number> {
+  const unique = [...new Map(rows.map((r) => [r.id, r])).values()];
+  if (!unique.length) return 0;
+  const known = new Set((await store.listPayments({ ids: unique.map((r) => r.id), limit: unique.length })).map((r) => r.id));
+  const fresh = unique.filter((r) => !known.has(r.id));
+  if (fresh.length) await store.upsertPayments(fresh);
+  return fresh.length;
+}
+
 /** Start the reader for a pending row. */
 export async function startPaymentRead(row: PaymentRow): Promise<PaymentRow> {
   const agentId = paymentReaderId();

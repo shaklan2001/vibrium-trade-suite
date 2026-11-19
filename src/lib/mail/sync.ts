@@ -19,7 +19,7 @@ import { isBankStatementMail } from "./bankStatement";
 import { ensureDocText } from "./docStore";
 import { refreshSignals } from "./signalStore";
 import { ocrEnabled, processOcr, startOcr, wantsOcr } from "./ocr";
-import { paymentReaderId, paymentRowFor, processPayments, type PaymentRow } from "./paymentJobs";
+import { paymentReaderId, paymentRowFor, processPayments, queueNewPayments, type PaymentRow } from "./paymentJobs";
 import { parseRawMail, storeAttachment } from "./parse";
 import { isRdsProxyEnabled } from "@/lib/rdsProxy";
 import {
@@ -189,7 +189,7 @@ export async function syncConnection(
 
     const flush = async () => {
       if (payments.length && paymentReaderId()) {
-        await store.upsertPayments(payments.splice(0)).catch((err) => console.warn("[payments] queue failed", err));
+        await queueNewPayments(store, payments.splice(0)).catch((err) => console.warn("[payments] queue failed", err));
       }
       if (!pending.length) return;
       await store.insertMessages(pending);
