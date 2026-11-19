@@ -30,7 +30,7 @@ export function SyncNowButton({
       });
       if (r.errors.length) toast.error(r.errors[0], { id });
       else toast.success(describeSync(r), { id });
-      await hydrateMailboxBook();
+      await hydrateMailboxBook({ force: true });
       onSynced?.();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Sync failed";

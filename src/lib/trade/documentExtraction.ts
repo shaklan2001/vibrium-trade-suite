@@ -10,7 +10,7 @@
  *     MAIL_DOCUMENT_EXTRACTION=on)
  */
 import path from "path";
-import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { agentIdForSlot } from "@/lib/mail/classify";
 import {
@@ -21,6 +21,8 @@ import {
   TERMINAL,
 } from "@/lib/mail/workers";
 import { invokeTradeSuiteRds } from "@/lib/rdsProxy";
+import { convertedKey, getDocText, objectExists } from "@/lib/mail/docStore";
+import type { DocType } from "@/lib/mail/docText";
 import { digestFromIngestPath } from "./ingestFiles";
 import { isCommercialFile, PO_FILE_RE } from "./documentSide";
 import type { EvidencePayload, ProcessedDealRow } from "./processedDealMapper";
@@ -29,6 +31,8 @@ const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "ap-s
 const BUCKET = process.env.AWS_S3_BUCKET || "conversation-agents-artifacts";
 const PREFIX = (process.env.AWS_S3_PREFIX || "trade/pst-ingest").replace(/^\/+|\/+$/g, "");
 const READABLE_EXT = new Set([".pdf", ".xlsx", ".docx"]);
+/** File types worth a PO / PI extractor run (from the document layer's classification). */
+const COMMERCIAL_TYPES = new Set<DocType>(["purchase_order", "proforma_invoice", "commercial_invoice", "other"]);
 const PRESIGN_SECONDS = 7 * 24 * 3600;
 const EXECUTION_TIMEOUT_MS = 20 * 60 * 1000;
 /** Rough gpt-4.1 cost of one PI/PO read, for dry-run estimates only. */
@@ -79,6 +83,8 @@ export type PlannedDocument = {
   sentAt: string | null;
   slot: "pi_extractor" | "po_extractor";
   s3Key: string;
+  /** Scanned original: send its OCR text (as markdown) instead of the image PDF, which the platform cannot read. */
+  useText?: boolean;
 };
 
 export type SkippedDocument = { dealId: string; name: string; reason: string };
@@ -142,22 +148,36 @@ export async function planDealDocuments(dealIds: string[]): Promise<DocumentPlan
           continue;
         }
         const ext = path.extname(name).toLowerCase();
-        if (!READABLE_EXT.has(ext)) {
+        // Document layer: the file's text says what it is and whether it can be read at all.
+        const text = await getDocText(sha256).catch(() => null);
+        if (text?.status === "empty") {
+          plan.skipped.push({ dealId, name, reason: text.method === "ocr" ? "scanned, OCR found no text" : "scanned (no text layer): needs OCR" });
+          continue;
+        }
+        if (text?.status === "ok" && !COMMERCIAL_TYPES.has(text.docType)) {
+          plan.skipped.push({ dealId, name, reason: `not a PO / PI / invoice (${text.docType})` });
+          continue;
+        }
+        // Legacy .xls: read the .xlsx copy the document layer made.
+        const converted = ext === ".xls" && (await objectExists(convertedKey(sha256))) ? convertedKey(sha256) : null;
+        if (!READABLE_EXT.has(ext) && !converted) {
           plan.skipped.push({ dealId, name, reason: `${ext || "no extension"} is not readable by the extractor` });
           continue;
         }
-        const s3Key = await storedKey(sha256);
+        const s3Key = converted || (await storedKey(sha256));
         if (!s3Key) {
           plan.skipped.push({ dealId, name, reason: "file was never uploaded" });
           continue;
         }
+        const isPo = text?.status === "ok" ? text.docType === "purchase_order" : PO_FILE_RE.test(name) && !/pro\s*-?\s*forma|performa/i.test(name);
         plan.toRead.push({
           dealId,
           sha256,
           name,
           sentAt: m.date || null,
-          slot: PO_FILE_RE.test(name) && !/pro\s*-?\s*forma|performa/i.test(name) ? "po_extractor" : "pi_extractor",
+          slot: isPo ? "po_extractor" : "pi_extractor",
           s3Key,
+          useText: text?.method === "ocr" && text.status === "ok",
         });
       }
     }
@@ -199,9 +219,18 @@ export async function startDealDocuments(
       agent_id: agentId,
     };
     try {
+      let key = doc.s3Key;
+      if (doc.useText) {
+        const text = await getDocText(doc.sha256);
+        if (!text || text.status !== "ok") throw new Error("OCR text missing");
+        key = `${PREFIX}/_text/${doc.sha256}.md`;
+        await client().send(
+          new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: `# ${doc.name}\n\n${text.text}`, ContentType: "text/markdown" }),
+        );
+      }
       const url = await getSignedUrl(
         client(),
-        new GetObjectCommand({ Bucket: BUCKET, Key: doc.s3Key }),
+        new GetObjectCommand({ Bucket: BUCKET, Key: key }),
         { expiresIn: PRESIGN_SECONDS },
       );
       const executionId = await startExecution(agentId, {

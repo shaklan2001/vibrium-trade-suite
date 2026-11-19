@@ -1,8 +1,9 @@
 "use client";
 
+import { useEffect, useId } from "react";
 import Link from "next/link";
-import { X } from "lucide-react";
-import { Badge, Button } from "@/components/ui/primitives";
+import { ArrowUpRight, Info, X } from "lucide-react";
+import { Badge } from "@/components/ui/primitives";
 import { ProvenanceList } from "@/components/ops/command-center-ui";
 import type { CashDrillDeal } from "@/lib/trade/cashExposure";
 import { usd } from "@/lib/trade/commandCenterMetrics";
@@ -13,6 +14,90 @@ export type DrillPayload = {
   deals: CashDrillDeal[];
 };
 
+/** Close a side sheet on Escape while it is open. */
+export function useSheetEscape(open: boolean, onClose: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+}
+
+/** True when the note just repeats the start of a linked source excerpt. */
+function noteRepeatsSource(note: string, deal: CashDrillDeal) {
+  const head = note.trim().slice(0, 60).toLowerCase();
+  if (!head) return true;
+  return deal.sources.some((s) =>
+    (s.excerpt || "").toLowerCase().includes(head),
+  );
+}
+
+function DrillRow({ deal }: { deal: CashDrillDeal }) {
+  const note =
+    deal.note && !noteRepeatsSource(deal.note, deal) ? deal.note : null;
+  return (
+    <article className="px-5 py-4">
+      <div className="flex items-center justify-between gap-3">
+        <Link href={deal.href} className="deal-code-chip">
+          {deal.dealCode}
+        </Link>
+        {deal.amountUsd > 0 ? (
+          <div className="text-base font-bold tabular-nums tracking-tight text-zinc-900">
+            {usd(deal.amountUsd)}
+          </div>
+        ) : null}
+      </div>
+
+      <h3
+        className="mt-2 line-clamp-2 text-sm font-semibold leading-snug text-zinc-900"
+        title={deal.title}
+      >
+        {deal.title}
+      </h3>
+
+      {deal.facts?.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {deal.facts.map((f, i) => (
+            <Badge key={`${f.label}-${i}`} tone={f.tone || "neutral"}>
+              {f.label}
+            </Badge>
+          ))}
+        </div>
+      ) : deal.meta ? (
+        <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-zinc-500">
+          {deal.meta}
+        </p>
+      ) : null}
+
+      {note ? (
+        <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-zinc-500">
+          {note}
+        </p>
+      ) : null}
+
+      {deal.blockedAt && deal.blockedAt !== "none" ? (
+        <div className="mt-2">
+          <Badge tone="warning">{deal.blockedAt}</Badge>
+        </div>
+      ) : null}
+
+      <div className="mt-3">
+        <ProvenanceList sources={deal.sources} alwaysShow />
+      </div>
+
+      <div className="mt-2 flex justify-end">
+        <Link href={deal.href} className="text-link">
+          Open deal
+          <ArrowUpRight className="h-3.5 w-3.5" aria-hidden />
+        </Link>
+      </div>
+    </article>
+  );
+}
+
 /** Drill from a chart or KPI into contributing deals and source messages. */
 export function ChartDrillPanel({
   drill,
@@ -21,85 +106,76 @@ export function ChartDrillPanel({
   drill: DrillPayload | null;
   onClose: () => void;
 }) {
+  const titleId = useId();
+  useSheetEscape(Boolean(drill), onClose);
   if (!drill) return null;
+
   const total = drill.deals.reduce((a, d) => a + d.amountUsd, 0);
+  const count = drill.deals.length;
+
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-zinc-900/30">
+    <div className="side-sheet-root">
       <button
         type="button"
-        className="absolute inset-0 cursor-default"
-        aria-label="Close"
+        className="side-sheet-backdrop"
+        aria-label="Close panel"
         onClick={onClose}
       />
-      <aside className="relative z-10 flex h-full w-full max-w-md flex-col border-l border-zinc-200 bg-white shadow-xl">
-        <div className="flex items-start justify-between gap-3 border-b border-zinc-100 px-4 py-3">
-          <div>
-            <h2 className="text-sm font-semibold text-zinc-900">{drill.title}</h2>
+      <aside
+        className="side-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <header className="side-sheet-header">
+          <div className="min-w-0">
+            <p className="side-sheet-eyebrow">Drill-down</p>
+            <h2 id={titleId} className="side-sheet-title">
+              {drill.title}
+            </h2>
             {drill.subtitle ? (
-              <p className="mt-0.5 text-xs text-zinc-500">{drill.subtitle}</p>
+              <p className="side-sheet-subtitle">{drill.subtitle}</p>
             ) : null}
-            <p className="mt-1 font-mono text-xs text-zinc-600">
-              {drill.deals.length} deal{drill.deals.length === 1 ? "" : "s"}
-              {total > 0 ? ` · ${usd(total)}` : ""}
-            </p>
+            <div className="mt-3 flex items-baseline gap-2 text-sm text-zinc-500">
+              <span>
+                {count} deal{count === 1 ? "" : "s"}
+              </span>
+              {total > 0 ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="text-lg font-bold tabular-nums tracking-tight text-zinc-900">
+                    {usd(total)}
+                  </span>
+                </>
+              ) : null}
+            </div>
           </div>
-          <Button variant="ghost" className="px-2" onClick={onClose}>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Close"
+          >
             <X className="h-4 w-4" />
-          </Button>
-        </div>
-        <div className="flex-1 overflow-auto divide-y divide-zinc-100">
-          {drill.deals.length === 0 ? (
-            <p className="px-4 py-6 text-sm text-zinc-500">
+          </button>
+        </header>
+
+        <div className="side-sheet-body divide-y divide-zinc-100">
+          {count === 0 ? (
+            <p className="px-5 py-8 text-center text-sm text-zinc-500">
               No deals contribute to this measure.
             </p>
           ) : (
-            drill.deals.map((d) => (
-              <div key={`${d.dealId}-${d.meta}`} className="px-4 py-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <Link
-                      href={d.href}
-                      className="font-mono text-xs text-teal-800 underline"
-                    >
-                      {d.dealCode}
-                    </Link>
-                    <div className="truncate text-sm font-medium text-zinc-900">
-                      {d.title}
-                    </div>
-                    {d.meta ? (
-                      <div className="mt-0.5 text-xs text-zinc-500">{d.meta}</div>
-                    ) : null}
-                    {d.blockedAt && d.blockedAt !== "none" ? (
-                      <div className="mt-1">
-                        <Badge tone="warning">{d.blockedAt}</Badge>
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    {d.amountUsd > 0 ? (
-                      <div className="font-mono text-sm font-semibold tabular-nums">
-                        {usd(d.amountUsd)}
-                      </div>
-                    ) : null}
-                    <Link
-                      href={d.href}
-                      className="text-[11px] text-teal-700 underline"
-                    >
-                      Open deal
-                    </Link>
-                  </div>
-                </div>
-                <div className="relative mt-2">
-                  <ProvenanceList sources={d.sources} alwaysShow />
-                </div>
-              </div>
+            drill.deals.map((d, i) => (
+              <DrillRow key={`${d.dealId}-${d.meta}-${i}`} deal={d} />
             ))
           )}
         </div>
-        <div className="border-t border-zinc-100 px-4 py-2 text-[11px] text-zinc-500">
-          Open source messages on each deal to review the evidence behind the
-          figure.
-        </div>
+
+        <footer className="side-sheet-footer">
+          <Info className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          Open a deal to review the source messages behind each figure.
+        </footer>
       </aside>
     </div>
   );
