@@ -558,14 +558,6 @@ kbd {
   text-align: left;
 }
 
-.chip-select select {
-  border: 0;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-weight: 600;
-  outline: none;
-}
 
 .segment {
   display: inline-flex;
@@ -969,7 +961,7 @@ tbody tr:hover {
   }
   .search-trigger span,
   .search-trigger kbd,
-  .chip-select .chip-label {
+  .topbar .chip-select .chip-label {
     display: none;
   }
 }

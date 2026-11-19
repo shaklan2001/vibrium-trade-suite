@@ -16,7 +16,8 @@ import { normalizeQuoteFromWorkerOutput } from "@/lib/trade/parsers";
 import { getExecutionResult, runWorkerAndWait } from "@/services/agentsApi";
 import { getPresignedUpload } from "@/services/channelsApi";
 import { SourceEmailsPanel } from "@/components/ops/source-emails-panel";
-import { dealLabel } from "@/lib/trade/dealCode";
+import { dealOptions } from "@/lib/trade/dealCode";
+import { Select } from "@/components/ui/select";
 
 export default function QuotesPage() {
   const deals = useVisibleDeals();
@@ -152,18 +153,14 @@ export default function QuotesPage() {
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <Label>Deal</Label>
-            <select
-              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+            <Select
+              aria-label="Deal"
               value={dealId}
-              onChange={(e) => setDealId(e.target.value)}
-            >
-              <option value="">Select deal…</option>
-              {deals.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {dealLabel(d)}
-                </option>
-              ))}
-            </select>
+              onChange={setDealId}
+              placeholder="Select deal…"
+              searchPlaceholder="Search deal code or summary…"
+              options={dealOptions(deals)}
+            />
           </div>
           <div>
             <Label>AS / quote Excel</Label>

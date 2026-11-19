@@ -8,6 +8,7 @@ import { Badge, Card, Stat } from "@/components/ui/primitives";
 import { LoadingBlock, ListSkeleton } from "@/components/ui/loading-block";
 import { PaginationBar } from "@/components/ui/pagination";
 import { SyncNowButton } from "@/components/mail/sync-now-button";
+import { Select } from "@/components/ui/select";
 import { fetchAllProcessedDeals } from "@/lib/trade/processedDealsClient";
 
 type ProcessedDeal = {
@@ -256,23 +257,28 @@ export default function MailboxPage() {
         description="Deals from PST uploads and every connected team mailbox. Progress and extracted deals come from the live database."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <label className="sr-only" htmlFor="mailbox-book-source">
-              Source
-            </label>
-            <select
+            <Select
               id="mailbox-book-source"
+              variant="chip"
+              label="Source"
+              aria-label="Mailbox source"
               value={source}
-              onChange={(e) => setSource(e.target.value)}
-              className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800"
-            >
-              <option value="all">All sources (PST + email)</option>
-              <option value="connected">Connected mailboxes ({mailboxes.length})</option>
-              {mailboxes.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.display_name || m.email.split("@")[0]} — {m.email}
-                </option>
-              ))}
-            </select>
+              onChange={setSource}
+              menuWidth={320}
+              className="h-10"
+              options={[
+                { value: "all", label: "All sources (PST + email)" },
+                {
+                  value: "connected",
+                  label: `Connected mailboxes (${mailboxes.length})`,
+                },
+                ...mailboxes.map((m) => ({
+                  value: m.id,
+                  label: m.display_name || m.email.split("@")[0],
+                  description: m.email,
+                })),
+              ]}
+            />
             <SyncNowButton onSynced={() => setRefreshKey((k) => k + 1)} />
             <Link
               href="/mailbox/connections"

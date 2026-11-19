@@ -1,0 +1,601 @@
+/*
+ * Shared UI polish: themed select, Document Vault table, process-map swimlanes.
+ * Kept separate from suite.css so concurrent edits there merge cleanly.
+ */
+/* ---------- Themed select (src/components/ui/select.tsx) ---------- */
+.ui-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  max-width: 100%;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out),
+    background-color 150ms var(--ease-out);
+}
+.ui-select-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.ui-select-trigger:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+.ui-select-trigger:focus-visible,
+.ui-select-trigger.is-open {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+.ui-select-trigger.is-invalid {
+  border-color: var(--critical);
+}
+.ui-select-trigger.is-invalid:focus-visible,
+.ui-select-trigger.is-invalid.is-open {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--critical) 18%, transparent);
+}
+.ui-select-field {
+  width: 100%;
+  height: 2.5rem;
+  padding: 0 0.7rem 0 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--bg-raised);
+  color: var(--ink);
+  font-size: 0.875rem;
+}
+.chip-select.ui-select-trigger {
+  flex: none;
+}
+.ui-select-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-select .ui-select-value {
+  color: var(--ink);
+  font-weight: 600;
+  max-width: 14rem;
+}
+.ui-select-value.is-placeholder {
+  color: var(--muted);
+  font-weight: 500;
+}
+.ui-select-chevron {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  color: var(--muted);
+  transition: transform 180ms var(--ease-out);
+}
+.ui-select-trigger.is-open .ui-select-chevron {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+.ui-select-menu {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-hover);
+  color: var(--ink);
+  font-size: 0.86rem;
+  animation: ui-select-in 140ms var(--ease-out);
+  transform-origin: top center;
+}
+.ui-select-menu.is-above {
+  transform-origin: bottom center;
+}
+@keyframes ui-select-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+.ui-select-menu.is-above {
+  animation-name: ui-select-in-above;
+}
+@keyframes ui-select-in-above {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+.ui-select-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+.ui-select-search svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+}
+.ui-select-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+}
+.ui-select-search input:focus-visible {
+  outline: none;
+}
+.ui-select-search:focus-within {
+  color: var(--accent);
+}
+.ui-select-search input::placeholder {
+  color: var(--muted);
+}
+.ui-select-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  outline: none;
+}
+.ui-select-option {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.55rem;
+  cursor: pointer;
+  user-select: none;
+}
+.ui-select-option.is-active {
+  background: var(--muted-bg);
+}
+.ui-select-option.is-selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.ui-select-option.is-selected.is-active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.ui-select-option.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.ui-select-option-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.ui-select-option-label,
+.ui-select-option-code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select-option-label {
+  font-weight: 500;
+}
+.ui-select-option.is-selected .ui-select-option-label,
+.ui-select-option-code {
+  font-weight: 650;
+}
+.ui-select-option-code {
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
+}
+.ui-select-option-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+.ui-select-check {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  color: var(--accent);
+}
+.ui-select-empty,
+.ui-select-footer {
+  padding: 0.6rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.ui-select-footer {
+  flex: none;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--muted-bg) 60%, transparent);
+}
+
+/* ---------- Deal code chip (same look as the drill-down drawer) ---------- */
+.deal-code-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0.12rem 0.45rem;
+  border-radius: 0.4rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Document Vault table ---------- */
+.vault-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.vault-table {
+  width: 100%;
+  min-width: 60rem;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.vault-table th,
+.vault-table td {
+  padding: 0.75rem 0.9rem;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.vault-table th {
+  padding-top: 0.6rem;
+  padding-bottom: 0.6rem;
+  white-space: nowrap;
+}
+.vault-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.vault-col-name {
+  width: auto;
+}
+.vault-col-type {
+  width: 8.75rem;
+}
+.vault-col-deal {
+  width: 30%;
+}
+.vault-col-agent {
+  width: 9.5rem;
+}
+.vault-col-when {
+  width: 7.5rem;
+}
+.vault-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+.vault-name > a {
+  max-width: 100%;
+}
+.vault-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.vault-table .badge {
+  max-width: 100%;
+}
+.vault-badge-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vault-agent {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+.vault-when {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.vault-when time {
+  display: block;
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+.vault-when span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.vault-empty {
+  padding: 2rem 1rem !important;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---------- Process map: phase stepper ---------- */
+.phase-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.phase-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.phase-step-index {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: var(--brand-gradient);
+  color: var(--accent-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.phase-step-name {
+  padding: 0.3rem 0.7rem 0.3rem 0.35rem;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.phase-step-arrow {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin-right: 0.35rem;
+  color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+/* ---------- Process map: swimlanes ---------- */
+.swimlane {
+  --swimlane-col: 10.5rem;
+  --swimlane-label: 9.5rem;
+  --swimlane-row: 8.25rem;
+  --swimlane-band: 1.9rem;
+  --swimlane-no: 2.25rem;
+  --swimlane-gap: 0.6rem;
+  padding: 0 1rem 1rem;
+}
+.swimlane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+.swimlane-nav {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+.swimlane-nav button {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--bg-raised);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 150ms var(--ease-out), color 150ms var(--ease-out);
+}
+.swimlane-nav button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent);
+}
+.swimlane-nav button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.swimlane-nav svg {
+  width: 1rem;
+  height: 1rem;
+}
+.swimlane-frame {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+/* Edge fades show there is more to scroll; the left one sits past the label column. */
+.swimlane-frame::before,
+.swimlane-frame::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0.75rem;
+  z-index: 2;
+  width: 2.5rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms var(--ease-out);
+}
+.swimlane-frame::before {
+  left: calc(var(--swimlane-label) + var(--swimlane-gap));
+  background: linear-gradient(to right, var(--bg-raised), transparent);
+}
+.swimlane-frame::after {
+  right: 0;
+  background: linear-gradient(to left, var(--bg-raised), transparent);
+}
+.swimlane-frame.has-left::before,
+.swimlane-frame.has-right::after {
+  opacity: 1;
+}
+.swimlane-labels {
+  flex: none;
+  display: grid;
+  grid-template-rows: calc(var(--swimlane-band) + var(--swimlane-no) + var(--swimlane-gap));
+  grid-auto-rows: var(--swimlane-row);
+  row-gap: var(--swimlane-gap);
+  width: var(--swimlane-label);
+  margin-right: var(--swimlane-gap);
+}
+.swimlane-label {
+  display: flex;
+  align-items: center;
+  padding: 0 0.85rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--line);
+  background: var(--muted-bg);
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.swimlane-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 0.75rem;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--accent) 30%, var(--line)) transparent;
+}
+.swimlane-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+.swimlane-grid {
+  display: grid;
+  grid-template-rows: var(--swimlane-band) var(--swimlane-no);
+  grid-auto-rows: var(--swimlane-row);
+  gap: var(--swimlane-gap);
+  width: max-content;
+}
+.swimlane-band {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 0.7rem;
+  border-radius: 0.6rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.swimlane-step-no {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.swimlane-step-no span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.6rem;
+  height: 1.6rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.swimlane-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.75rem 0.8rem;
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-left: 3px solid var(--accent);
+  background: var(--bg-raised);
+  box-shadow: 0 1px 2px rgba(26, 51, 60, 0.04);
+  overflow: hidden;
+}
+.swimlane-card-title {
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.swimlane-card-detail {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* Empty cells read as the lane's track: a faint line, no box. */
+.swimlane-empty {
+  position: relative;
+}
+.swimlane-empty::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--swimlane-gap) / -2);
+  right: calc(var(--swimlane-gap) / -2);
+  top: 50%;
+  border-top: 1px dashed color-mix(in srgb, var(--line) 85%, var(--muted));
+}
+
+@media (max-width: 640px) {
+  .swimlane {
+    --swimlane-label: 6.5rem;
+    --swimlane-col: 9.5rem;
+    padding: 0 0.75rem 0.75rem;
+  }
+  .swimlane-label {
+    padding: 0 0.6rem;
+    font-size: 0.76rem;
+  }
+}

@@ -21,6 +21,18 @@ export function dealLabel(deal: { code?: string; title: string }): string {
   return deal.code ? `${deal.code} · ${deal.title}` : deal.title;
 }
 
+/** Options for the themed deal picker: code in bold, summary muted underneath. */
+export function dealOptions(
+  deals: readonly { id: string; code?: string; title: string }[],
+) {
+  return deals.map((d) => ({
+    value: d.id,
+    label: dealLabel(d),
+    code: d.code,
+    description: d.code ? d.title : undefined,
+  }));
+}
+
 /** Day index from deal open (Day 1 = created date calendar day). */
 export function dealDayNumber(
   dealCreatedAt: string,

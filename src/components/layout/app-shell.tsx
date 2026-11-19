@@ -22,6 +22,7 @@ import {
   WorkspaceProcessProvider,
 } from "@/components/layout/workspace-process";
 import { MailboxHydrator } from "@/components/layout/mailbox-hydrator";
+import { Select } from "@/components/ui/select";
 import { MailAutoSync } from "@/components/layout/mail-auto-sync";
 import { useTradeStore } from "@/lib/trade/store";
 import {
@@ -78,20 +79,17 @@ function CommercialModelToggle() {
   const setFilter = useTradeStore((s) => s.setCommercialModelFilter);
 
   return (
-    <label className="chip-select">
-      <span className="chip-label">Book</span>
-      <select
-        value={filter}
-        onChange={(e) => setFilter(e.target.value as CommercialModelFilter)}
-        aria-label="Agency vs trader book filter"
-      >
-        {COMMERCIAL_MODEL_OPTIONS.map((opt) => (
-          <option key={opt.id} value={opt.id}>
-            {opt.shortLabel}
-          </option>
-        ))}
-      </select>
-    </label>
+    <Select<CommercialModelFilter>
+      variant="chip"
+      label="Book"
+      value={filter}
+      onChange={setFilter}
+      aria-label="Agency vs trader book filter"
+      options={COMMERCIAL_MODEL_OPTIONS.map((opt) => ({
+        value: opt.id,
+        label: opt.shortLabel,
+      }))}
+    />
   );
 }
 
@@ -100,20 +98,17 @@ function CurrencyToggle() {
   const setCurrency = useTradeStore((s) => s.setDisplayCurrency);
 
   return (
-    <label className="chip-select">
-      <span className="chip-label">Currency</span>
-      <select
-        value={currency}
-        onChange={(e) => setCurrency(e.target.value as DisplayCurrency)}
-        aria-label="Filter by commission payment currency"
-      >
-        {DISPLAY_CURRENCY_OPTIONS.map((opt) => (
-          <option key={opt.id} value={opt.id}>
-            {opt.shortLabel}
-          </option>
-        ))}
-      </select>
-    </label>
+    <Select<DisplayCurrency>
+      variant="chip"
+      label="Currency"
+      value={currency}
+      onChange={setCurrency}
+      aria-label="Filter by commission payment currency"
+      options={DISPLAY_CURRENCY_OPTIONS.map((opt) => ({
+        value: opt.id,
+        label: opt.shortLabel,
+      }))}
+    />
   );
 }
 
