@@ -1,15 +1,18 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   authEnv,
+  authMode,
   SESSION_COOKIE,
   verifyApiToken,
   verifySessionValue,
 } from "@/lib/auth/session";
 
 /**
- * One gate for the whole app. Every /api route needs a signed-in session
- * cookie (or the APP_API_TOKEN bearer for local scripts) and gets 401 without
- * it; app pages redirect to /sign-in. Only the routes below are public.
+ * One gate for the whole app — opt-in. With APP_ACCESS_PASSWORD unset the
+ * gate is off and every route is open (POC default). Once it is set (with
+ * APP_SESSION_SECRET), every /api route needs a signed-in session cookie (or
+ * the APP_API_TOKEN bearer for local scripts) and gets 401 without it; app
+ * pages redirect to /sign-in. Only the routes below are public.
  */
 
 /** API routes reachable without a session — each must say why. */
@@ -43,6 +46,14 @@ export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
   const isApi = pathname === "/api" || pathname.startsWith("/api/");
 
+  if (authMode() === "off") {
+    // No login configured: nothing to sign in to, so /sign-in goes home.
+    if (pathname === "/sign-in") {
+      return NextResponse.redirect(new URL("/home", req.url));
+    }
+    return NextResponse.next();
+  }
+
   if (isApi ? PUBLIC_API.has(pathname) : PUBLIC_PAGES.has(pathname)) {
     return NextResponse.next();
   }
@@ -50,7 +61,7 @@ export async function middleware(req: NextRequest) {
 
   const env = authEnv();
   if (!env) {
-    // Fail closed: no secret configured means nobody gets in.
+    // Password set but no valid secret: protection was intended, fail closed.
     if (isApi) {
       return json(503, "Sign-in is not configured (APP_SESSION_SECRET, APP_ACCESS_PASSWORD)");
     }

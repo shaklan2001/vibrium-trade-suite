@@ -301,6 +301,30 @@ function JumpPalette({
   );
 }
 
+/** Shown only after a real sign-in (sign-in is opt-in; off by default). */
+function SignOutLink() {
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => {
+    setSignedIn(/(?:^|;\s*)vt_signed_in=1(?:;|$)/.test(document.cookie));
+  }, []);
+  if (!signedIn) return null;
+  return (
+    <>
+      {" · "}
+      <button
+        type="button"
+        className="cursor-pointer underline"
+        onClick={async () => {
+          await fetch("/api/auth/sign-out", { method: "POST" }).catch(() => null);
+          window.location.assign("/sign-in");
+        }}
+      >
+        Sign out
+      </button>
+    </>
+  );
+}
+
 function AppShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { process, processId } = useWorkspaceProcess();
@@ -571,17 +595,8 @@ function AppShellInner({ children }: { children: ReactNode }) {
           <div className="page-wide">{children}</div>
           <footer className="suite-footer">
             <p>
-              Vibrium Trade Suite ·{" "}
-              <button
-                type="button"
-                className="cursor-pointer underline"
-                onClick={async () => {
-                  await fetch("/api/auth/sign-out", { method: "POST" }).catch(() => null);
-                  window.location.assign("/sign-in");
-                }}
-              >
-                Sign out
-              </button>
+              Vibrium Trade Suite
+              <SignOutLink />
             </p>
           </footer>
         </div>

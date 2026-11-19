@@ -10,13 +10,30 @@
  */
 
 export const SESSION_COOKIE = "vt_session";
+/** Readable marker (no secret) so the UI knows to show "Sign out". */
+export const SIGNED_IN_HINT_COOKIE = "vt_signed_in";
 export const SESSION_TTL_SEC = 30 * 24 * 60 * 60;
 
 const encoder = new TextEncoder();
 
 type AuthEnv = { secret: string; password: string };
 
-/** Null when sign-in is not configured — callers must then fail closed. */
+/**
+ * Sign-in is opt-in:
+ * - "off": APP_ACCESS_PASSWORD is unset — no login, everything is open
+ *   (the POC default).
+ * - "misconfigured": a password is set but APP_SESSION_SECRET is missing or
+ *   shorter than 32 chars — protection was intended, so fail closed.
+ * - "on": both set — the middleware requires a session.
+ */
+export type AuthMode = "off" | "misconfigured" | "on";
+
+export function authMode(): AuthMode {
+  if (!process.env.APP_ACCESS_PASSWORD) return "off";
+  return authEnv() ? "on" : "misconfigured";
+}
+
+/** Null unless sign-in is fully configured (see authMode). */
 export function authEnv(): AuthEnv | null {
   const secret = process.env.APP_SESSION_SECRET?.trim() || "";
   const password = process.env.APP_ACCESS_PASSWORD || "";

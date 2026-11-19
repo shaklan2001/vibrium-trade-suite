@@ -5,6 +5,7 @@ import {
   createSessionValue,
   SESSION_COOKIE,
   SESSION_TTL_SEC,
+  SIGNED_IN_HINT_COOKIE,
   timingSafeEqualStr,
 } from "@/lib/auth/session";
 
@@ -38,6 +39,12 @@ export async function POST(req: Request) {
   const res = NextResponse.json({ ok: true }, { headers: NO_STORE });
   res.cookies.set(SESSION_COOKIE, await createSessionValue(env), {
     httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: SESSION_TTL_SEC,
+  });
+  res.cookies.set(SIGNED_IN_HINT_COOKIE, "1", {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
