@@ -44,8 +44,10 @@ export type OrderLedger = {
   /** What is owed to the factory (factory PI value). */
   factoryValue: number | null;
   /** What the balance is measured against: the PO value, else what was invoiced (payment requests). */
-  basis: "po_value" | "invoiced" | null;
+  basis: "po_value" | "factory_invoice" | "invoiced" | null;
   invoiced: number;
+  /** Agency order (buyer pays the factory directly). */
+  agency: boolean;
   buyer: { received: number; sentUnconfirmed: number; requestedOpen: number };
   factory: { paid: number; requestedOpen: number };
   outstanding: number | null;
@@ -101,6 +103,7 @@ export function buildPaymentLedger(entries: PaymentEntry[], deals: Deal[]): Paym
         factoryValue: d.pi?.totalAmount || null,
         basis: null,
         invoiced: 0,
+        agency: (d.commercialModel || "agency_commission") === "agency_commission",
         buyer: { received: 0, sentUnconfirmed: 0, requestedOpen: 0 },
         factory: { paid: 0, requestedOpen: 0 },
         outstanding: null,
@@ -206,8 +209,10 @@ export function buildPaymentLedger(entries: PaymentEntry[], deals: Deal[]): Paym
       [...new Map(requests.map((l) => [`${l.amount}`, l.amount!])).values()].reduce((s, v) => s + v, 0) * 100,
     ) / 100;
     if (!o.currency) o.currency = [...requests, ...received, ...sent].find((l) => l.currency)?.currency || null;
-    const basisValue = o.poValue || o.invoiced || null;
-    o.basis = o.poValue ? "po_value" : o.invoiced ? "invoiced" : null;
+    // Agency orders: the buyer pays the factory against the factory's invoice, so that invoice is what the buyer owes.
+    const agencyInvoice = o.agency ? o.factoryValue : null;
+    const basisValue = o.poValue || agencyInvoice || o.invoiced || null;
+    o.basis = o.poValue ? "po_value" : agencyInvoice ? "factory_invoice" : o.invoiced ? "invoiced" : null;
     if (!basisValue) o.status = "no_value";
     else if ([...received, ...sent].some((l) => !sameCcy(l))) o.status = "currency_mismatch";
     else {

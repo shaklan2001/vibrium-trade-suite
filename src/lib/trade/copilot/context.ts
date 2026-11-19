@@ -193,6 +193,7 @@ export function dealCard(d: Deal, attention: AttentionItem[]): string {
     rows.push(`- Needs attention (${a.severity}): ${a.title}${a.detail ? ` — ${clip(a.detail, 140)}` : ""} → next: ${clip(a.nextStep, 120)}`);
   }
   rows.push(...(d.paymentNotes || []));
+  rows.push(...(d.docNotes || []));
   rows.push(...mailTrail(d));
   return rows.filter(Boolean).join("\n");
 }
@@ -268,6 +269,7 @@ const RULES = `ANSWER RULES
 - Use the totals above for any "how many / how much" — never count the rows listed (lists are trimmed).
 - Name deals by code and link them exactly as given, e.g. [PO-14837](/deals/PO-14837~ab12).
 - Back every claim about a deal with the email it comes from, using that email's link exactly as given, e.g. [17 Nov · RE: PO 14946 docs](/mailbox/inbox?deal=PO-14946~ab12&mail=1f2e3d4c). Only use links that appear in this context; never build one.
+- "File [...]" lines are text read from the deal's attachments (PO, PI, invoice, packing list…): use them for figures, and say which file a figure comes from.
 - When an email is marked NEWER, it overrides the deal fields it disagrees with (they were read before it arrived).
 - For money received or owed, use the "Payments PO …" lines (read from the payment emails) over the "Payment clock" and "Cash" fields: give received vs PO value and the outstanding balance, and link the payment emails.
 - If a list is trimmed, say how many matched in total and offer to narrow it.

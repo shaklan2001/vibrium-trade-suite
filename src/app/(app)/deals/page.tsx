@@ -77,7 +77,7 @@ export default function DealsPage() {
             <Button
               variant="secondary"
               onClick={() => {
-                void hydrateMailboxBook().then((r) => {
+                void hydrateMailboxBook({ force: true }).then((r) => {
                   if (r.error) {
                     toast.error(friendlyMailboxError(r.error));
                     return;
@@ -195,7 +195,7 @@ export default function DealsPage() {
                 className="text-teal-700 underline"
                 onClick={() => {
                   setSearchQuery("");
-                  void hydrateMailboxBook().then((r) => {
+                  void hydrateMailboxBook({ force: true }).then((r) => {
                     if (r.error) toast.error(friendlyMailboxError(r.error));
                     else toast.success(`Loaded ${r.count} mailbox deals`);
                   });

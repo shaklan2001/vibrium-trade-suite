@@ -1,6 +1,8 @@
 import { mapProcessedDeal, type ProcessedDealRow } from "./processedDealMapper";
 import { enrichMailboxDeals } from "./enrichMailboxDeals";
 import { useTradeStore } from "./store";
+import { readBookSnapshot, writeBookSnapshot } from "./bookCache";
+import { fetchAllProcessedDeals, hashString } from "./processedDealsClient";
 
 export type MailboxProgress = {
   running?: boolean;
@@ -35,107 +37,159 @@ export function friendlyMailboxError(error: string): string {
   return error;
 }
 
-const PAGE_SIZE = 400;
+type HydrateOptions = {
+  /** Explicit refresh (button, after sync): re-apply even if nothing changed. */
+  force?: boolean;
+};
 
-export async function hydrateMailboxBook(): Promise<MailboxHydrateResult> {
-  const store = useTradeStore.getState();
-  store.setMailboxBookStatus("loading");
+let inflight: Promise<MailboxHydrateResult> | null = null;
+let lastSignature: string | null = null;
+let lastCount = 0;
+let lastSpendUsd = 0;
 
-  const allRows: ProcessedDealRow[] = [];
-  const seen = new Set<string>();
-  let spendUsd = 0;
-  let failedExtracts: number | null = null;
-  let progress: MailboxProgress | null = null;
-  let offset = 0;
-  let totalHint = Number.POSITIVE_INFINITY;
+function isTradeRow(row: ProcessedDealRow): boolean {
+  if (row.status !== "completed") return false;
+  const result = row.result_json as { isTradeDeal?: boolean } | null;
+  return !(result && result.isTradeDeal === false);
+}
 
+/** Map raw rows to deals and replace the mailbox slice of the store. */
+function applyRows(rows: ProcessedDealRow[], liveIds: Set<string>): number {
+  const mapped = enrichMailboxDeals(
+    rows
+      .filter(isTradeRow)
+      .map((row) => mapProcessedDeal(row))
+      .filter((deal): deal is NonNullable<typeof deal> => Boolean(deal)),
+  );
+  // Deals with mail in a connected mailbox: their emails open in the inbox.
+  for (const d of mapped) {
+    if (d.mailboxSourceId && liveIds.has(d.mailboxSourceId)) d.liveMail = true;
+  }
+  // Real mailbox book replaces synthetic portfolio seeds.
+  if (mapped.length > 0) useTradeStore.getState().mergeMailboxDeals(mapped);
+  return mapped.length;
+}
+
+async function fetchLiveIds(): Promise<string[]> {
   try {
-    while (offset < totalHint && offset < 20_000) {
-      const res = await fetch(
-        `/api/processed-deals?limit=${PAGE_SIZE}&offset=${offset}`,
-        { cache: "no-store" },
-      );
-      const body = (await res.json()) as {
-        error?: string;
-        deals?: ProcessedDealRow[];
-        counts?: {
-          spendUsd?: number;
-          total?: number;
-          byStatus?: { failed?: number };
-        };
-        progress?: MailboxProgress | null;
-      };
-      if (!res.ok) {
-        const err = body.error || `HTTP ${res.status}`;
-        store.setMailboxBookStatus("error", err);
-        return {
-          count: 0,
-          spendUsd: 0,
-          progress: body.progress || null,
-          error: err,
-        };
+    const r = await fetch("/api/mail/live-deals", { cache: "no-store" });
+    if (!r.ok) return [];
+    const body = (await r.json()) as { ids?: string[] };
+    return body.ids || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Load the mailbox book into the store.
+ *
+ * - One run at a time: concurrent callers share the in-flight promise.
+ * - First load: an IndexedDB snapshot (if any) renders immediately; otherwise
+ *   the first page renders as soon as it lands and the rest stream in.
+ * - Later loads are background refreshes: status stays "ready", the page keeps
+ *   its content, and the store is only touched when the data changed.
+ */
+export function hydrateMailboxBook(
+  opts: HydrateOptions = {},
+): Promise<MailboxHydrateResult> {
+  if (!inflight) {
+    inflight = runHydrate(opts).finally(() => {
+      inflight = null;
+    });
+  }
+  return inflight;
+}
+
+async function runHydrate(opts: HydrateOptions): Promise<MailboxHydrateResult> {
+  const store = useTradeStore.getState();
+  let hasData = store.mailboxBookLoadedAt != null;
+
+  if (!hasData) {
+    const snap = await readBookSnapshot();
+    if (snap && snap.rows.length) {
+      lastCount = applyRows(snap.rows, new Set(snap.liveIds));
+      lastSignature = snap.signature;
+      if (snap.failedExtracts != null) {
+        store.setMailboxFailedCount(snap.failedExtracts);
       }
-      const batch = body.deals || [];
-      let fresh = 0;
-      for (const row of batch) {
-        const id = row.id;
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        allRows.push(row);
-        fresh += 1;
-      }
-      spendUsd = Number(body.counts?.spendUsd || spendUsd);
-      if (typeof body.counts?.byStatus?.failed === "number") {
-        failedExtracts = body.counts.byStatus.failed;
-      }
-      progress = body.progress || progress;
-      if (typeof body.counts?.total === "number") {
-        totalHint = body.counts.total;
-      }
-      // Stop when the page is short, empty, or offset is ignored by an old proxy.
-      if (batch.length < PAGE_SIZE || fresh === 0) break;
-      offset += PAGE_SIZE;
+      store.setMailboxBookMeta({ mailboxBookLoadedAt: snap.savedAt });
+      store.setMailboxBookStatus("ready");
+      hasData = true;
     }
+  }
 
-    const mapped = enrichMailboxDeals(
-      allRows
-        .filter((row) => row.status === "completed")
-        .filter((row) => {
-          const result = row.result_json as { isTradeDeal?: boolean } | null;
-          if (result && result.isTradeDeal === false) return false;
-          return true;
-        })
-        .map((row) => mapProcessedDeal(row))
-        .filter((deal): deal is NonNullable<typeof deal> => Boolean(deal)),
-    );
+  if (hasData) {
+    store.setMailboxBookMeta({ mailboxBookRefreshing: true });
+  } else {
+    store.setMailboxBookStatus("loading");
+  }
 
-    // Deals with mail in a connected mailbox: their emails open in the inbox (warnings link to them).
-    const live = await fetch("/api/mail/live-deals", { cache: "no-store" })
-      .then((r) => (r.ok ? (r.json() as Promise<{ ids?: string[] }>) : { ids: [] }))
-      .catch(() => ({ ids: [] as string[] }));
-    const liveIds = new Set(live.ids || []);
-    for (const d of mapped) if (d.mailboxSourceId && liveIds.has(d.mailboxSourceId)) d.liveMail = true;
+  let partialApplied = false;
+  try {
+    const livePromise = fetchLiveIds();
+    const result = await fetchAllProcessedDeals<ProcessedDealRow>({
+      fresh: opts.force,
+      onFirstPage: (rows, total) => {
+        if (hasData || rows.length >= total) return;
+        // Cold start: show the newest deals now; the rest stream in.
+        applyRows(rows, new Set());
+        partialApplied = true;
+        store.setMailboxBookMeta({
+          mailboxBookLoadedAt: Date.now(),
+          mailboxBookProgress: { loaded: rows.length, total },
+        });
+        store.setMailboxBookStatus("ready");
+      },
+      onProgress: (loaded, total) => {
+        if (partialApplied) {
+          store.setMailboxBookMeta({
+            mailboxBookProgress: { loaded: Math.min(loaded, total), total },
+          });
+        }
+      },
+    });
+    const liveIds = await livePromise;
+    const signature = `${result.signature}:${hashString(liveIds.slice().sort().join(","))}`;
+    const failed = result.counts.byStatus?.failed;
+    lastSpendUsd = Number(result.counts.spendUsd || 0);
 
-    if (mapped.length > 0) {
-      // Real mailbox book replaces synthetic portfolio seeds.
-      store.mergeMailboxDeals(mapped);
+    const changed = signature !== lastSignature;
+    if (changed || opts.force || partialApplied) {
+      lastCount = applyRows(result.rows, new Set(liveIds));
+      lastSignature = signature;
+      void writeBookSnapshot({
+        signature,
+        rows: result.rows,
+        liveIds,
+        failedExtracts: typeof failed === "number" ? failed : null,
+      });
     }
-    if (failedExtracts != null) store.setMailboxFailedCount(failedExtracts);
+    if (typeof failed === "number") store.setMailboxFailedCount(failed);
+    store.setMailboxBookMeta({
+      mailboxBookLoadedAt: Date.now(),
+      mailboxBookRefreshing: false,
+      mailboxBookProgress: null,
+    });
     store.setMailboxBookStatus("ready");
 
     return {
-      count: mapped.length,
-      spendUsd,
-      progress,
+      count: lastCount,
+      spendUsd: lastSpendUsd,
+      progress: (result.progress as MailboxProgress | null) || null,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Mailbox load failed";
-    store.setMailboxBookStatus("error", message);
-    return {
-      count: 0,
-      spendUsd: 0,
-      progress: null,
-      error: message,
-    };
+    if (hasData || partialApplied) {
+      // Keep what is on screen; surface the failure without blanking pages.
+      store.setMailboxBookMeta({
+        mailboxBookRefreshing: false,
+        mailboxBookProgress: null,
+        mailboxBookError: message,
+      });
+    } else {
+      store.setMailboxBookStatus("error", message);
+    }
+    return { count: lastCount, spendUsd: lastSpendUsd, progress: null, error: message };
   }
 }

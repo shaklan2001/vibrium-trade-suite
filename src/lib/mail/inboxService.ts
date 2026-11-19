@@ -1,7 +1,9 @@
 import { decryptSecret } from "./crypto";
+import { docTextsFor, type StoredFile } from "./docStore";
+import { DOC_TYPE_LABELS } from "./docText";
 import { replyThroughImap } from "./imapMailbox";
 import { buildInboxItem, itemContext } from "./inboxItems";
-import type { InboxCursor, InboxItem, InboxMailbox } from "./inboxTypes";
+import type { InboxCursor, InboxDocument, InboxItem, InboxMailbox } from "./inboxTypes";
 import { MailAuthError } from "./providers/http";
 import { getMailStore } from "./store";
 import { threadKeyFor } from "./thread";
@@ -119,7 +121,22 @@ export async function loadThread(threadKey: string): Promise<InboxItem | null> {
   const ctx = itemContext(rows, await dealsFor(messages));
   const item = buildInboxItem(threadKey, messages, ctx);
   if (!item) return null;
-  return (await withPayments([item], new Map([[threadKey, messages]])))[0]!;
+  const [withPay] = await withPayments([item], new Map([[threadKey, messages]]));
+  return { ...withPay!, documents: await threadDocuments(messages) };
+}
+
+/** Text of the thread's files for the draft: newest mail from the other side first, at most 4 files. */
+async function threadDocuments(rows: InboxMessageRow[]): Promise<InboxDocument[]> {
+  const theirs = [...rows].reverse().find((m) => !/@snspl\.(in|ml)$/i.test(m.from_email || ""));
+  const ordered = theirs ? [theirs, ...[...rows].reverse().filter((m) => m !== theirs)] : [...rows].reverse();
+  const files = ordered.flatMap((m) => ((m.attachments_json || []) as StoredFile[]).map((f) => ({ f, onLatest: m === theirs })));
+  const texts = await docTextsFor(files.map((x) => x.f), 4).catch(() => []);
+  return texts.map((d) => ({
+    name: d.name,
+    type: DOC_TYPE_LABELS[d.docType],
+    text: d.text.length > 2500 ? `${d.text.slice(0, 2500)}\n…` : d.text,
+    onLatest: files.some((x) => x.onLatest && x.f.name === d.name),
+  }));
 }
 
 const OWNER_SKIP = /^(accounts|occ|info|admin|noreply|no-reply)@/i;

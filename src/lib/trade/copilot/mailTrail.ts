@@ -7,6 +7,8 @@
  * the mail store — current even before the stage agent re-reads the deal — and gives every
  * email its own inbox link (src/lib/mail/mailLink.ts).
  */
+import { docTextsFor, type StoredFile } from "@/lib/mail/docStore";
+import { DOC_TYPE_LABELS } from "@/lib/mail/docText";
 import { freshText } from "@/lib/mail/inbox";
 import { mailHref } from "@/lib/mail/mailLink";
 import { getMailStore, mailStoreConfigured } from "@/lib/mail/store";
@@ -40,7 +42,13 @@ export async function withMailTrail(deal: Deal): Promise<Deal> {
       });
     }
     if (!sources.length) return deal;
-    return { ...deal, sources: sources.slice(-PER_DEAL) };
+    // Files on the deal (document layer): newest first, short excerpts.
+    const files = [...rows].reverse().flatMap((m) => (m.attachments_json || []) as StoredFile[]);
+    const docs = await docTextsFor(files, 4).catch(() => []);
+    const docNotes = docs.map(
+      (d) => `- File [${DOC_TYPE_LABELS[d.docType]}] ${d.name}: ${d.text.replace(/\s+/g, " ").slice(0, 700)}${d.text.length > 700 ? "…" : ""}`,
+    );
+    return { ...deal, sources: sources.slice(-PER_DEAL), docNotes };
   } catch (err) {
     console.warn("[copilot] mail trail unavailable", deal.code, err);
     return deal;

@@ -33,16 +33,18 @@ export function ProvenanceList({
         {sources.map((s, i) => (
           <li
             key={`${s.sourceId || s.dealId}-${i}`}
-            className="rounded border border-zinc-100 bg-zinc-50 px-2 py-1.5 text-[11px] text-zinc-700"
+            className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700"
           >
-            <div className="font-medium text-zinc-900">
+            <div className="font-semibold text-zinc-900">
               {s.subject || s.kind || "Source"}
             </div>
             {s.from ? (
-              <div className="text-[10px] text-zinc-500">{s.from}</div>
+              <div className="text-[11px] text-zinc-500">{s.from}</div>
             ) : null}
             {s.excerpt ? (
-              <p className="mt-0.5 leading-snug text-zinc-600">{s.excerpt}</p>
+              <p className="mt-1 line-clamp-3 leading-relaxed text-zinc-600">
+                {s.excerpt}
+              </p>
             ) : null}
           </li>
         ))}

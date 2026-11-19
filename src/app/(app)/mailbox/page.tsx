@@ -8,6 +8,7 @@ import { Badge, Card, Stat } from "@/components/ui/primitives";
 import { LoadingBlock, ListSkeleton } from "@/components/ui/loading-block";
 import { PaginationBar } from "@/components/ui/pagination";
 import { SyncNowButton } from "@/components/mail/sync-now-button";
+import { fetchAllProcessedDeals } from "@/lib/trade/processedDealsClient";
 
 type ProcessedDeal = {
   id: string;
@@ -77,7 +78,6 @@ const STAGE_FILTERS = [
 ] as const;
 
 const PAGE_SIZE = 30;
-const FETCH_PAGE = 400;
 
 function stageLabel(stage: string | null | undefined) {
   if (!stage) return "—";
@@ -118,42 +118,26 @@ function formatEtd(iso: string | null | undefined) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** Shared loader: parallel pages, deduped with the header's mailbox refresh. */
 async function fetchAllDeals(stage: string, source: string) {
-  const all: ProcessedDeal[] = [];
-  const seen = new Set<string>();
-  let offset = 0;
-  let counts: Counts = { total: 0, byStage: {}, byStatus: {} };
-  let progress: Progress | null = null;
-  let totalHint = Number.POSITIVE_INFINITY;
-
-  while (offset < totalHint && offset < 20_000) {
-    const params = new URLSearchParams({
-      limit: String(FETCH_PAGE),
-      offset: String(offset),
-    });
-    if (stage !== "all") params.set("stage", stage);
-    if (source !== "all") params.set("mailbox", source);
-    const res = await fetch(`/api/processed-deals?${params}`, {
-      cache: "no-store",
-    });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-    const batch = (body.deals || []) as ProcessedDeal[];
-    let fresh = 0;
-    for (const row of batch) {
-      if (!row.id || seen.has(row.id)) continue;
-      seen.add(row.id);
-      all.push(row);
-      fresh += 1;
-    }
-    counts = body.counts || counts;
-    progress = body.progress || progress;
-    if (typeof body.counts?.total === "number") totalHint = body.counts.total;
-    if (batch.length < FETCH_PAGE || fresh === 0) break;
-    offset += FETCH_PAGE;
-  }
-  return { deals: all, counts, progress };
+  const r = await fetchAllProcessedDeals<ProcessedDeal>({
+    stage,
+    mailbox: source,
+  });
+  const counts: Counts = {
+    total: r.counts.total ?? r.rows.length,
+    byStage: r.counts.byStage || {},
+    byStatus: r.counts.byStatus || {},
+  };
+  return {
+    deals: r.rows,
+    counts,
+    progress: (r.progress as Progress | null) || null,
+  };
 }
+
+/** Background refresh cadence for the visible Mailbox book. */
+const REFRESH_MS = 3 * 60_000;
 
 type SourceMailbox = { id: string; email: string; display_name: string | null };
 
@@ -170,7 +154,8 @@ export default function MailboxPage() {
   });
   const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  /** Filter key whose rows are on screen; null until the first load lands. */
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [now, setNow] = useState(Date.now());
@@ -187,37 +172,62 @@ export default function MailboxPage() {
       .catch(() => undefined);
   }, []);
 
+  const filterKey = `${stage}|${source}`;
+
   useEffect(() => {
     let cancelled = false;
-    async function load(first = false) {
+    let timer: number | undefined;
+    let schedulePending = false;
+    async function load() {
       try {
-        if (first) setLoading(true);
         const next = await fetchAllDeals(stage, source);
         if (cancelled) return;
         setDeals(next.deals);
         setCounts(next.counts);
         setProgress(next.progress);
         setError(null);
+        setLoadedKey(`${stage}|${source}`);
       } catch (err: unknown) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Failed to load");
-      } finally {
-        if (!cancelled) setLoading(false);
+        setLoadedKey((k) => k ?? `${stage}|${source}`);
+      }
+      if (!cancelled) {
+        // Next refresh only after this one finished; skipped while hidden.
+        timer = window.setTimeout(() => {
+          if (document.visibilityState === "visible") void load();
+          else schedulePending = true;
+        }, REFRESH_MS);
       }
     }
-    void load(true);
-    const poll = window.setInterval(() => void load(false), 30_000);
-    const clock = window.setInterval(() => setNow(Date.now()), 1000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && schedulePending) {
+        schedulePending = false;
+        void load();
+      }
+    };
+    void load();
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
-      window.clearInterval(poll);
-      window.clearInterval(clock);
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [stage, source, refreshKey]);
 
+  const live = Boolean(progress?.running);
+  // Clock only matters for the "ingest may have stalled" check.
+  useEffect(() => {
+    if (!live) return;
+    const clock = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(clock);
+  }, [live]);
+
+  const loading = loadedKey === null;
+  const switching = !loading && loadedKey !== filterKey;
+
   const completed = counts.byStatus.completed ?? 0;
   const failed = counts.byStatus.failed ?? 0;
-  const live = Boolean(progress?.running);
   const target = progress?.target || 0;
   const doneN = (progress?.completed || 0) + (progress?.failed || 0);
   const pct = target ? Math.min(100, Math.round((doneN / target) * 100)) : 0;
@@ -339,7 +349,14 @@ export default function MailboxPage() {
           <ListSkeleton rows={6} />
         </>
       ) : (
-        <>
+        <div
+          className={
+            switching
+              ? "pointer-events-none opacity-60 transition-opacity"
+              : "transition-opacity"
+          }
+          aria-busy={switching}
+        >
           <div className="mb-6 grid gap-3 sm:grid-cols-3">
             <Stat label="Processed deals" value={counts.total} />
             <Stat label="Completed" value={completed} />
@@ -446,7 +463,7 @@ export default function MailboxPage() {
               </div>
             </Card>
           ) : null}
-        </>
+        </div>
       )}
     </div>
   );

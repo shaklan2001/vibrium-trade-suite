@@ -64,6 +64,23 @@ interface TradeState {
     error?: string | null,
   ) => void;
   setMailboxFailedCount: (count: number) => void;
+  /** True while a background refresh runs over data already on screen. */
+  mailboxBookRefreshing: boolean;
+  /** When the mailbox book was last applied (cache or network); null = never. */
+  mailboxBookLoadedAt: number | null;
+  /** Cold-load chunk progress (pages still arriving); null when complete. */
+  mailboxBookProgress: { loaded: number; total: number } | null;
+  setMailboxBookMeta: (
+    patch: Partial<
+      Pick<
+        TradeState,
+        | "mailboxBookRefreshing"
+        | "mailboxBookLoadedAt"
+        | "mailboxBookProgress"
+        | "mailboxBookError"
+      >
+    >,
+  ) => void;
   createDeal: (partial?: Partial<Deal>) => Deal;
   upsertDeal: (deal: Deal) => Deal;
   mergeMailboxDeals: (deals: Deal[]) => void;
@@ -222,6 +239,10 @@ export const useTradeStore = create<TradeState>()(
       setMailboxBookStatus: (status, error = null) =>
         set({ mailboxBookStatus: status, mailboxBookError: error }),
       setMailboxFailedCount: (count) => set({ mailboxFailedCount: count }),
+      mailboxBookRefreshing: false,
+      mailboxBookLoadedAt: null as number | null,
+      mailboxBookProgress: null as { loaded: number; total: number } | null,
+      setMailboxBookMeta: (patch) => set(patch),
 
       createDeal: (partial) => {
         const { code, nextSeq } = ensureCode(partial, get().dealCodeSeq);
