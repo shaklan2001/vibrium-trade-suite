@@ -84,8 +84,12 @@ export function DealPaymentLedger({ deal }: { deal: Deal }) {
                 </div>
                 <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-4">
                   <div>
-                    <dt className="text-xs text-zinc-500">{o.poValue || !o.invoiced ? "PO value" : "Invoiced"}</dt>
-                    <dd className="font-medium text-zinc-900">{money(o.poValue || o.invoiced || null, o.currency)}</dd>
+                    <dt className="text-xs text-zinc-500">
+                      {o.basis === "factory_invoice" ? "Factory invoice" : o.basis === "invoiced" ? "Invoiced" : "PO value"}
+                    </dt>
+                    <dd className="font-medium text-zinc-900">
+                      {money(o.basis === "factory_invoice" ? o.factoryValue : o.poValue || o.invoiced || null, o.currency)}
+                    </dd>
                   </div>
                   <div>
                     <dt className="text-xs text-zinc-500">Received</dt>

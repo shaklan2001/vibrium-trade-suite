@@ -16,6 +16,8 @@ import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { addLead } from "@/services/channelsApi";
 import { EmailThreadsPanel } from "@/components/shared/email-threads-panel";
 import type { Channel } from "@/types/trade";
+import { Select } from "@/components/ui/select";
+import { dealOptions } from "@/lib/trade/dealCode";
 
 export default function OutreachPage() {
   const deals = useVisibleDeals();
@@ -125,17 +127,14 @@ export default function OutreachPage() {
           <div className="space-y-3 p-4">
             <div>
               <Label>Deal</Label>
-              <select
-                className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              <Select
+                aria-label="Deal"
                 value={dealId}
-                onChange={(e) => setDealId(e.target.value)}
-              >
-                {deals.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.title}
-                  </option>
-                ))}
-              </select>
+                onChange={setDealId}
+                placeholder="Select deal…"
+                searchPlaceholder="Search deal code or summary…"
+                options={dealOptions(deals)}
+              />
             </div>
             <div className="flex gap-2">
               <Button
@@ -186,15 +185,16 @@ export default function OutreachPage() {
             </div>
             <div>
               <Label>Preferred channel</Label>
-              <select
-                className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              <Select<Channel>
+                aria-label="Preferred channel"
                 value={channel}
-                onChange={(e) => setChannel(e.target.value as Channel)}
-              >
-                <option value="whatsapp">WhatsApp</option>
-                <option value="email">Email</option>
-                <option value="voice">Voice</option>
-              </select>
+                onChange={setChannel}
+                options={[
+                  { value: "whatsapp", label: "WhatsApp" },
+                  { value: "email", label: "Email" },
+                  { value: "voice", label: "Voice" },
+                ]}
+              />
             </div>
             <div className="rounded-md bg-zinc-50 p-3 text-xs text-zinc-600">
               Workflow:{" "}

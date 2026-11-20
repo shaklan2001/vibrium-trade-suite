@@ -79,6 +79,18 @@ export type InboxItem = {
   learning?: ReplyLearning;
   /** The newest payment email in the conversation, as read by the Payment Reader. */
   payment?: InboxPayment;
+  /** Text of the conversation's attachments (document layer), newest mail's files first. */
+  documents?: InboxDocument[];
+};
+
+export type InboxDocument = {
+  name: string;
+  /** Label from DOC_TYPE_LABELS, e.g. "Proforma invoice". */
+  type: string;
+  /** Start of the file's text (trimmed for prompts). */
+  text: string;
+  /** True for files on the newest mail from the other side. */
+  onLatest: boolean;
 };
 
 export type InboxPayment = {

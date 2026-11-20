@@ -851,6 +851,8 @@ export interface Deal {
   liveMail?: boolean;
   /** Copilot context only: payment-ledger lines for this deal's orders (src/lib/trade/copilot/paymentsContext.ts). */
   paymentNotes?: string[];
+  /** Copilot context only: text excerpts of the deal's files (document layer). */
+  docNotes?: string[];
 }
 
 /** Cite the mail / artefact a KPI was grounded in */

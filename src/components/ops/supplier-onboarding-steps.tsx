@@ -19,6 +19,7 @@ import {
 } from "@/lib/trade/supplierOnboarding";
 import { PH, TIP, type FieldErrors } from "@/lib/trade/supplierFormGuide";
 import { cn } from "@/lib/utils";
+import { Select } from "@/components/ui/select";
 
 export function Tip({ text }: { text: string }) {
   return (
@@ -77,11 +78,9 @@ export function inputCls(error?: string, className?: string) {
   );
 }
 
-export function selectCls(error?: string) {
-  return cn(
-    "w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm",
-    error && "border-red-400",
-  );
+/** Options where the stored value is the visible text. */
+function textOptions(...values: string[]) {
+  return values.map((v) => ({ value: v, label: v }));
 }
 
 export function CheckGroup({
@@ -145,16 +144,18 @@ function DocStatusSelect({
 }) {
   return (
     <div>
-      <select
-        className={selectCls(error)}
+      <Select<DocReadinessStatus>
+        aria-label="Document status"
         value={value || ""}
-        onChange={(e) => onChange(e.target.value as DocReadinessStatus)}
-      >
-        <option value="">Select status…</option>
-        <option value="available">Available</option>
-        <option value="applied">Applied</option>
-        <option value="na">N/A</option>
-      </select>
+        onChange={onChange}
+        invalid={!!error}
+        placeholder="Select status…"
+        options={[
+          { value: "available", label: "Available" },
+          { value: "applied", label: "Applied" },
+          { value: "na", label: "N/A" },
+        ]}
+      />
       {error ? (
         <p className="mt-1 text-[11px] font-medium text-red-600">{error}</p>
       ) : null}
@@ -277,22 +278,17 @@ export function CompanyStep({ app, patch, errors, clearError }: StepProps) {
         />
       </Field>
       <Field label="Business constitution" tip={TIP.constitution}>
-        <select
-          className={selectCls()}
+        <Select
+          aria-label="Business constitution"
           value={c.constitution || ""}
-          onChange={(e) =>
+          onChange={(v) =>
             patch((d) => {
-              d.company.constitution = e.target.value;
+              d.company.constitution = v;
             })
           }
-        >
-          <option value="">Select constitution…</option>
-          {CONSTITUTIONS.map((x) => (
-            <option key={x} value={x}>
-              {x}
-            </option>
-          ))}
-        </select>
+          placeholder="Select constitution…"
+          options={textOptions(...CONSTITUTIONS)}
+        />
       </Field>
       <Field
         label="Year established"
@@ -882,20 +878,16 @@ export function WorkforceStep({ app, patch, errors, clearError }: StepProps) {
       {row("temporary", "Temporary / contract")}
       {row("avgPresentDay", "Avg present on production day")}
       <Field label="Temp labour dependency" tip={TIP.tempLabour}>
-        <select
-          className={selectCls()}
+        <Select
+          aria-label="Temp labour dependency"
           value={w.tempLabourDependency || ""}
-          onChange={(e) =>
+          onChange={(v) =>
             patch((d) => {
-              d.workforce.tempLabourDependency = e.target.value;
+              d.workforce.tempLabourDependency = v;
             })
           }
-        >
-          <option value="">Select…</option>
-          <option value="No">No</option>
-          <option value="Partially">Partially</option>
-          <option value="Significantly">Significantly</option>
-        </select>
+          options={textOptions("No", "Partially", "Significantly")}
+        />
       </Field>
       <div className="sm:col-span-2 lg:col-span-3">
         <Field label="Key production / QC personnel" tip={TIP.workforce}>
@@ -1140,38 +1132,28 @@ export function PackagingStep({ app, patch, errors, clearError }: StepProps) {
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Custom packaging / labelling?" tip={TIP.customPackaging}>
-          <select
-            className={selectCls()}
+          <Select
+            aria-label="Custom packaging / labelling"
             value={p.customPackaging || ""}
-            onChange={(e) =>
+            onChange={(v) =>
               patch((d) => {
-                d.packaging.customPackaging = e.target.value;
+                d.packaging.customPackaging = v;
               })
             }
-          >
-            <option value="">Select…</option>
-            <option value="Yes">Yes</option>
-            <option value="No">No</option>
-            <option value="Subject to MOQ">Subject to MOQ</option>
-          </select>
+            options={textOptions("Yes", "No", "Subject to MOQ")}
+          />
         </Field>
         <Field label="Export-quality packing materials?">
-          <select
-            className={selectCls()}
+          <Select
+            aria-label="Export-quality packing materials"
             value={p.exportPackMaterials || ""}
-            onChange={(e) =>
+            onChange={(v) =>
               patch((d) => {
-                d.packaging.exportPackMaterials = e.target.value;
+                d.packaging.exportPackMaterials = v;
               })
             }
-          >
-            <option value="">Select…</option>
-            <option value="Yes">Yes</option>
-            <option value="No">No</option>
-            <option value="Subject to specification">
-              Subject to specification
-            </option>
-          </select>
+            options={textOptions("Yes", "No", "Subject to specification")}
+          />
         </Field>
       </div>
     </div>
@@ -1288,26 +1270,23 @@ export function QualityStep({ app, patch, errors, clearError }: StepProps) {
         required
         error={errors.auditWillingness}
       >
-        <select
-          className={selectCls(errors.auditWillingness)}
+        <Select
+          aria-label="Willingness to undergo factory audit"
           value={q.auditWillingness || ""}
-          onChange={(e) => {
+          invalid={!!errors.auditWillingness}
+          onChange={(v) => {
             clearError("auditWillingness");
             patch((d) => {
-              d.quality.auditWillingness = e.target.value;
+              d.quality.auditWillingness = v;
             });
           }}
-        >
-          <option value="">Select…</option>
-          <option value="Yes — at our cost">Yes — at our cost</option>
-          <option value="Yes — subject to discussion">
-            Yes — subject to discussion
-          </option>
-          <option value="Only if buyer bears cost">
-            Only if buyer bears cost
-          </option>
-          <option value="No">No</option>
-        </select>
+          options={textOptions(
+            "Yes — at our cost",
+            "Yes — subject to discussion",
+            "Only if buyer bears cost",
+            "No",
+          )}
+        />
       </Field>
     </div>
   );
@@ -1607,21 +1586,18 @@ export function BuyerSupportStep({
           required
           error={errors.englishCommunication}
         >
-          <select
-            className={selectCls(errors.englishCommunication)}
+          <Select
+            aria-label="English commercial / technical communication"
             value={b.englishCommunication || ""}
-            onChange={(e) => {
+            invalid={!!errors.englishCommunication}
+            onChange={(v) => {
               clearError("englishCommunication");
               patch((d) => {
-                d.buyerSupport.englishCommunication = e.target.value;
+                d.buyerSupport.englishCommunication = v;
               });
             }}
-          >
-            <option value="">Select…</option>
-            <option value="Yes">Yes</option>
-            <option value="No">No</option>
-            <option value="With assistance">With assistance</option>
-          </select>
+            options={textOptions("Yes", "No", "With assistance")}
+          />
         </Field>
       </div>
     </div>
@@ -1877,32 +1853,27 @@ export function AssessmentStep({
             required
             error={errors.classification}
           >
-            <select
-              className={selectCls(errors.classification)}
+            <Select<ExportReadinessClass | "">
+              aria-label="Classification"
               value={a.classification || ""}
-              onChange={(e) => {
+              invalid={!!errors.classification}
+              placeholder="Select classification…"
+              onChange={(v) => {
                 clearError("classification");
                 patch((d) => {
-                  d.assessment.classification = e.target
-                    .value as ExportReadinessClass | "";
+                  d.assessment.classification = v;
                   d.assessment.autoSuggested = false;
                 });
               }}
-            >
-              <option value="">Select classification…</option>
-              {(
+              options={(
                 [
                   "export_ready",
                   "export_ready_with_conditions",
                   "partially_export_ready",
                   "not_currently_export_ready",
                 ] as ExportReadinessClass[]
-              ).map((c) => (
-                <option key={c} value={c}>
-                  {readinessClassLabel(c)}
-                </option>
-              ))}
-            </select>
+              ).map((c) => ({ value: c, label: readinessClassLabel(c) }))}
+            />
           </Field>
         </div>
       </div>

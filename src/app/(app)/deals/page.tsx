@@ -23,6 +23,7 @@ import {
 } from "@/lib/trade/mailboxHydrate";
 import { STAGE_LABELS, ALL_STAGES } from "@/types/trade";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
+import { Select } from "@/components/ui/select";
 
 const PAGE_SIZE = 25;
 
@@ -77,7 +78,7 @@ export default function DealsPage() {
             <Button
               variant="secondary"
               onClick={() => {
-                void hydrateMailboxBook().then((r) => {
+                void hydrateMailboxBook({ force: true }).then((r) => {
                   if (r.error) {
                     toast.error(friendlyMailboxError(r.error));
                     return;
@@ -110,55 +111,43 @@ export default function DealsPage() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search deal, party, email, team (kalpana…)"
-            className="pl-9"
+            className="pl-9!"
             aria-label="Search deals"
           />
         </label>
-        <label className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-sm">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-            Stage
-          </span>
-          <select
-            className="bg-transparent text-sm font-medium text-zinc-900 outline-none"
+        <div className="flex flex-wrap items-center gap-2">
+          <Select<typeof stageFilter>
+            variant="chip"
+            label="Stage"
             value={stageFilter}
-            onChange={(e) =>
-              setStageFilter(e.target.value as typeof stageFilter)
-            }
+            onChange={setStageFilter}
             aria-label="Filter by stage"
-          >
-            <option value="all">All stages</option>
-            {ALL_STAGES.map((s) => (
-              <option key={s} value={s}>
-                {STAGE_LABELS[s]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-sm">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-            Due ≤
-          </span>
-          <select
-            className="bg-transparent text-sm font-medium text-zinc-900 outline-none"
+            className="h-10"
+            options={[
+              { value: "all", label: "All stages" },
+              ...ALL_STAGES.map((s) => ({ value: s, label: STAGE_LABELS[s] })),
+            ]}
+          />
+          <Select
+            variant="chip"
+            label="Due ≤"
             value={String(productionDueFilter)}
-            onChange={(e) => {
-              const v = e.target.value;
+            onChange={(v) =>
               setProductionDueFilter(
-                v === "all"
-                  ? "all"
-                  : (Number(v) as 15 | 30 | 45 | 60 | 90),
-              );
-            }}
+                v === "all" ? "all" : (Number(v) as 15 | 30 | 45 | 60 | 90),
+              )
+            }
             aria-label="Production due window"
-          >
-            <option value="all">Any</option>
-            <option value="15">15 days</option>
-            <option value="30">30 days</option>
-            <option value="45">45 days</option>
-            <option value="60">60 days</option>
-            <option value="90">90 days</option>
-          </select>
-        </label>
+            className="h-10"
+            options={[
+              { value: "all", label: "Any" },
+              ...[15, 30, 45, 60, 90].map((d) => ({
+                value: String(d),
+                label: `${d} days`,
+              })),
+            ]}
+          />
+        </div>
       </div>
 
       {showLoader ? (
@@ -195,7 +184,7 @@ export default function DealsPage() {
                 className="text-teal-700 underline"
                 onClick={() => {
                   setSearchQuery("");
-                  void hydrateMailboxBook().then((r) => {
+                  void hydrateMailboxBook({ force: true }).then((r) => {
                     if (r.error) toast.error(friendlyMailboxError(r.error));
                     else toast.success(`Loaded ${r.count} mailbox deals`);
                   });

@@ -22,6 +22,7 @@ import {
   WorkspaceProcessProvider,
 } from "@/components/layout/workspace-process";
 import { MailboxHydrator } from "@/components/layout/mailbox-hydrator";
+import { Select } from "@/components/ui/select";
 import { MailAutoSync } from "@/components/layout/mail-auto-sync";
 import { useTradeStore } from "@/lib/trade/store";
 import {
@@ -78,20 +79,17 @@ function CommercialModelToggle() {
   const setFilter = useTradeStore((s) => s.setCommercialModelFilter);
 
   return (
-    <label className="chip-select">
-      <span className="chip-label">Book</span>
-      <select
-        value={filter}
-        onChange={(e) => setFilter(e.target.value as CommercialModelFilter)}
-        aria-label="Agency vs trader book filter"
-      >
-        {COMMERCIAL_MODEL_OPTIONS.map((opt) => (
-          <option key={opt.id} value={opt.id}>
-            {opt.shortLabel}
-          </option>
-        ))}
-      </select>
-    </label>
+    <Select<CommercialModelFilter>
+      variant="chip"
+      label="Book"
+      value={filter}
+      onChange={setFilter}
+      aria-label="Agency vs trader book filter"
+      options={COMMERCIAL_MODEL_OPTIONS.map((opt) => ({
+        value: opt.id,
+        label: opt.shortLabel,
+      }))}
+    />
   );
 }
 
@@ -100,20 +98,17 @@ function CurrencyToggle() {
   const setCurrency = useTradeStore((s) => s.setDisplayCurrency);
 
   return (
-    <label className="chip-select">
-      <span className="chip-label">Currency</span>
-      <select
-        value={currency}
-        onChange={(e) => setCurrency(e.target.value as DisplayCurrency)}
-        aria-label="Filter by commission payment currency"
-      >
-        {DISPLAY_CURRENCY_OPTIONS.map((opt) => (
-          <option key={opt.id} value={opt.id}>
-            {opt.shortLabel}
-          </option>
-        ))}
-      </select>
-    </label>
+    <Select<DisplayCurrency>
+      variant="chip"
+      label="Currency"
+      value={currency}
+      onChange={setCurrency}
+      aria-label="Filter by commission payment currency"
+      options={DISPLAY_CURRENCY_OPTIONS.map((opt) => ({
+        value: opt.id,
+        label: opt.shortLabel,
+      }))}
+    />
   );
 }
 
@@ -193,12 +188,13 @@ function NavGroup({
               <Link
                 key={item.href}
                 href={item.href}
-                className="nav-link"
+                className={item.featured ? "nav-link nav-link-featured" : "nav-link"}
                 aria-current={active ? "page" : undefined}
                 data-label={item.label}
               >
                 <Icon className="nav-icon" />
                 <span className="fade-label">{item.label}</span>
+                {item.featured ? <span className="nav-badge fade-label">Team</span> : null}
               </Link>
             );
           })}
@@ -301,6 +297,30 @@ function JumpPalette({
   );
 }
 
+/** Shown only after a real sign-in (sign-in is opt-in; off by default). */
+function SignOutLink() {
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => {
+    setSignedIn(/(?:^|;\s*)vt_signed_in=1(?:;|$)/.test(document.cookie));
+  }, []);
+  if (!signedIn) return null;
+  return (
+    <>
+      {" · "}
+      <button
+        type="button"
+        className="cursor-pointer underline"
+        onClick={async () => {
+          await fetch("/api/auth/sign-out", { method: "POST" }).catch(() => null);
+          window.location.assign("/sign-in");
+        }}
+      >
+        Sign out
+      </button>
+    </>
+  );
+}
+
 function AppShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { process, processId } = useWorkspaceProcess();
@@ -312,7 +332,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const [tip, setTip] = useState<{ label: string; top: number } | null>(null);
 
   const home = process.nav.find((item) => item.href === "/home");
-  const processItems = process.nav.filter((item) => item.href !== "/home");
+  const featuredItems = process.nav.filter((item) => item.featured);
+  const processItems = process.nav.filter(
+    (item) => item.href !== "/home" && !item.featured,
+  );
 
   useEffect(() => {
     setIsCollapsed(document.documentElement.dataset.rail === "collapsed");
@@ -372,6 +395,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
       trail.push({ label: "Command Center" });
       return trail;
     }
+    if (match.featured) {
+      trail.push({ label: match.label });
+      return trail;
+    }
     trail.push({ label: process.label });
     if (pathname === match.href) {
       trail.push({ label: match.label });
@@ -382,13 +409,13 @@ function AppShellInner({ children }: { children: ReactNode }) {
     return trail;
   }, [pathname, process.label, process.nav]);
 
-  const paletteItems = useMemo(
-    () => [
+  const paletteItems = useMemo(() => {
+    const rows = [
       ...WORKSPACE_PROCESSES.flatMap((p) =>
         p.nav.map((item) => ({
           href: item.href,
           label: item.label,
-          group: p.label,
+          group: item.featured ? "Suite" : p.label,
         })),
       ),
       ...GLOBAL_SIDEBAR_NAV.map((item) => ({
@@ -396,9 +423,15 @@ function AppShellInner({ children }: { children: ReactNode }) {
         label: item.label,
         group: "Desk",
       })),
-    ],
-    [],
-  );
+    ];
+    const seen = new Set<string>();
+    return rows.filter((row) => {
+      const key = `${row.href}|${row.label}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, []);
 
   function showTip(event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) {
     if (!isCollapsed || !window.matchMedia(DESKTOP_QUERY).matches) return;
@@ -468,6 +501,23 @@ function AppShellInner({ children }: { children: ReactNode }) {
                 <span className="fade-label">{home.label}</span>
               </Link>
             ) : null}
+            {featuredItems.map((item) => {
+              const Icon = item.icon;
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="nav-link nav-link-featured"
+                  aria-current={active ? "page" : undefined}
+                  data-label={item.label}
+                >
+                  <Icon className="nav-icon" />
+                  <span className="fade-label">{item.label}</span>
+                  <span className="nav-badge fade-label">Team</span>
+                </Link>
+              );
+            })}
             <NavGroup
               label={process.label}
               items={processItems}
@@ -570,7 +620,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
           </header>
           <div className="page-wide">{children}</div>
           <footer className="suite-footer">
-            <p>Vibrium Trade Suite</p>
+            <p>
+              Vibrium Trade Suite
+              <SignOutLink />
+            </p>
           </footer>
         </div>
       </div>

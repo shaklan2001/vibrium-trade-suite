@@ -273,6 +273,21 @@ export function paymentLineToDrill(line: PaymentLine): CashDrillDeal {
     ]
       .filter(Boolean)
       .join(" · "),
+    facts: [
+      { label: line.side === "buyer" ? "Buyer" : "Factory", tone: "info" as const },
+      line.label ? { label: line.label } : null,
+      line.checkpoint ? { label: line.checkpoint } : null,
+      line.status === "received"
+        ? { label: `Received ${line.receivedAt || ""}`.trim(), tone: "success" as const }
+        : { label: `Due ${line.dueDate || "—"}` },
+      late
+        ? {
+            label: late,
+            tone: line.notReceived ? ("danger" as const) : ("warning" as const),
+          }
+        : null,
+    ].filter((f): f is NonNullable<typeof f> => Boolean(f)),
+    note: line.termsExcerpt || undefined,
     sources: line.sources,
     href: line.href,
   };
