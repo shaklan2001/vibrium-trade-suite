@@ -2,87 +2,19 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ProcessInsights } from "@/components/agents/process-insights";
 import { PageHeader } from "@/components/layout/app-shell";
 import { useWorkspaceProcess } from "@/components/layout/workspace-process";
 import { Badge, Card, CardHeader } from "@/components/ui/primitives";
-
-const OPS_LANES = ["Buyer", "Agency (SNSPL)", "Factory", "Forwarder"] as const;
-type OpsLane = (typeof OPS_LANES)[number];
-
-interface OpsStep {
-  id: string;
-  phase: string;
-  title: string;
-  lane: OpsLane;
-  detail: string;
-}
-
-const OPS_STEPS: OpsStep[] = [
-  { id: "1", phase: "A · Requirement", title: "Buyer shares enquiry", lane: "Buyer", detail: "Category, retail, target FOB, contacts" },
-  { id: "2", phase: "A · Requirement", title: "Approach factories", lane: "Agency (SNSPL)", detail: "Match partners by score & category" },
-  { id: "3", phase: "A · Requirement", title: "AS / quote sheet", lane: "Factory", detail: "SKU matrix, MOQ, FOB" },
-  { id: "4", phase: "A · Requirement", title: "Buyer selects SKUs", lane: "Buyer", detail: "Lock selection via agency" },
-  { id: "5", phase: "B · Artwork", title: "Artwork / inserts", lane: "Buyer", detail: "Design files to agency" },
-  { id: "6", phase: "B · Artwork", title: "Approval loop", lane: "Agency (SNSPL)", detail: "Forward ↔ factory ↔ buyer" },
-  { id: "7", phase: "B · Samples", title: "Sample dispatch", lane: "Factory", detail: "Courier + photos" },
-  { id: "8", phase: "C · Commercial", title: "Issue PI", lane: "Factory", detail: "Qty, packing, Incoterm" },
-  { id: "9", phase: "C · Commercial", title: "Issue PO", lane: "Buyer", detail: "PO lines, UPC, load date" },
-  { id: "10", phase: "C · Commercial", title: "PI vs PO check", lane: "Agency (SNSPL)", detail: "Discrepancy before lock" },
-  { id: "11", phase: "D · Spec", title: "UPC / barcode / pack", lane: "Agency (SNSPL)", detail: "Approval gates 17–28" },
-  { id: "12", phase: "E · Production", title: "Produce & inspect", lane: "Factory", detail: "Ready date, QC findings" },
-  { id: "13", phase: "F · Booking", title: "Book & CBM plan", lane: "Forwarder", detail: "Cut-offs, vessel, equipment" },
-  { id: "14", phase: "G · Close", title: "Docs & T/T clock", lane: "Agency (SNSPL)", detail: "CI/PL/BL · payment · commission" },
-];
-
-const OPS_PHASES: readonly string[] = [
-  "Requirement → Quote",
-  "Artwork & samples",
-  "PI / PO lock",
-  "Spec & packaging",
-  "Production",
-  "Booking",
-  "Docs · pay · commission",
-];
-
-const FINANCE_LANES = [
-  "Buyer",
-  "Agency · Sourcing",
-  "Agency · Accounts",
-  "Factory",
-] as const;
-type FinanceLane = (typeof FINANCE_LANES)[number];
-
-interface FinanceStep {
-  id: string;
-  phase: string;
-  title: string;
-  lane: FinanceLane;
-  detail: string;
-}
-
-/** Finance process starts at PI/PO — Accounts is SNSPL Accounts (same agency). */
-const FINANCE_STEPS: FinanceStep[] = [
-  { id: "1", phase: "0 · PI / PO", title: "PI & PO received", lane: "Agency · Sourcing", detail: "Lock commercial docs; capture payment terms both sides" },
-  { id: "2", phase: "0 · PI / PO", title: "Parse payment terms", lane: "Agency · Accounts", detail: "Buyer PO + factory PI installments & checkpoints" },
-  { id: "3", phase: "1 · Deploy", title: "Advance / deposit out", lane: "Agency · Accounts", detail: "Pay factory installment when checkpoint met" },
-  { id: "4", phase: "1 · Deploy", title: "Confirm factory receipt", lane: "Factory", detail: "Email / advice — installment received" },
-  { id: "5", phase: "2 · Track", title: "Open installments", lane: "Agency · Accounts", detail: "Still required · rolling 30–120d need" },
-  { id: "6", phase: "2 · Track", title: "Cash blocked by stage", lane: "Agency · Sourcing", detail: "Production / transit / docs hold cash" },
-  { id: "7", phase: "3 · Recover", title: "Buyer checkpoint due", lane: "Buyer", detail: "PO term gate (PO ack, BL, sailing…)" },
-  { id: "8", phase: "3 · Recover", title: "Buyer remittance confirmed", lane: "Agency · Accounts", detail: "Email confirms payment against checkpoint" },
-  { id: "9", phase: "3 · Recover", title: "Vendor ↔ buyer gap", lane: "Agency · Accounts", detail: "Days between factory pay and buyer collect" },
-  { id: "10", phase: "4 · Settle", title: "Factory confirms buyer funds", lane: "Factory", detail: "Commercial settled on factory books" },
-  { id: "11", phase: "4 · Settle", title: "Commission invoice / FX", lane: "Agency · Accounts", detail: "Agency fee awaiting, chasing, or received" },
-  { id: "12", phase: "4 · Settle", title: "Close deal ledger", lane: "Agency · Sourcing", detail: "Sourcing + Accounts close the order" },
-];
-
-const FINANCE_PHASES: readonly string[] = [
-  "PI / PO + terms",
-  "Deploy to factory",
-  "Track exposure",
-  "Buyer recoveries",
-  "Commission settle",
-];
+import {
+  FINANCE_LANES,
+  FINANCE_PHASES,
+  FINANCE_STEPS,
+  OPS_LANES,
+  OPS_PHASES,
+  OPS_STEPS,
+  type ProcessStep,
+} from "@/lib/trade/processBook";
 
 /** "1 · Deploy" → "Deploy" (the band reads left-to-right, so the prefix is noise). */
 function phaseName(phase: string) {
@@ -238,6 +170,7 @@ function OpsProcessMap() {
       <PageHeader
         title="Sourcing process map"
         description="How SNSPL moves a deal from enquiry through production, sailing, payment, and commission close."
+        actions={<ProcessInsights />}
       />
 
       <Card className="mb-6 overflow-hidden">
@@ -257,7 +190,7 @@ function OpsProcessMap() {
 
       <div className="grid gap-3 md:grid-cols-2">
         {Object.entries(
-          OPS_STEPS.reduce<Record<string, OpsStep[]>>((acc, s) => {
+          OPS_STEPS.reduce<Record<string, ProcessStep[]>>((acc, s) => {
             (acc[s.phase] ||= []).push(s);
             return acc;
           }, {}),
@@ -300,6 +233,7 @@ function FinanceProcessMap() {
       <PageHeader
         title="Finance process map"
         description="Starts when PI/PO are in hand. Accounts is SNSPL Accounts — same agency as Sourcing, split only by function."
+        actions={<ProcessInsights />}
       />
 
       <Card className="mb-6 overflow-hidden">
@@ -327,7 +261,7 @@ function FinanceProcessMap() {
 
       <div className="grid gap-3 md:grid-cols-2">
         {Object.entries(
-          FINANCE_STEPS.reduce<Record<string, FinanceStep[]>>((acc, s) => {
+          FINANCE_STEPS.reduce<Record<string, ProcessStep[]>>((acc, s) => {
             (acc[s.phase] ||= []).push(s);
             return acc;
           }, {}),

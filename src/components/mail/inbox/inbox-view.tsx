@@ -24,6 +24,7 @@ import {
   type InboxOutcome,
   type ReplyDraft,
 } from "@/lib/mail/inboxTypes";
+import { useMailReplyName } from "@/components/agents/mail-reply-mark";
 import { avatarFor, displayName, fullTime, listTime, OUTCOME_STYLE, snippet } from "./format";
 
 export type SentReply = { body: string; at: string };
@@ -227,6 +228,7 @@ function DraftEditor({
   onSaveDraft?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const writer = useMailReplyName();
   const writing = status === "writing";
   const busy = writing || Boolean(sending);
 
@@ -252,12 +254,12 @@ function DraftEditor({
         <span className="ml-auto flex items-center gap-1 text-xs text-teal-700">
           <Sparkles className="h-3.5 w-3.5" />
           {writing
-            ? "Copilot is writing…"
+            ? `${writer} is writing…`
             : draft.by === "copilot"
-              ? "Written by Vibrium Copilot"
+              ? `Drafted by ${writer}`
               : status === "error"
-                ? "Quick draft (Copilot unavailable)"
-                : "Quick draft from the deal facts"}
+                ? `${writer} is unavailable — quick draft`
+                : `Quick draft from ${writer}`}
         </span>
       </div>
       <p className="border-b border-zinc-100 px-4 py-2 text-sm text-zinc-600">{draft.subject}</p>

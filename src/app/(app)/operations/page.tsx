@@ -15,6 +15,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { ProcessInsights } from "@/components/agents/process-insights";
 import { PageHeader } from "@/components/layout/app-shell";
 import {
   Badge,
@@ -53,10 +54,18 @@ const RED = "#dc2626";
 const SKY = "#0284c7";
 const EMERALD = "#059669";
 
-function shortCode(code?: string) {
+/** Category axis. Full code when it fits; otherwise the unique tail. */
+function axisCode(code?: string) {
   if (!code) return "—";
-  const m = code.match(/(\d{3,})$/);
-  return m ? m[1] : code.slice(-6);
+  if (code.length <= 12) return code;
+  return code.slice(-8);
+}
+
+/** Column-chart tick. Short enough that eight labels can sit under the bars. */
+function tickCode(code?: string) {
+  if (!code) return "—";
+  if (code.length <= 6) return code;
+  return code.slice(-6);
 }
 
 export default function OperationsDashboardPage() {
@@ -121,10 +130,7 @@ export default function OperationsDashboardPage() {
       .map(([stage, n]) => {
         const stageDeals = deals.filter((d) => d.stage === stage);
         return {
-          s: (STAGE_LABELS[stage as keyof typeof STAGE_LABELS] || stage).slice(
-            0,
-            12,
-          ),
+          s: STAGE_LABELS[stage as keyof typeof STAGE_LABELS] || stage,
           stage,
           n,
           deals: stageDeals.map(
@@ -168,7 +174,7 @@ export default function OperationsDashboardPage() {
       economics
         .filter((e) => e.cycleDaysElapsed > 0)
         .map((e) => ({
-          code: shortCode(e.dealCode),
+          code: axisCode(e.dealCode),
           fullCode: e.dealCode,
           Elapsed: e.cycleDaysElapsed,
           Typical: e.cycleDaysTypical,
@@ -242,7 +248,8 @@ export default function OperationsDashboardPage() {
         title="Operations"
         description="Sourcing execution across the book — brief, risk, priorities, pipeline, and shipments."
         actions={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <ProcessInsights />
             <Link href="/home">
               <Button variant="ghost">Command Center</Button>
             </Link>
@@ -330,17 +337,28 @@ export default function OperationsDashboardPage() {
         </Card>
       </div>
 
-      <div className="mb-4 grid gap-3 lg:grid-cols-3">
-        <Card className="p-3">
+      <div className="mb-4 grid min-w-0 gap-3 lg:grid-cols-3">
+        <Card className="min-w-0 p-3">
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Pipeline by stage
           </div>
-          <div className="h-56">
+          <div className="h-56 w-full min-w-0">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stageBars} layout="vertical" margin={{ left: 4 }}>
+              <BarChart
+                data={stageBars}
+                layout="vertical"
+                margin={{ left: 4, right: 8, top: 4, bottom: 4 }}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
                 <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
-                <YAxis type="category" dataKey="s" width={78} tick={{ fontSize: 10 }} />
+                <YAxis
+                  type="category"
+                  dataKey="s"
+                  width={108}
+                  interval={0}
+                  // width keeps the label on one line; recharts wraps to the axis width and clips the second line
+                  tick={{ fontSize: 10, width: 200 }}
+                />
                 <Tooltip />
                 <Bar
                   dataKey="n"
@@ -365,7 +383,7 @@ export default function OperationsDashboardPage() {
           </div>
         </Card>
 
-        <Card className="p-3">
+        <Card className="min-w-0 p-3">
           <div className="mb-1 flex items-center justify-between gap-2">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
               Shipments
@@ -377,8 +395,8 @@ export default function OperationsDashboardPage() {
               Open map →
             </Link>
           </div>
-          <div className="flex h-56 items-center gap-2">
-            <div className="h-full w-1/2">
+          <div className="flex h-56 min-w-0 items-center gap-2">
+            <div className="h-full min-w-0 flex-1">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -389,8 +407,8 @@ export default function OperationsDashboardPage() {
                     }
                     dataKey="value"
                     nameKey="name"
-                    innerRadius={48}
-                    outerRadius={70}
+                    innerRadius="52%"
+                    outerRadius="78%"
                     paddingAngle={3}
                     cursor="pointer"
                     onClick={(_, i) => {
@@ -409,7 +427,7 @@ export default function OperationsDashboardPage() {
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="grid w-1/2 gap-2">
+            <div className="grid w-[46%] shrink-0 gap-2">
               <button type="button" className="text-left" onClick={() => openShip("about_to_come")}>
                 <KpiTile label="Arrive" value={shipment.aboutToCome} tone="success" />
               </button>
@@ -423,20 +441,25 @@ export default function OperationsDashboardPage() {
           </div>
         </Card>
 
-        <Card className="p-3">
+        <Card className="min-w-0 p-3">
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Cycle time · elapsed vs typical
           </div>
-          <div className="h-56">
+          <div className="h-56 w-full min-w-0">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={cycleBars} layout="vertical" margin={{ left: 4 }}>
+              <BarChart
+                data={cycleBars}
+                layout="vertical"
+                margin={{ left: 4, right: 8, top: 4, bottom: 4 }}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
                 <XAxis type="number" tick={{ fontSize: 10 }} />
                 <YAxis
                   type="category"
                   dataKey="code"
-                  width={40}
-                  tick={{ fontSize: 11, fontFamily: "ui-monospace" }}
+                  width={84}
+                  interval={0}
+                  tick={{ fontSize: 10, fontFamily: "ui-monospace" }}
                 />
                 <Tooltip
                   labelFormatter={(_, p) => p?.[0]?.payload?.fullCode || ""}
@@ -487,21 +510,26 @@ export default function OperationsDashboardPage() {
           }
         />
         {rankedView.length ? (
-          <div className="grid gap-4 p-4 lg:grid-cols-2">
-            <div className="h-48">
+          <div className="grid min-w-0 gap-4 p-4 lg:grid-cols-2">
+            <div className="h-64 min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   data={rankedView.slice(0, 8).map((r) => ({
-                    code: shortCode(r.code),
+                    code: tickCode(r.code),
                     full: r.code,
                     score: r.score,
                     dealId: r.dealId,
                     title: r.title,
                   }))}
+                  margin={{ top: 8, right: 8, left: 0, bottom: 4 }}
                 >
                   <XAxis
                     dataKey="code"
-                    tick={{ fontSize: 11, fontFamily: "ui-monospace" }}
+                    interval={0}
+                    angle={-40}
+                    textAnchor="end"
+                    height={64}
+                    tick={{ fontSize: 10, fontFamily: "ui-monospace" }}
                   />
                   <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} width={28} />
                   <Tooltip labelFormatter={(_, p) => p?.[0]?.payload?.full || ""} />
