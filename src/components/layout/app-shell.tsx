@@ -188,12 +188,13 @@ function NavGroup({
               <Link
                 key={item.href}
                 href={item.href}
-                className="nav-link"
+                className={item.featured ? "nav-link nav-link-featured" : "nav-link"}
                 aria-current={active ? "page" : undefined}
                 data-label={item.label}
               >
                 <Icon className="nav-icon" />
                 <span className="fade-label">{item.label}</span>
+                {item.featured ? <span className="nav-badge fade-label">Team</span> : null}
               </Link>
             );
           })}
@@ -331,7 +332,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const [tip, setTip] = useState<{ label: string; top: number } | null>(null);
 
   const home = process.nav.find((item) => item.href === "/home");
-  const processItems = process.nav.filter((item) => item.href !== "/home");
+  const featuredItems = process.nav.filter((item) => item.featured);
+  const processItems = process.nav.filter(
+    (item) => item.href !== "/home" && !item.featured,
+  );
 
   useEffect(() => {
     setIsCollapsed(document.documentElement.dataset.rail === "collapsed");
@@ -391,6 +395,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
       trail.push({ label: "Command Center" });
       return trail;
     }
+    if (match.featured) {
+      trail.push({ label: match.label });
+      return trail;
+    }
     trail.push({ label: process.label });
     if (pathname === match.href) {
       trail.push({ label: match.label });
@@ -401,13 +409,13 @@ function AppShellInner({ children }: { children: ReactNode }) {
     return trail;
   }, [pathname, process.label, process.nav]);
 
-  const paletteItems = useMemo(
-    () => [
+  const paletteItems = useMemo(() => {
+    const rows = [
       ...WORKSPACE_PROCESSES.flatMap((p) =>
         p.nav.map((item) => ({
           href: item.href,
           label: item.label,
-          group: p.label,
+          group: item.featured ? "Suite" : p.label,
         })),
       ),
       ...GLOBAL_SIDEBAR_NAV.map((item) => ({
@@ -415,9 +423,15 @@ function AppShellInner({ children }: { children: ReactNode }) {
         label: item.label,
         group: "Desk",
       })),
-    ],
-    [],
-  );
+    ];
+    const seen = new Set<string>();
+    return rows.filter((row) => {
+      const key = `${row.href}|${row.label}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, []);
 
   function showTip(event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) {
     if (!isCollapsed || !window.matchMedia(DESKTOP_QUERY).matches) return;
@@ -487,6 +501,23 @@ function AppShellInner({ children }: { children: ReactNode }) {
                 <span className="fade-label">{home.label}</span>
               </Link>
             ) : null}
+            {featuredItems.map((item) => {
+              const Icon = item.icon;
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="nav-link nav-link-featured"
+                  aria-current={active ? "page" : undefined}
+                  data-label={item.label}
+                >
+                  <Icon className="nav-icon" />
+                  <span className="fade-label">{item.label}</span>
+                  <span className="nav-badge fade-label">Team</span>
+                </Link>
+              );
+            })}
             <NavGroup
               label={process.label}
               items={processItems}

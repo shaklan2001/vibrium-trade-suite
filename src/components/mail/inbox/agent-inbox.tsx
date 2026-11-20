@@ -11,7 +11,6 @@ import {
   RefreshCw,
   Search,
   Settings2,
-  Sparkles,
   Users,
   X,
 } from "lucide-react";
@@ -31,6 +30,7 @@ import {
   type ReplyDraft,
 } from "@/lib/mail/inboxTypes";
 import { ListSkeleton } from "@/components/ui/loading-block";
+import { MailReplyMark } from "@/components/agents/mail-reply-mark";
 import { ConnectPanel } from "./connect-panel";
 import { displayName, listTime, snippet } from "./format";
 import { InboxView, OutcomeChip, PaymentChip, type DraftStatus, type SentReply } from "./inbox-view";
@@ -518,10 +518,12 @@ export function AgentInbox() {
               {f.count ? <span className="text-xs text-zinc-500">{f.count}</span> : null}
             </button>
           ))}
-          <p className="mt-auto px-3 pb-1 text-[11px] leading-snug text-zinc-400">
-            <Sparkles className="mr-1 inline h-3 w-3" />
-            Counts are for this page. Deal threads use their stage agent; replies are written by Vibrium Copilot.
-          </p>
+          <div className="mt-auto px-2 pb-2">
+            <MailReplyMark />
+            <p className="mt-1 px-1 text-[11px] leading-snug text-zinc-400">
+              Reads the thread and drafts the reply. You send it.
+            </p>
+          </div>
         </nav>
 
         <div className="flex min-w-0 flex-1 flex-col">

@@ -14,6 +14,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { ProcessInsights } from "@/components/agents/process-insights";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Button, Card } from "@/components/ui/primitives";
 import { KpiTile } from "@/components/ops/command-center-ui";
@@ -380,7 +381,8 @@ export default function FinanceDashboardPage() {
             : undefined
         }
         actions={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <ProcessInsights />
             <Link href="/home">
               <Button variant="ghost">Command Center</Button>
             </Link>
