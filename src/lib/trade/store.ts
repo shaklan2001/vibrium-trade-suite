@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { v4 as uuid } from "uuid";
 import type {
   AgentRoutingMap,
@@ -27,6 +27,11 @@ import {
 import type { CommercialModelFilter } from "./commercialModel";
 import type { DisplayCurrency } from "./currencyDisplay";
 import { setDisplayCurrency as applyDisplayCurrency } from "./currencyDisplay";
+import {
+  markRehydratedDeal,
+  snapshotForStorage,
+  writeWithQuota,
+} from "./persistTradeState";
 
 export type StageFilter = "all" | DealStage;
 export type ProductionDueFilter = "all" | 15 | 30 | 45 | 60 | 90;
@@ -678,22 +683,17 @@ export const useTradeStore = create<TradeState>()(
     {
       // v3: wipe localStorage that still held demo portfolio / seed parties
       name: "vibrium-trade-store-v3",
-      partialize: (s) => ({
-        // Mailbox deals re-hydrate from API; never persist synthetic seeds.
-        deals: s.deals.filter((d) => !d.mailboxIngest && !isSyntheticDeal(d)),
-        routing: s.routing,
-        opsIntel: s.opsIntel,
-        // Only persist hub-onboarded / user-created parties (no demo directory).
-        partyProfiles: s.partyProfiles.filter((p) =>
-          Boolean(p.sourceApplicationId),
-        ),
-        supplierApplications: s.supplierApplications,
-        dealCodeSeq: s.dealCodeSeq,
-        commercialModelFilter: s.commercialModelFilter,
-        displayCurrency: s.displayCurrency,
-        stageFilter: s.stageFilter,
-        productionDueFilter: s.productionDueFilter,
+      storage: createJSONStorage(() => {
+        if (typeof window === "undefined") {
+          throw new Error("localStorage unavailable");
+        }
+        return {
+          getItem: (name) => localStorage.getItem(name),
+          setItem: (name, value) => writeWithQuota(localStorage, name, value),
+          removeItem: (name) => localStorage.removeItem(name),
+        };
       }),
+      partialize: (s) => snapshotForStorage(s),
       merge: (persisted, current) => {
         const p = (persisted || {}) as Partial<TradeState>;
         const mergedRouting = {
@@ -715,6 +715,7 @@ export const useTradeStore = create<TradeState>()(
         }
         const deals = (p.deals || current.deals)
           .filter((d) => !isSyntheticDeal(d))
+          .map((d) => markRehydratedDeal(d))
           .map((d) => ({
             ...d,
             code: d.code || formatDealCode(1100),
