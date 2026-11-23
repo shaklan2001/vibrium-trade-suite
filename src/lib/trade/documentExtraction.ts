@@ -21,10 +21,12 @@ import {
   TERMINAL,
 } from "@/lib/mail/workers";
 import { invokeTradeSuiteRds } from "@/lib/rdsProxy";
-import { convertedKey, getDocText, objectExists } from "@/lib/mail/docStore";
+import { convertedKey, ensureDocText, getDocText, objectExists } from "@/lib/mail/docStore";
+import { startOcr } from "@/lib/mail/ocr";
 import type { DocType } from "@/lib/mail/docText";
 import { digestFromIngestPath } from "./ingestFiles";
 import { isCommercialFile, PO_FILE_RE } from "./documentSide";
+import { verifyExtract } from "./verifyExtract";
 import type { EvidencePayload, ProcessedDealRow } from "./processedDealMapper";
 
 const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "ap-south-1";
@@ -109,6 +111,38 @@ function parseEvidence(row: ProcessedDealRow): EvidencePayload {
   return (raw as EvidencePayload) || {};
 }
 
+function warnDoc(action: string, name: string, err: unknown) {
+  console.warn(`[docs] ${action} failed`, name, err instanceof Error ? err.message : err);
+}
+
+/** Cached text, or a fresh extract when the file is in S3 and has never been read. */
+async function textForPlanning(name: string, sha256: string) {
+  const cached = await getDocText(sha256).catch((err) => {
+    warnDoc("text lookup", name, err);
+    return null;
+  });
+  if (cached) return cached;
+  const s3Key = await storedKey(sha256).catch((err) => {
+    warnDoc("lookup", name, err);
+    return null;
+  });
+  if (!s3Key) return null;
+  return ensureDocText({ name, sha256, s3_key: s3Key }).catch((err) => {
+    warnDoc("extract", name, err);
+    return null;
+  });
+}
+
+/** A scan with no text is read on a later cycle. */
+async function queueEmptyScan(name: string, sha256: string) {
+  const s3Key = await storedKey(sha256).catch((err) => {
+    warnDoc("lookup", name, err);
+    return null;
+  });
+  if (!s3Key) return;
+  await startOcr({ name, sha256, s3_key: s3Key }).catch((err) => warnDoc("ocr queue", name, err));
+}
+
 /** Which attachments on these deals still need a PI / PO read. */
 export async function planDealDocuments(dealIds: string[]): Promise<DocumentPlan> {
   const plan: DocumentPlan = { deals: 0, toRead: [], skipped: [], alreadyRead: 0, estUsd: 0 };
@@ -149,8 +183,9 @@ export async function planDealDocuments(dealIds: string[]): Promise<DocumentPlan
         }
         const ext = path.extname(name).toLowerCase();
         // Document layer: the file's text says what it is and whether it can be read at all.
-        const text = await getDocText(sha256).catch(() => null);
+        const text = await textForPlanning(name, sha256);
         if (text?.status === "empty") {
+          await queueEmptyScan(name, sha256);
           plan.skipped.push({ dealId, name, reason: text.method === "ocr" ? "scanned, OCR found no text" : "scanned (no text layer): needs OCR" });
           continue;
         }
@@ -274,12 +309,18 @@ export async function finalizeDealDocuments(opts: {
       }
       const result = executionResult(ex);
       const ok = status === "completed" && result != null;
+      // Check every figure against the file text; the deal page marks the ones not found.
+      let stored = result;
+      if (ok && result) {
+        const text = await getDocText(doc.sha256).catch(() => null);
+        if (text?.text) stored = { ...result, verification: verifyExtract(result, text.text) };
+      }
       await rds({
         action: "upsert_deal_document",
         row: {
           ...doc,
           status: ok ? "completed" : "failed",
-          result_json: result,
+          result_json: stored,
           error: ok ? null : JSON.stringify(ex.error || ex.message || status).slice(0, 500),
           cost_usd: executionCost(ex).usd,
         },

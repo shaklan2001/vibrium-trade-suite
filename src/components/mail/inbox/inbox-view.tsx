@@ -25,6 +25,8 @@ import {
   type ReplyDraft,
 } from "@/lib/mail/inboxTypes";
 import { useMailReplyName } from "@/components/agents/mail-reply-mark";
+import { NextActionLine } from "./next-action-line";
+import { QuotePanel } from "./quote-panel";
 import { avatarFor, displayName, fullTime, listTime, OUTCOME_STYLE, snippet } from "./format";
 
 export type SentReply = { body: string; at: string };
@@ -121,6 +123,14 @@ function AgentCard({
       </div>
       {item.summary ? <p className="mt-2 text-sm leading-relaxed text-zinc-700">{item.summary}</p> : null}
       {item.payment ? <PaymentPanel payment={item.payment} /> : null}
+      {item.nextAction ? (
+        <NextActionLine
+          next={item.nextAction}
+          dealCode={dealCode}
+          hrefFor={(ref) => (item.dealId ? `/mailbox/inbox?deal=${encodeURIComponent(item.dealId)}&mail=${ref}` : null)}
+        />
+      ) : null}
+      <QuotePanel item={item} />
 
       {item.facts.length ? (
         <div className="mt-3 flex flex-wrap gap-1.5">

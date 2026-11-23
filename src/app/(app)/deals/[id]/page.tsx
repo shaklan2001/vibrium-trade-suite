@@ -20,9 +20,22 @@ import { OpenableFileLink } from "@/components/ops/openable-file-link";
 import { DealPaymentLedger } from "@/components/ops/deal-payment-ledger";
 import { DealPaymentsPanel } from "@/components/ops/deal-payments-panel";
 import { DealOverviewCard } from "@/components/ops/deal-overview-card";
+import { DealNextAction } from "@/components/ops/deal-next-action";
+import { DealNotes } from "@/components/ops/deal-notes";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
 import { BookSwitch } from "@/components/ops/book-switch";
 import { findDealByRef } from "@/lib/trade/dealLink";
+
+function recordReadLabel(iso: string | undefined, now: number): string | null {
+  const readAt = Date.parse(iso || "");
+  if (!Number.isFinite(readAt)) return null;
+  const minutes = Math.max(0, Math.round((now - readAt) / 60_000));
+  if (minutes < 1) return "Record read just now";
+  if (minutes < 90) return `Record read ${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `Record read ${hours} h ago`;
+  return `Record read ${iso!.slice(0, 10)}`;
+}
 
 export default function DealRoomPage() {
   const params = useParams<{ id: string }>();
@@ -36,6 +49,11 @@ export default function DealRoomPage() {
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const [sources, setSources] = useState<SourceMessage[]>(deal?.sources || []);
+  const [readLabel, setReadLabel] = useState<string | null>(null);
+
+  useEffect(() => {
+    setReadLabel(recordReadLabel(deal?.recordAsOf, Date.now()));
+  }, [deal?.recordAsOf]);
 
   useEffect(() => {
     setSources(deal?.sources || []);
@@ -173,6 +191,7 @@ export default function DealRoomPage() {
             updateDeal(deal.id, { commercialModel: next, commercialModelPinned: pinned })
           }
         />
+        {readLabel ? <span className="text-xs text-zinc-500">{readLabel}</span> : null}
         {deal.mailboxSlot ? <Badge>{deal.mailboxSlot}</Badge> : null}
         {deal.mailboxSourceId ? (
           <span className="font-mono text-[11px] text-zinc-500">
@@ -183,6 +202,11 @@ export default function DealRoomPage() {
 
       <div className="mb-4">
         <DealOverviewCard deal={deal} sources={sources} />
+      </div>
+
+      <div className="mb-4 space-y-4">
+        <DealNextAction deal={deal} />
+        {deal.mailboxSourceId ? <DealNotes dealKey={deal.mailboxSourceId} /> : null}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">

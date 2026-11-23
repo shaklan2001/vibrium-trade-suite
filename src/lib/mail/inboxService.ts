@@ -1,4 +1,7 @@
 import { decryptSecret } from "./crypto";
+import { ensureLearnedRoles } from "./learnedRolesStore";
+import { noteTextsFor } from "./dealRecords";
+import type { NextActionState } from "./nextAction";
 import { docTextsFor, type StoredFile } from "./docStore";
 import { DOC_TYPE_LABELS } from "./docText";
 import { replyThroughImap } from "./imapMailbox";
@@ -50,6 +53,7 @@ function publicMailbox(c: MailConnectionRow): InboxMailbox {
 /** Every connected team mailbox (shared workspace). */
 export async function listMailboxes(): Promise<{ rows: MailConnectionRow[]; mailboxes: InboxMailbox[] }> {
   const rows = (await getMailStore().listConnections()).filter((c) => c.provider === "imap");
+  await ensureLearnedRoles({ ownEmails: rows.map((c) => c.email) });
   rows.sort((a, b) => (a.display_name || a.email).localeCompare(b.display_name || b.email));
   return { rows, mailboxes: rows.map(publicMailbox) };
 }
@@ -92,11 +96,13 @@ export async function loadInboxPage(opts: {
   });
   const ctx = itemContext(rows, await dealsFor(page.messages));
   const byThread = groupByThread(page.messages);
-  const items = await withPayments(
-    page.threads
-      .map((t) => buildInboxItem(t.thread_key, byThread.get(t.thread_key) || [], ctx))
-      .filter((i): i is InboxItem => Boolean(i)),
-    byThread,
+  const items = await withNextActions(
+    await withPayments(
+      page.threads
+        .map((t) => buildInboxItem(t.thread_key, byThread.get(t.thread_key) || [], ctx))
+        .filter((i): i is InboxItem => Boolean(i)),
+      byThread,
+    ),
   );
   const last = page.threads[page.threads.length - 1];
   return {
@@ -121,8 +127,24 @@ export async function loadThread(threadKey: string): Promise<InboxItem | null> {
   const ctx = itemContext(rows, await dealsFor(messages));
   const item = buildInboxItem(threadKey, messages, ctx);
   if (!item) return null;
-  const [withPay] = await withPayments([item], new Map([[threadKey, messages]]));
-  return { ...withPay!, documents: await threadDocuments(messages) };
+  const [withPay] = await withNextActions(await withPayments([item], new Map([[threadKey, messages]])));
+  const notes = withPay!.dealId ? await noteTextsFor(getMailStore(), withPay!.dealId, 5).catch(() => []) : [];
+  return { ...withPay!, notes, documents: await threadDocuments(messages) };
+}
+
+/** Attach the agent's next step to each conversation that belongs to a deal. */
+async function withNextActions(items: InboxItem[]): Promise<InboxItem[]> {
+  if (!items.some((i) => i.dealId)) return items;
+  const records = await getMailStore()
+    .listRecords({ kind: "next_action", limit: 5000 })
+    .catch(() => []);
+  const byDeal = new Map(records.map((r) => [r.id, r.data as unknown as NextActionState]));
+  return items.map((item) => {
+    const state = item.dealId ? byDeal.get(item.dealId) : undefined;
+    if (state?.status !== "done" || !state.result) return item;
+    const { action, owner, to, due, basedOn } = state.result;
+    return { ...item, nextAction: { action, owner, to, due, basedOn } };
+  });
 }
 
 /** Text of the thread's files for the draft: newest mail from the other side first, at most 4 files. */

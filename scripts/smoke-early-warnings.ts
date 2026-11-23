@@ -124,6 +124,17 @@ const book = [
     docsPack: { required: ["BL"], present: [], missing: ["BL"], complete: false },
   }),
   deal({
+    id: "sailed-open",
+    booking: { etd: day(-10) },
+    sources: [{ id: "m", kind: "booking", body: "vessel sailed", subject: "ETD", receivedAt: day(-2) }],
+  }),
+  deal({
+    id: "sailed-done",
+    booking: { etd: day(-10) },
+    docsPack: { required: ["HBL"], present: ["HBL"], missing: [], complete: true },
+    sources: [{ id: "m", kind: "booking", body: "full set sent", subject: "BL", receivedAt: day(-2) }],
+  }),
+  deal({
     id: "docs-far",
     booking: { etd: day(90) },
     docsPack: { required: ["BL"], present: [], missing: ["BL"], complete: false },
@@ -193,6 +204,11 @@ test("agency amount gap with recent mail warns; trader gap and old gap do not", 
 test("cut-off without a date is quiet; tomorrow with a future sail warns", () => {
   assert.deepEqual(kinds(rows, "cutoff-words"), []);
   assert.deepEqual(kinds(rows, "cutoff-tomorrow"), ["action_needed"]);
+});
+
+test("sailed with no arrival warns until the documents are done", () => {
+  assert.ok(kinds(rows, "sailed-open").includes("delivery_risk"));
+  assert.deepEqual(kinds(rows, "sailed-done"), []);
 });
 
 test("missing docs near sailing warn; far sailing does not", () => {

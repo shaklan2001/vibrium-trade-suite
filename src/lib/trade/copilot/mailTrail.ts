@@ -36,7 +36,7 @@ export async function withMailTrail(deal: Deal): Promise<Deal> {
         to: m.to_text || undefined,
         cc: m.cc_text || undefined,
         receivedAt: m.sent_at || undefined,
-        body: freshText(m.body_text || "").slice(0, BODY_CHARS),
+        body: freshText(m.body_text || "", m.subject || "").slice(0, BODY_CHARS),
         messageId: id,
         mailHref: mailHref(deal, id),
       });

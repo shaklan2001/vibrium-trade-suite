@@ -11,6 +11,7 @@ import type {
   SourceMessage,
   SourceMessageKind,
 } from "@/types/trade";
+import { preferredStage } from "@/lib/mail/agentStage";
 import { mailHref } from "@/lib/mail/mailLink";
 import { EUR_TO_USD, GBP_TO_USD, USD_TO_INR } from "./currencyDisplay";
 import { cleanPoNumbers, dealCodeFor, poNumbersIn } from "./dealReference";
@@ -93,6 +94,7 @@ const STAGE_MAP: Record<string, DealStage> = {
   inspection: "production",
   booking: "booking",
   payment: "docs_payment",
+  commission: "docs_payment",
   other: "requirement",
 };
 
@@ -725,7 +727,16 @@ function commercialFrom(
     summary: str(result.summary),
     confidence: num(result.confidence),
     executionId,
+    verification: verificationFrom(result.verification),
   };
+}
+
+function verificationFrom(raw: unknown): CommercialDocument["verification"] {
+  const r = asRecord(raw);
+  const checked = num(r.checked);
+  const verified = num(r.verified);
+  if (checked == null || verified == null) return undefined;
+  return { checked, verified, unverified: Array.isArray(r.unverified) ? r.unverified.filter((p): p is string => typeof p === "string") : [] };
 }
 
 export type DealDocumentRow = {
@@ -814,6 +825,21 @@ function sideTotal(docs: CommercialDocument[], side: "buyer" | "factory"): SideT
 }
 
 /**
+ * Amount owed by the buyer, taken from the PO when one was read.
+ * A commercial invoice on the same side does not replace it.
+ */
+export function buyerOrderDocument(docs: CommercialDocument[]): CommercialDocument | undefined {
+  const pos = docs.filter(
+    (d) =>
+      d.side === "buyer" &&
+      d.docType === "po" &&
+      (d.totalAmount || 0) > 0 &&
+      !isNonCommercialFile(d.fileName),
+  );
+  return sideTotal(pos, "buyer")?.doc;
+}
+
+/**
  * Put every extracted PI / PO / invoice on the deal: the main extract plus the
  * per-document extracts in documents_json. deal.po becomes the buyer side and
  * deal.pi the factory side, whatever the files are called.
@@ -854,9 +880,12 @@ function applyCommercialDocs(
   docs.sort(newerFirst);
   deal.commercialDocs = docs;
 
+  const buyerPo = buyerOrderDocument(docs);
   const buyer = sideTotal(docs, "buyer");
   const factory = sideTotal(docs, "factory");
-  if (buyer) deal.po = buyer.doc;
+  // A buyer PO is what is owed. A later invoice must not replace that amount.
+  if (buyerPo) deal.po = buyerPo;
+  else if (buyer) deal.po = buyer.doc;
   if (factory) deal.pi = factory.doc;
   const freight = docs.find((d) => d.side === "freight");
   if (freight) deal.freightDoc = freight;
@@ -883,7 +912,13 @@ export function mapProcessedDeal(
   if (!row.id) return null;
   const result = asResult(row.result_json);
   const slot = row.slot || "";
-  const stage = STAGE_MAP[row.primary_stage || ""] || "requirement";
+  const agentStage = typeof result.agent_stage === "string" ? result.agent_stage : null;
+  const mailStage = preferredStage(row.primary_stage || "", {
+    slot: row.slot,
+    stage: agentStage,
+    confidence: row.confidence,
+  });
+  const stage = STAGE_MAP[mailStage] || "requirement";
   const created = row.date_start || row.processed_at || new Date().toISOString();
   const updated = row.date_end || row.processed_at || created;
   const summary =

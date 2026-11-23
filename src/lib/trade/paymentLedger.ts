@@ -12,6 +12,7 @@
 import { mailHref } from "@/lib/mail/mailLink";
 import { normPo, type PaymentEntry, type PaymentKind, type PaymentSide } from "@/lib/mail/payments";
 import type { Deal } from "@/types/trade";
+import { buildInvoiceRegister, posForInvoice } from "./invoiceRegister";
 
 export type LedgerLine = {
   entryId: string;
@@ -86,6 +87,7 @@ const DAY = 86_400_000;
 
 export function buildPaymentLedger(entries: PaymentEntry[], deals: Deal[]): PaymentLedger {
   const byPo = indexByPo(deals);
+  const register = buildInvoiceRegister(deals);
   const byKey = new Map(deals.map((d) => [d.mailboxSourceId || d.id, d]));
   const orders = new Map<string, OrderLedger>();
   const unmatched: PaymentLedger["unmatched"] = [];
@@ -140,6 +142,18 @@ export function buildPaymentLedger(entries: PaymentEntry[], deals: Deal[]): Paym
     let targets = [...new Map(e.allocations.filter((a) => a.po).map((a) => [normPo(a.po!), a])).values()]
       .map((a) => ({ a, hit: byPo.get(normPo(a.po!)) }))
       .filter((x): x is { a: (typeof e.allocations)[number]; hit: Indexed } => Boolean(x.hit));
+    if (!targets.length) {
+      // Payment names only an invoice number: the invoice register says which PO(s) it belongs to.
+      const seen = new Set<string>();
+      for (const a of e.allocations) {
+        for (const po of posForInvoice(register, a.invoice)) {
+          const hit = byPo.get(normPo(po));
+          if (!hit || seen.has(hit.po)) continue;
+          seen.add(hit.po);
+          targets.push({ a: { po: hit.po, invoice: a.invoice, amount: a.amount }, hit });
+        }
+      }
+    }
     if (!targets.length && home) {
       const own = [...new Set((home.mailboxPoNumbers || []).map(normPo))].map((p) => byPo.get(p)).filter((h): h is Indexed => Boolean(h));
       if (own.length === 1) targets = [{ a: { po: own[0]!.po, invoice: null, amount: null }, hit: own[0]! }];

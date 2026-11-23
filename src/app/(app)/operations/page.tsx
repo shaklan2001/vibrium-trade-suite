@@ -30,6 +30,7 @@ import {
   ProvenanceList,
 } from "@/components/ops/command-center-ui";
 import { EarlyWarningBody } from "@/components/ops/early-warnings-card";
+import { NextActionStats } from "@/components/ops/next-action-stats";
 import {
   ChartDrillPanel,
   type DrillPayload,
@@ -268,6 +269,8 @@ export default function OperationsDashboardPage() {
           </p>
         </div>
       ) : null}
+
+      <NextActionStats />
 
       <div
         className={`mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5 ${bookLoading ? "pointer-events-none opacity-40" : ""}`}

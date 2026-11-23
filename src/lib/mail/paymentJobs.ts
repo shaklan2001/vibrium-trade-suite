@@ -7,16 +7,26 @@
  * Rows live in mail_payments (store.ts); scripts/backfill-payments.ts queues existing mail.
  */
 import { presign } from "./attachmentUrl";
+import { notifyPayment } from "./dealRecords";
 import { freshText } from "./inbox";
-import { isPaymentCandidate, parsePaymentResult, paymentReaderInput, pickPaymentAttachment, type PaymentEntry } from "./payments";
-import type { MailStore } from "./store";
+import { getDocText } from "./docStore";
+import { isPaymentCandidate, parsePaymentResult, paymentInlineImage, paymentReaderInput, pickPaymentAttachment, type PaymentEntry } from "./payments";
+import { getMailStore, type MailStore } from "./store";
 import type { StoredAttachment, StoredMailMessage } from "./types";
 import { executionResult, getExecution, startExecution, TERMINAL } from "./workers";
 
 export type PaymentRow = PaymentEntry & {
   /** What the reader is given: the mail text and the attachment to read (S3 key). */
-  input: { email_text: string; s3_key: string | null } | null;
+  input: { email_text: string; s3_key: string | null; ocr_sha256?: string | null } | null;
 };
+
+const ADVICE_MARK = "\n--- advice image ---\n";
+
+/** OCR text of a debit-advice photo, appended once so the reader does not need vision. */
+export function emailWithAdviceImage(email: string, ocrText: string): string {
+  if (email.includes(ADVICE_MARK)) return email;
+  return `${email}${ADVICE_MARK}${ocrText.slice(0, 6000)}`;
+}
 
 const READ_TIMEOUT_MS = 15 * 60_000;
 
@@ -47,10 +57,11 @@ export function paymentRowFor(
 ): PaymentRow | null {
   if (m.status === "noise" || m.status === "error" || !m.sent_at) return null;
   const atts = attachmentsOf(m);
-  const body = freshText(m.body_text || "");
   const subject = m.subject || "";
+  const body = freshText(m.body_text || "", subject);
   if (!isPaymentCandidate(subject, body, atts.map((a) => a.name))) return null;
   const doc = pickPaymentAttachment(atts);
+  const image = doc ? null : paymentInlineImage(atts);
   const from = m.from_name ? `${m.from_name} <${m.from_email || ""}>` : m.from_email || "";
   const date = new Date(m.sent_at).toISOString();
   const text = paymentReaderInput({ subject, from, to: m.to_text || "", cc: m.cc_text || "", date, body }, null).email_text as string;
@@ -64,7 +75,7 @@ export function paymentRowFor(
     to: m.to_text || "",
     cc: m.cc_text || "",
     mailDate: date,
-    attachment: doc?.name || null,
+    attachment: doc?.name || image?.name || null,
     status: "pending",
     executionId: null,
     kind: null,
@@ -80,8 +91,46 @@ export function paymentRowFor(
     confidence: null,
     error: null,
     updatedAt: new Date().toISOString(),
-    input: { email_text: text, s3_key: doc?.s3_key || null },
+    input: doc
+      ? { email_text: text, s3_key: doc.s3_key || null }
+      : { email_text: text, s3_key: null, ocr_sha256: image?.sha256 || null },
   };
+}
+
+/**
+ * Once a payment-advice image has been OCR'd, put that text on the ledger row and read it again.
+ * Rows already running are left alone; a finished row that already has an amount is left alone.
+ */
+export async function requeuePaymentsForOcr(store: MailStore, sha256: string, ocrText: string): Promise<number> {
+  const rows = await store.listPayments({ limit: 2000 });
+  const next = rows.filter((row) => {
+    if (row.input?.ocr_sha256 !== sha256 || row.status === "running") return false;
+    if (row.input.email_text.includes(ADVICE_MARK)) return false;
+    return row.amount == null || row.status === "pending" || row.status === "failed";
+  });
+  if (!next.length) return 0;
+  await store.upsertPayments(
+    next.map((row) => ({
+      ...row,
+      status: "pending",
+      executionId: null,
+      error: null,
+      input: {
+        email_text: emailWithAdviceImage(row.input!.email_text, ocrText),
+        s3_key: null,
+        ocr_sha256: sha256,
+      },
+      updatedAt: new Date().toISOString(),
+    })),
+  );
+  return next.length;
+}
+
+/** Used by the mail cycle after OCR: look up the text and requeue. Failures stay in the caller's log. */
+export async function requeuePaymentsForOcrSha(sha256: string): Promise<number> {
+  const doc = await getDocText(sha256);
+  if (!doc || doc.status !== "ok" || !doc.text.trim()) return 0;
+  return requeuePaymentsForOcr(getMailStore(), sha256, doc.text);
 }
 
 /**
@@ -158,6 +207,18 @@ export async function processPayments(store: MailStore, opts: { deadline: number
         await store.upsertPayments([done]);
         out.finished += 1;
         if (done.dealKey) out.dealKeys.push(done.dealKey);
+        // Tell the person who handles the order; one notification per payment email.
+        if (done.status === "done") {
+          await notifyPayment(store, {
+            entryId: done.id,
+            dealKey: done.dealKey,
+            kind: done.kind,
+            amount: done.amount,
+            currency: done.currency,
+            summary: done.summary,
+            href: done.dealKey ? `/deals/${encodeURIComponent(done.dealKey)}` : "/mailbox/inbox",
+          }).catch((err) => console.warn("[payments] notify failed", err instanceof Error ? err.message : err));
+        }
       }
     } catch (err) {
       out.failed += 1;

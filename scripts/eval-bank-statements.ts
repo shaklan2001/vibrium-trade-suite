@@ -13,6 +13,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import { buildInvoiceRegister, commissionInvoices } from "../src/lib/trade/invoiceRegister";
 import { isBankStatementMail, matchStatement, parseFinacleStatement, type BankLine } from "../src/lib/mail/bankStatement";
 import { decryptSecret } from "../src/lib/mail/crypto";
 import type { PaymentRow } from "../src/lib/mail/paymentJobs";
@@ -87,7 +88,8 @@ async function main() {
     ),
   ];
   const refText = (e: PaymentRow) => `${e.subject} ${e.attachment || ""} ${e.reference || ""} ${e.summary || ""} ${e.input?.email_text || ""}`;
-  const matches = matchStatement(lines, entries, refText, partyNames);
+  const invoices = commissionInvoices(buildInvoiceRegister(book.deals));
+  const matches = matchStatement(lines, entries, refText, partyNames, invoices);
 
   const byKind = lines.reduce<Record<string, number>>((a, l) => ((a[l.kind] = (a[l.kind] || 0) + 1), a), {});
   const credits = matches.filter((m) => m.line.credit > 0);
