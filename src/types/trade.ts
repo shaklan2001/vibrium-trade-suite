@@ -121,6 +121,10 @@ export interface SourceMessage {
   extractedBy?: string;
   /** Short summary of agent output grounded in this source */
   extractedSummary?: string;
+  /** Message id (internet Message-ID or sync ref) when the mail can be opened in the inbox. */
+  messageId?: string;
+  /** /mailbox/inbox link to this exact email (see src/lib/mail/mailLink.ts). */
+  mailHref?: string;
 }
 
 /** Org-wide buyer / factory profile for scoring & recommendations */
@@ -841,6 +845,16 @@ export interface Deal {
   economics?: DealEconomics;
   /** Cash exposure ledger (Finance workspace) */
   cashExposure?: DealCashExposure;
+  /** When the stage agent last read this deal (processed_at); mails after this are not in the extracted fields yet. */
+  recordAsOf?: string;
+  /** Has mail in a connected mailbox, so its emails open in the inbox (archive-only deals do not). */
+  liveMail?: boolean;
+  /** Open items read from the deal's emails (src/lib/mail/mailSignals.ts): reply owed, approval pending… */
+  mailSignals?: import("@/lib/mail/mailSignals").MailSignal[];
+  /** Copilot context only: payment-ledger lines for this deal's orders (src/lib/trade/copilot/paymentsContext.ts). */
+  paymentNotes?: string[];
+  /** Copilot context only: text excerpts of the deal's files (document layer). */
+  docNotes?: string[];
 }
 
 /** Cite the mail / artefact a KPI was grounded in */

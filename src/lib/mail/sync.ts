@@ -1,5 +1,3 @@
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { ProcessedDealRow } from "@/lib/trade/processedDealMapper";
 import {
   agentIdForSlot,
@@ -16,7 +14,13 @@ import {
 import { MAIL_LIMITS } from "./config";
 import { decryptSecret } from "./crypto";
 import { buildDealPack, buildEvidence, dealContextNotes, type DealPack } from "./dealPack";
-import { attachmentBucket, parseRawMail, storeAttachment } from "./parse";
+import { presign } from "./attachmentUrl";
+import { isBankStatementMail } from "./bankStatement";
+import { ensureDocText } from "./docStore";
+import { refreshSignals } from "./signalStore";
+import { ocrEnabled, processOcr, startOcr, wantsOcr } from "./ocr";
+import { paymentReaderId, paymentRowFor, processPayments, queueNewPayments, type PaymentRow } from "./paymentJobs";
+import { parseRawMail, storeAttachment } from "./parse";
 import { isRdsProxyEnabled } from "@/lib/rdsProxy";
 import {
   documentExtractionEnabled,
@@ -48,7 +52,6 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const EMAIL_CHAR_LIMIT = 24_000;
 const EXECUTION_TIMEOUT_MS = 20 * 60 * 1000;
-const PRESIGN_SECONDS = 7 * 24 * 3600;
 
 /** Same "agent says this is travel/admin" gate as process_deals.py. */
 const NOT_TRADE_TOKENS = [
@@ -68,6 +71,8 @@ export type SyncResult = {
   errors?: number;
   remaining?: number;
   deals_touched?: number;
+  /** Deal keys that got new mail this run (mail-driven warnings are refreshed for these). */
+  touched_keys?: string[];
   error?: string;
 };
 
@@ -179,9 +184,13 @@ export async function syncConnection(
     const batch = fresh.slice(0, MAIL_LIMITS.messagesPerRun);
     const threadMap = new Map<string, string>();
     let pending: StoredMailMessage[] = [];
+    const payments: PaymentRow[] = [];
     let handled = 0;
 
     const flush = async () => {
+      if (payments.length && paymentReaderId()) {
+        await queueNewPayments(store, payments.splice(0)).catch((err) => console.warn("[payments] queue failed", err));
+      }
       if (!pending.length) return;
       await store.insertMessages(pending);
       pending = [];
@@ -220,12 +229,24 @@ export async function syncConnection(
 
         if (isNoiseMessage(mail, ctx)) {
           // Not a deal, but still mail: keep the text so the shared inbox shows it.
+          // Bank statements keep their attachment: payment reconciliation reads them.
+          const keepFiles = isBankStatementMail(mail.from_email, mail.subject);
+          const files: StoredAttachment[] = [];
+          for (const a of mail.attachments) {
+            if (!keepFiles) {
+              files.push({ ...a.meta, skipped: "not_trade" });
+              continue;
+            }
+            const stored = await storeAttachment(a.meta, a.content).catch(() => ({ ...a.meta, skipped: "upload_failed" }));
+            files.push(stored);
+            await ensureDocText(stored, a.content).catch(() => null);
+          }
           pending.push(
             messageRow(conn, ref.id, {
               ...common,
               status: "noise",
               body_text: mail.body_text,
-              attachments_json: mail.attachments.map((a) => ({ ...a.meta, skipped: "not_trade" })),
+              attachments_json: files,
             }),
           );
           stats.noise += 1;
@@ -248,7 +269,17 @@ export async function syncConnection(
         const attachments: StoredAttachment[] = [];
         for (const att of mail.attachments) {
           try {
-            attachments.push(await storeAttachment(att.meta, att.content));
+            const stored = await storeAttachment(att.meta, att.content);
+            attachments.push(stored);
+            // Document layer: text for PDFs, sheets and Word files, cached by content (read once);
+            // scans and photographed documents go to OCR (collected on a later cycle).
+            const text = await ensureDocText(stored, att.content).catch((err) => {
+              console.warn("[docs] text failed", stored.name, err);
+              return null;
+            });
+            if (ocrEnabled() && wantsOcr(stored, text)) {
+              await startOcr(stored).catch((err) => console.warn("[ocr] not started", stored.name, err instanceof Error ? err.message : err));
+            }
           } catch (err) {
             attachments.push({
               ...att.meta,
@@ -257,15 +288,17 @@ export async function syncConnection(
           }
         }
 
-        pending.push(
-          messageRow(conn, ref.id, {
-            ...common,
-            deal_key: dealKey,
-            body_text: mail.body_text,
-            attachments_json: attachments,
-            status: "ingested",
-          }),
-        );
+        const stored = messageRow(conn, ref.id, {
+          ...common,
+          deal_key: dealKey,
+          body_text: mail.body_text,
+          attachments_json: attachments,
+          status: "ingested",
+        });
+        pending.push(stored);
+        // Payment emails go to the ledger; the Payment Reader reads them on this or a later cycle.
+        const payment = paymentRowFor(stored, conn.email);
+        if (payment) payments.push(payment);
         if (mail.internet_message_id) threadMap.set(mail.internet_message_id, dealKey);
         touched.add(dealKey);
         stats.ingested += 1;
@@ -298,7 +331,7 @@ export async function syncConnection(
       },
     };
     await store.saveConnection(next);
-    return { ...base, ...stats, deals_touched: touched.size };
+    return { ...base, ...stats, deals_touched: touched.size, touched_keys: [...touched] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const latest = (await store.getConnection(conn.id).catch(() => null)) || conn;
@@ -312,7 +345,7 @@ export async function syncConnection(
       .catch(() => undefined);
     // Messages already stored still deserve processing.
     await store.markJobsDirty([...touched]).catch(() => undefined);
-    return { ...base, ...stats, deals_touched: touched.size, error: message };
+    return { ...base, ...stats, deals_touched: touched.size, touched_keys: [...touched], error: message };
   } finally {
     await session?.close().catch(() => undefined);
     await store.releaseLock(conn.id).catch(() => undefined);
@@ -323,13 +356,6 @@ export async function syncConnection(
 /* Deal jobs → Vibrium workers → processed_deals                       */
 /* ------------------------------------------------------------------ */
 
-let s3: S3Client | null = null;
-async function presign(key: string) {
-  if (!s3) s3 = new S3Client({ region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "ap-south-1" });
-  return getSignedUrl(s3, new GetObjectCommand({ Bucket: attachmentBucket(), Key: key }), {
-    expiresIn: PRESIGN_SECONDS,
-  });
-}
 
 type JobPack = {
   row: Omit<ProcessedDealUpsert, "status" | "execution_id" | "result_json" | "summary" | "confidence" | "error" | "cost_usd" | "input_tokens" | "output_tokens" | "processed_at">;
@@ -532,6 +558,12 @@ async function startJob(
   return "started";
 }
 
+/** Failed runs are retried on later syncs until MAX_ATTEMPTS runs in a row have failed. */
+const MAX_ATTEMPTS = 3;
+function retryable(job: MailDealJob) {
+  return (job.attempts || 0) < MAX_ATTEMPTS;
+}
+
 async function finalizeJob(
   store: MailStore,
   job: MailDealJob,
@@ -547,7 +579,11 @@ async function finalizeJob(
   if (!TERMINAL.has(status)) {
     const started = job.started_at ? Date.parse(job.started_at) : Date.now();
     if (Date.now() - started < EXECUTION_TIMEOUT_MS) return "waiting";
-    await store.updateJob(key, { status: "failed", last_error: `execution ${job.execution_id} timed out` });
+    await store.updateJob(key, {
+      status: "failed",
+      last_error: `execution ${job.execution_id} timed out`,
+      ...(retryable(job) ? { dirty: true } : {}),
+    });
     return "failed";
   }
 
@@ -587,7 +623,15 @@ async function finalizeJob(
   }
 
   const jobStatus = rowStatus === "completed" ? "done" : rowStatus === "skipped" ? "skipped" : "failed";
-  await store.updateJob(key, { status: jobStatus, pack_json: null, last_error: error });
+  await store.updateJob(key, {
+    status: jobStatus,
+    pack_json: null,
+    last_error: error,
+    // A failed re-read kept the old extract; queue it again so new mail is not left out for good.
+    ...(jobStatus === "failed" && retryable(job) ? { dirty: true } : {}),
+    // attempts counts failures in a row; a good run starts the count again.
+    ...(jobStatus === "done" ? { attempts: 0 } : {}),
+  });
   return jobStatus;
 }
 
@@ -682,7 +726,27 @@ export async function runMailCycle(opts: {
   }
   const jobs = await processJobs({ deadline: opts.deadline, store, all });
   const documents = await runDocumentStep(opts.deadline, jobs.finalizedKeys || []);
-  return { connections, jobs, documents, job_counts: await store.jobCounts() };
+  const ocr = ocrEnabled()
+    ? await processOcr({ deadline: opts.deadline }).catch((err) => {
+        console.warn("[ocr] round failed", err instanceof Error ? err.message : err);
+        return null;
+      })
+    : null;
+  const payments = await processPayments(store, { deadline: opts.deadline }).catch((err) => {
+    console.warn("[payments] round failed", err);
+    return null;
+  });
+  // Mail-driven warnings: re-read open items on deals with new mail or a payment email just read.
+  const signalKeys = [...connections.flatMap((c) => c.touched_keys || []), ...(payments?.dealKeys || [])];
+  const signals = signalKeys.length
+    ? await refreshSignals(signalKeys, store).catch((err) => {
+        console.warn("[signals] refresh failed", err instanceof Error ? err.message : err);
+        return null;
+      })
+    : null;
+  // The key lists are internal; the cycle's response keeps the counts only.
+  const connectionsOut = connections.map((c) => ({ ...c, touched_keys: undefined }));
+  return { connections: connectionsOut, jobs, documents, ocr, payments, signals, job_counts: await store.jobCounts() };
 }
 
 /**

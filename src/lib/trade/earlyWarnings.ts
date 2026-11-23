@@ -2,9 +2,11 @@
  * Team early warnings from the hydrated mailbox book.
  * Day windows use the Asia/Kolkata calendar. One deal can emit several rows.
  */
+import { latestMailHref, mailHref } from "@/lib/mail/mailLink";
+import { SIGNAL_GRACE_DAYS, SIGNAL_STALE_DAYS, signalAgeDays, type MailSignalKind } from "@/lib/mail/mailSignals";
 import type { Deal } from "@/types/trade";
 
-export type EarlyWarningKind = "po_risk" | "delivery_risk" | "action_needed";
+export type EarlyWarningKind = "po_risk" | "delivery_risk" | "action_needed" | MailSignalKind;
 
 export interface EarlyWarning {
   id: string;
@@ -15,6 +17,8 @@ export interface EarlyWarning {
   title: string;
   reason: string;
   href: string;
+  /** The deal's newest email in the inbox (null for book-level rows). */
+  mailHref: string | null;
   sortBand: number;
   sortKey: string;
 }
@@ -23,7 +27,45 @@ const TITLE: Record<EarlyWarningKind, string> = {
   po_risk: "PO at risk",
   delivery_risk: "Delivery at risk",
   action_needed: "Action needed",
+  reply_owed: "Reply owed",
+  waiting_on_them: "No reply from them",
+  approval_pending: "Approval pending",
+  issue_open: "Open issue",
+  payment_unconfirmed: "Payment not confirmed",
 };
+
+const SIGNAL_REASON: Record<MailSignalKind, (party: string, days: number) => string> = {
+  reply_owed: (p, d) => `${p} is waiting on our reply · ${d} days`,
+  waiting_on_them: (p, d) => `No reply from ${p} · ${d} days`,
+  approval_pending: (p, d) => `Approval asked, not given · ${d} days (${p})`,
+  issue_open: (p, d) => `Problem raised by ${p}, not resolved · ${d} days`,
+  payment_unconfirmed: (p, d) => `Payment not confirmed · ${d} days (${p})`,
+};
+
+/** Open items from the deal's emails, once past their grace period; each links to the mail that opened it. */
+function signalRows(deal: Deal, today: string): EarlyWarning[] {
+  const out: EarlyWarning[] = [];
+  for (const s of deal.mailSignals || []) {
+    const days = signalAgeDays(s, today);
+    const grace = SIGNAL_GRACE_DAYS[s.kind];
+    if (days < grace || days > SIGNAL_STALE_DAYS) continue;
+    const critical = days >= grace * 2 || s.kind === "issue_open";
+    out.push({
+      id: `${deal.id}-${s.kind}-${s.messageId.slice(-24)}`,
+      dealId: deal.id,
+      dealCode: deal.code,
+      kind: s.kind,
+      severity: critical ? "critical" : "warning",
+      title: TITLE[s.kind],
+      reason: `${SIGNAL_REASON[s.kind](s.party, days)} — “${s.quote}”`,
+      href: `/deals/${deal.id}`,
+      mailHref: deal.mailboxSourceId ? mailHref(deal, s.messageId) : null,
+      sortBand: critical ? 2 : 4,
+      sortKey: s.since,
+    });
+  }
+  return out;
+}
 
 function kolkataDay(ms: number) {
   return new Intl.DateTimeFormat("en-CA", {
@@ -85,6 +127,7 @@ function row(
     title: TITLE[kind],
     reason,
     href: deal ? `/deals/${deal.id}` : "/mailbox",
+    mailHref: deal?.mailboxSourceId && deal.liveMail ? latestMailHref(deal) : null,
     sortBand,
     sortKey,
   };
@@ -249,6 +292,7 @@ export function collectEarlyWarnings(
       mismatchRow(deal, today),
     ];
     for (const hit of hits) if (hit) rows.push(hit);
+    rows.push(...signalRows(deal, today));
   }
   rows.sort(
     (a, b) =>

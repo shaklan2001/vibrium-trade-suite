@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { X } from "lucide-react";
+import { ArrowUpRight, X } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -13,8 +13,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Button } from "@/components/ui/primitives";
 import { KpiTile } from "@/components/ops/command-center-ui";
+import { useSheetEscape } from "@/components/ops/chart-drill-panel";
 import {
   monthBucketsFromLines,
   paymentLineToDrill,
@@ -118,6 +118,8 @@ export function DealPaymentMonthPanel({
     });
   }, [order]);
 
+  useSheetEscape(Boolean(focus), onClose);
+
   if (!focus || !order || !buyer || !factory) return null;
 
   const terms = [order.buyerTerms, order.factoryTerms]
@@ -136,34 +138,43 @@ export function DealPaymentMonthPanel({
     );
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-zinc-900/30">
+    <div className="side-sheet-root">
       <button
         type="button"
-        className="absolute inset-0 cursor-default"
-        aria-label="Close"
+        className="side-sheet-backdrop"
+        aria-label="Close panel"
         onClick={onClose}
       />
-      <aside className="relative z-10 flex h-full w-full max-w-lg flex-col border-l border-zinc-200 bg-white shadow-xl">
-        <div className="flex items-start justify-between gap-3 border-b border-zinc-100 px-4 py-3">
+      <aside
+        className="side-sheet side-sheet-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${order.dealCode} payment terms`}
+      >
+        <header className="side-sheet-header">
           <div className="min-w-0">
-            <h2 className="font-mono text-sm font-semibold text-zinc-900">
-              {order.dealCode}
-            </h2>
-            <p className="mt-0.5 truncate text-sm text-zinc-700">{order.title}</p>
+            <p className="side-sheet-eyebrow">Payment terms</p>
+            <h2 className="side-sheet-title">{order.dealCode}</h2>
+            <p className="side-sheet-subtitle line-clamp-2" title={order.title}>
+              {order.title}
+            </p>
             {terms ? (
               <p className="mt-1 text-xs text-zinc-500">{terms}</p>
             ) : null}
-            <Link
-              href={order.href}
-              className="mt-1 inline-block text-[11px] text-teal-700 underline"
-            >
+            <Link href={order.href} className="text-link mt-2">
               Open deal
+              <ArrowUpRight className="h-3.5 w-3.5" aria-hidden />
             </Link>
           </div>
-          <Button variant="ghost" className="px-2" onClick={onClose}>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Close"
+          >
             <X className="h-4 w-4" />
-          </Button>
-        </div>
+          </button>
+        </header>
 
         <div className="space-y-2 border-b border-zinc-100 px-4 py-3">
           <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">

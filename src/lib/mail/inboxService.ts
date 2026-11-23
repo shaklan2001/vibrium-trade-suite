@@ -1,7 +1,9 @@
 import { decryptSecret } from "./crypto";
+import { docTextsFor, type StoredFile } from "./docStore";
+import { DOC_TYPE_LABELS } from "./docText";
 import { replyThroughImap } from "./imapMailbox";
 import { buildInboxItem, itemContext } from "./inboxItems";
-import type { InboxCursor, InboxItem, InboxMailbox } from "./inboxTypes";
+import type { InboxCursor, InboxDocument, InboxItem, InboxMailbox } from "./inboxTypes";
 import { MailAuthError } from "./providers/http";
 import { getMailStore } from "./store";
 import { threadKeyFor } from "./thread";
@@ -90,9 +92,12 @@ export async function loadInboxPage(opts: {
   });
   const ctx = itemContext(rows, await dealsFor(page.messages));
   const byThread = groupByThread(page.messages);
-  const items = page.threads
-    .map((t) => buildInboxItem(t.thread_key, byThread.get(t.thread_key) || [], ctx))
-    .filter((i): i is InboxItem => Boolean(i));
+  const items = await withPayments(
+    page.threads
+      .map((t) => buildInboxItem(t.thread_key, byThread.get(t.thread_key) || [], ctx))
+      .filter((i): i is InboxItem => Boolean(i)),
+    byThread,
+  );
   const last = page.threads[page.threads.length - 1];
   return {
     mailboxes,
@@ -114,7 +119,59 @@ export async function loadThread(threadKey: string): Promise<InboxItem | null> {
     limit: THREAD_LIMIT,
   });
   const ctx = itemContext(rows, await dealsFor(messages));
-  return buildInboxItem(threadKey, messages, ctx);
+  const item = buildInboxItem(threadKey, messages, ctx);
+  if (!item) return null;
+  const [withPay] = await withPayments([item], new Map([[threadKey, messages]]));
+  return { ...withPay!, documents: await threadDocuments(messages) };
+}
+
+/** Text of the thread's files for the draft: newest mail from the other side first, at most 4 files. */
+async function threadDocuments(rows: InboxMessageRow[]): Promise<InboxDocument[]> {
+  const theirs = [...rows].reverse().find((m) => !/@snspl\.(in|ml)$/i.test(m.from_email || ""));
+  const ordered = theirs ? [theirs, ...[...rows].reverse().filter((m) => m !== theirs)] : [...rows].reverse();
+  const files = ordered.flatMap((m) => ((m.attachments_json || []) as StoredFile[]).map((f) => ({ f, onLatest: m === theirs })));
+  const texts = await docTextsFor(files.map((x) => x.f), 4).catch(() => []);
+  return texts.map((d) => ({
+    name: d.name,
+    type: DOC_TYPE_LABELS[d.docType],
+    text: d.text.length > 2500 ? `${d.text.slice(0, 2500)}\n…` : d.text,
+    onLatest: files.some((x) => x.onLatest && x.f.name === d.name),
+  }));
+}
+
+const OWNER_SKIP = /^(accounts|occ|info|admin|noreply|no-reply)@/i;
+
+/** Tag conversations that hold a payment email (read by the Payment Reader) with amount, POs and the order's owner. */
+async function withPayments(items: InboxItem[], byThread: Map<string, InboxMessageRow[]>): Promise<InboxItem[]> {
+  const ids = items.flatMap((i) => (byThread.get(i.mailbox.threadKey) || []).map((m) => m.internet_message_id || m.provider_message_id));
+  if (!ids.length) return items;
+  const paid = await getMailStore()
+    .listPayments({ ids, status: "done", limit: ids.length })
+    .catch(() => []);
+  if (!paid.length) return items;
+  const byId = new Map(paid.map((p) => [p.id, p]));
+  return items.map((item) => {
+    const rows = byThread.get(item.mailbox.threadKey) || [];
+    const hit = [...rows].reverse().map((m) => byId.get(m.internet_message_id || m.provider_message_id)).find(Boolean);
+    if (!hit || !hit.kind || hit.kind === "other") return item;
+    const counts = new Map<string, number>();
+    for (const m of rows) {
+      const from = (m.from_email || "").toLowerCase();
+      if (/@snspl\.(in|ml)$/.test(from) && !OWNER_SKIP.test(from)) counts.set(from, (counts.get(from) || 0) + 1);
+    }
+    const owner = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    return {
+      ...item,
+      payment: {
+        kind: hit.kind,
+        amount: hit.amount,
+        currency: hit.currency,
+        pos: [...new Set(hit.allocations.map((a) => a.po).filter((p): p is string => Boolean(p)))].slice(0, 6),
+        summary: hit.summary,
+        owner,
+      },
+    };
+  });
 }
 
 async function markReauth(conn: MailConnectionRow, message: string) {

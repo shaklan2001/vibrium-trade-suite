@@ -11,6 +11,7 @@ import type {
   SourceMessage,
   SourceMessageKind,
 } from "@/types/trade";
+import { mailHref } from "@/lib/mail/mailLink";
 import { EUR_TO_USD, GBP_TO_USD, USD_TO_INR } from "./currencyDisplay";
 import { cleanPoNumbers, dealCodeFor, poNumbersIn } from "./dealReference";
 import { documentSide, isNonCommercialFile, isTraderParty } from "./documentSide";
@@ -68,6 +69,8 @@ export type EvidenceMessage = {
   date?: string;
   body?: string;
   attachments?: { name?: string; url?: string; path?: string }[];
+  /** Synced from a connected mailbox (openable in the inbox), not only in the PST deal book. */
+  live?: boolean;
 };
 
 export type EvidencePayload = {
@@ -548,6 +551,8 @@ function buildSources(
   const primaryName = evidence.document_name || row.document_name || row.document || undefined;
 
   if (messages.length > 0) {
+    // Older evidence has no live flag: treat its ids as linkable and let /api/mail/open say when one is not in the inbox.
+    const hasLiveFlags = messages.some((m) => m.live);
     return messages.map((m, i) => {
       const body = (m.body || "").trim();
       const preview =
@@ -556,6 +561,7 @@ function buildSources(
           : body;
       return {
         id: `${row.id}-msg-${m.id || i}`,
+        messageId: m.id && (m.live || !hasLiveFlags) && !m.id.startsWith("book-") ? m.id : undefined,
         kind: i === 0 ? kind : "other",
         subject: m.subject || row.subject || undefined,
         from: m.from_name
@@ -680,14 +686,23 @@ function commercialFrom(
   const lines = Array.isArray(result.lines)
     ? result.lines.map((line) => {
         const item = asRecord(line);
+        const qty = num(item.qty);
+        let cbm = num(item.cbm);
+        let packing = str(item.packing);
+        // Extractors sometimes put the master-carton count in cbm (960 pcs, "cbm" 40 = 40 ctns x 24).
+        const cartons = cartonCountInCbm(qty, cbm);
+        if (cartons) {
+          cbm = undefined;
+          packing = packing ? `${packing}; ${cartons} ctns` : `${cartons} ctns x ${qty! / cartons} pcs`;
+        }
         return {
           description: str(item.description),
-          qty: num(item.qty),
+          qty,
           unitPrice: num(item.unitPrice),
           amount: num(item.amount),
           itemCode: str(item.itemCode),
-          cbm: num(item.cbm),
-          packing: str(item.packing),
+          cbm,
+          packing,
         };
       })
     : [];
@@ -852,6 +867,15 @@ function applyCommercialDocs(
   };
 }
 
+/** Pieces per carton that real packs use; a "cbm" dividing the quantity into one of these is a carton count. */
+const PACK_SIZES = new Set([2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 18, 20, 24, 25, 30, 32, 36, 40, 48, 50, 60, 72, 96, 100, 120, 144, 200, 240, 288]);
+
+/** The carton count when a line's cbm is really "number of master cartons", else null. */
+export function cartonCountInCbm(qty: number | undefined, cbm: number | undefined): number | null {
+  if (!qty || !cbm || !Number.isInteger(cbm) || cbm < 2 || qty % cbm !== 0) return null;
+  return PACK_SIZES.has(qty / cbm) ? cbm : null;
+}
+
 export function mapProcessedDeal(
   row: ProcessedDealRow,
   opts?: { fullEvidence?: boolean },
@@ -975,7 +999,9 @@ export function mapProcessedDeal(
     sources,
     timeline: buildTimelineFromSources(row, sources, summary, updated),
     outreach: [],
+    recordAsOf: row.processed_at || undefined,
   };
+  for (const s of deal.sources) if (s.messageId) s.mailHref = mailHref(deal, s.messageId);
 
   if (slot === "requirement_extractor" || stage === "requirement") {
     const req: RequirementFields = {

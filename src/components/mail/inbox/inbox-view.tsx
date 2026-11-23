@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -20,9 +20,11 @@ import {
   INBOX_OUTCOME_LABELS,
   type InboxItem,
   type InboxMessage,
+  type InboxPayment,
   type InboxOutcome,
   type ReplyDraft,
 } from "@/lib/mail/inboxTypes";
+import { useMailReplyName } from "@/components/agents/mail-reply-mark";
 import { avatarFor, displayName, fullTime, listTime, OUTCOME_STYLE, snippet } from "./format";
 
 export type SentReply = { body: string; at: string };
@@ -46,6 +48,48 @@ function Avatar({ m, size = "h-9 w-9" }: { m: InboxMessage; size?: string }) {
     >
       {a.initial}
     </span>
+  );
+}
+
+const PAYMENT_LABEL = { payment_received: "Payment received", payment_sent: "Payment sent", payment_request: "Payment requested" } as const;
+
+function payAmount(p: InboxPayment) {
+  return p.amount == null ? "" : `${p.currency || ""} ${p.amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}`.trim();
+}
+
+function ownerName(email: string | null) {
+  if (!email) return null;
+  const n = email.split("@")[0]!;
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
+
+/** Inbox row chip for a payment email: kind, amount and who handles the order. */
+export function PaymentChip({ payment }: { payment: InboxPayment }) {
+  const owner = ownerName(payment.owner);
+  return (
+    <span
+      className="hidden shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-100 sm:inline"
+      title={payment.summary || undefined}
+    >
+      {PAYMENT_LABEL[payment.kind]}
+      {payAmount(payment) ? ` · ${payAmount(payment)}` : ""}
+      {owner ? ` · for ${owner}` : ""}
+    </span>
+  );
+}
+
+function PaymentPanel({ payment }: { payment: InboxPayment }) {
+  const owner = ownerName(payment.owner);
+  return (
+    <div className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 ring-1 ring-inset ring-emerald-100">
+      <p className="font-semibold">
+        {PAYMENT_LABEL[payment.kind]}
+        {payAmount(payment) ? `: ${payAmount(payment)}` : ""}
+        {payment.pos.length ? ` · PO ${payment.pos.join(", ")}` : ""}
+      </p>
+      {payment.summary ? <p className="mt-0.5 text-emerald-800">{payment.summary}</p> : null}
+      {owner ? <p className="mt-0.5 text-xs text-emerald-700">Order handled by {owner}.</p> : null}
+    </div>
   );
 }
 
@@ -76,6 +120,7 @@ function AgentCard({
         ) : null}
       </div>
       {item.summary ? <p className="mt-2 text-sm leading-relaxed text-zinc-700">{item.summary}</p> : null}
+      {item.payment ? <PaymentPanel payment={item.payment} /> : null}
 
       {item.facts.length ? (
         <div className="mt-3 flex flex-wrap gap-1.5">
@@ -183,6 +228,7 @@ function DraftEditor({
   onSaveDraft?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const writer = useMailReplyName();
   const writing = status === "writing";
   const busy = writing || Boolean(sending);
 
@@ -208,12 +254,12 @@ function DraftEditor({
         <span className="ml-auto flex items-center gap-1 text-xs text-teal-700">
           <Sparkles className="h-3.5 w-3.5" />
           {writing
-            ? "Copilot is writing…"
+            ? `${writer} is writing…`
             : draft.by === "copilot"
-              ? "Written by Vibrium Copilot"
+              ? `Drafted by ${writer}`
               : status === "error"
-                ? "Quick draft (Copilot unavailable)"
-                : "Quick draft from the deal facts"}
+                ? `${writer} is unavailable — quick draft`
+                : `Quick draft from ${writer}`}
         </span>
       </div>
       <p className="border-b border-zinc-100 px-4 py-2 text-sm text-zinc-600">{draft.subject}</p>
@@ -298,7 +344,9 @@ export function InboxView({
   onRewrite,
   onSend,
   onSaveDraft,
+  focusRef = null,
 }: {
+  focusRef?: string | null;
   item: InboxItem;
   outcome: InboxOutcome;
   dealHref: string | null;
@@ -317,8 +365,26 @@ export function InboxView({
   onSend: () => void;
   onSaveDraft?: () => void;
 }) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const older = item.thread.slice(0, -1);
+  const focused = focusRef ? item.thread.find((m) => m.ref === focusRef) || null : null;
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(focused ? [focused.id] : []));
+  const focusEl = useRef<HTMLDivElement | null>(null);
+  // Opened from an email link: show that message and bring it into view.
+  useEffect(() => {
+    if (!focused) return;
+    setExpanded((s) => (s.has(focused.id) ? s : new Set(s).add(focused.id)));
+    const t = window.setTimeout(() => focusEl.current?.scrollIntoView({ block: "center", behavior: "smooth" }), 80);
+    return () => window.clearTimeout(t);
+  }, [focused]);
+  const wrap = (m: InboxMessage, node: React.ReactNode) =>
+    focused?.id === m.id ? (
+      <div key={m.id} ref={focusEl} className="-mx-2 rounded-lg px-2 ring-2 ring-teal-500/60" data-mail-ref={m.ref}>
+        <p className="pt-2 text-[11px] font-semibold uppercase tracking-wide text-teal-700">Linked email</p>
+        {node}
+      </div>
+    ) : (
+      node
+    );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -364,13 +430,16 @@ export function InboxView({
 
         <div className="mt-4 divide-y divide-zinc-100">
           {older.map((m) =>
-            expanded.has(m.id) ? (
-              <OpenMessage key={m.id} m={m} />
-            ) : (
-              <CollapsedMessage key={m.id} m={m} onOpen={() => setExpanded((s) => new Set(s).add(m.id))} />
+            wrap(
+              m,
+              expanded.has(m.id) ? (
+                <OpenMessage key={m.id} m={m} />
+              ) : (
+                <CollapsedMessage key={m.id} m={m} onOpen={() => setExpanded((s) => new Set(s).add(m.id))} />
+              ),
             ),
           )}
-          <OpenMessage m={item.latest} />
+          {wrap(item.latest, <OpenMessage key={item.latest.id} m={item.latest} />)}
         </div>
 
         {sent ? <SentCard to={item.latest.from} sent={sent} /> : null}

@@ -15,6 +15,7 @@ import {
   Route,
   Send,
   Ship,
+  Sparkles,
   Upload,
   Workflow,
 } from "lucide-react";
@@ -28,6 +29,8 @@ export interface NavItem {
   icon: LucideIcon;
   /** Shared across every process (Command Center). */
   shared?: boolean;
+  /** Pinned under Command Center, outside the process group. */
+  featured?: boolean;
 }
 
 export interface WorkspaceProcess {
@@ -42,6 +45,13 @@ export interface WorkspaceProcess {
 
 const SHARED_NAV: NavItem[] = [
   { href: "/home", label: "Command Center", icon: Radar, shared: true },
+  {
+    href: "/agents",
+    label: "Trade Agents",
+    icon: Sparkles,
+    shared: true,
+    featured: true,
+  },
 ];
 
 const OPS_NAV: NavItem[] = [

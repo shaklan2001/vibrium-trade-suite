@@ -95,7 +95,7 @@ export default function CommandCenterHubPage() {
           <Button
             variant="secondary"
             onClick={() => {
-              void hydrateMailboxBook().then((r) => {
+              void hydrateMailboxBook({ force: true }).then((r) => {
                 if (r.error) {
                   toast.error(friendlyMailboxError(r.error));
                   return;

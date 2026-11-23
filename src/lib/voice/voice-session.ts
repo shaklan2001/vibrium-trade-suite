@@ -1,17 +1,26 @@
 /**
  * Browser LiveKit lifecycle for Copilot voice (STT in, text out).
  *
- * Flow (do not reorder — the Vibrium worker waits for session_init before STT):
- *   POST /api/voice → new Room → register handlers → connect → startAudio
- *   → publish session_init on topic "session" → enable mic.
+ * Built to feel instant:
+ *   - Room credentials are fetched ahead of time (prefetchVoiceCredentials)
+ *     when the Copilot opens, so the click never waits on /api/voice.
+ *   - On click the mic opens first (getUserMedia) and starts LiveKit's
+ *     pre-connect buffer, so speech is recorded from the first moment.
+ *   - The room then connects in the background in the order the Vibrium
+ *     worker expects: connect → startAudio → session_init on "session" →
+ *     publish mic. The buffered audio is handed to the agent once it is active.
  *
  * Agent audio is NOT played by default: replies stay on the normal text
  * /api/chat path and are spoken by browser talkback instead.
  */
 
-import type { Room as LkRoom, RemoteTrack } from "livekit-client";
+import type { LocalAudioTrack, Room as LkRoom, RemoteTrack } from "livekit-client";
 
-export type VoiceStatus = "connecting" | "connected" | "reconnecting";
+/**
+ * connecting → mic_live (mic is recording) → connected (room joined)
+ * → ready (mic published to the worker). reconnecting on network blips.
+ */
+export type VoiceStatus = "connecting" | "mic_live" | "connected" | "ready" | "reconnecting";
 export type VoiceRole = "user" | "agent";
 
 export type VoiceHandlers = {
@@ -28,7 +37,13 @@ export type VoiceHandlers = {
 export type VoiceSessionHandle = {
   stop: () => Promise<void>;
   setMicEnabled: (enabled: boolean) => Promise<void>;
-  callSid?: string;
+};
+
+export type VoiceSessionInput = {
+  contactId: string;
+  contactName?: string;
+  user?: Record<string, unknown>;
+  context?: Record<string, unknown>;
 };
 
 export const SESSION_INIT_TOPIC = "session";
@@ -115,20 +130,23 @@ export function parseTranscriptPayload(raw: unknown): ParsedTranscript | null {
   };
 }
 
-export async function startVoiceSession(input: {
-  contactId: string;
-  contactName?: string;
-  playAgentAudio?: boolean;
+
+// ------------------------------------------------------------ prefetching
+
+type VoiceCredentials = {
+  token: string;
+  url: string;
+  callSid?: string;
   user?: Record<string, unknown>;
   context?: Record<string, unknown>;
-  handlers: VoiceHandlers;
-}): Promise<VoiceSessionHandle> {
-  const { handlers } = input;
-  const playAgentAudio = input.playAgentAudio ?? false;
+};
 
-  handlers.onStatus?.("connecting");
+/** LiveKit tokens from web-call live 6h; reuse a prefetched one for up to 5h. */
+const CREDENTIALS_MAX_AGE_MS = 5 * 60 * 60 * 1000;
+const credentialCache = new Map<string, { at: number; promise: Promise<VoiceCredentials> }>();
+let livekitModule: Promise<typeof import("livekit-client")> | null = null;
 
-  // 1. Mint room credentials server-side.
+async function fetchCredentials(input: VoiceSessionInput): Promise<VoiceCredentials> {
   let res: Response;
   try {
     res = await fetch("/api/voice", {
@@ -143,36 +161,118 @@ export async function startVoiceSession(input: {
       }),
     });
   } catch {
-    // Network-level failure: server down, restarted, or offline.
     throw new Error(
       "Couldn't reach the Trade Suite server to start voice. Check the app is running and reload.",
     );
   }
-  const session = (await res.json().catch(() => ({}))) as {
-    ok?: boolean;
+  const body = (await res.json().catch(() => ({}))) as Partial<VoiceCredentials> & {
     error?: string;
-    token?: string;
-    url?: string;
-    callSid?: string;
-    user?: Record<string, unknown>;
-    context?: Record<string, unknown>;
   };
-  if (!res.ok || !session.token || !session.url) {
+  if (!res.ok || !body.token || !body.url) {
     const fallback =
       res.status === 429
         ? "Too many voice starts. Wait a minute and try again."
         : res.status === 503
           ? "Voice is not configured on the server."
           : `Voice start failed (${res.status})`;
-    throw new Error(session.error && res.status !== 503 ? session.error : fallback);
+    throw new Error(body.error && res.status !== 503 ? body.error : fallback);
   }
+  return {
+    token: body.token,
+    url: body.url,
+    callSid: body.callSid,
+    user: body.user,
+    context: body.context,
+  };
+}
 
-  // 2. Lazy-load LiveKit so it never ships in SSR / non-voice bundles.
-  const { Room, RoomEvent, Track } = await import("livekit-client");
+/** Load the LiveKit SDK ahead of the first click (it is code-split). */
+export function preloadVoiceModule(): Promise<typeof import("livekit-client")> {
+  livekitModule ??= import("livekit-client");
+  return livekitModule;
+}
+
+/**
+ * Fetch room credentials in the background so the mic click doesn't wait on
+ * /api/voice (≈1–6 s). Minting creates no room — the room and the agent only
+ * start when the browser joins — so prefetching is free. Each start consumes
+ * one prefetched token; call this again after a session to stay warm.
+ */
+export function prefetchVoiceCredentials(input: VoiceSessionInput): void {
+  if (!isVoiceSessionSupported()) return;
+  const hit = credentialCache.get(input.contactId);
+  if (hit && Date.now() - hit.at < CREDENTIALS_MAX_AGE_MS) return;
+  const promise = fetchCredentials(input);
+  credentialCache.set(input.contactId, { at: Date.now(), promise });
+  promise.catch(() => {
+    if (credentialCache.get(input.contactId)?.promise === promise) {
+      credentialCache.delete(input.contactId);
+    }
+  });
+  void preloadVoiceModule().catch(() => undefined);
+}
+
+/** Use a prefetched token if there is a fresh one, otherwise fetch now. */
+function takeCredentials(input: VoiceSessionInput): Promise<VoiceCredentials> {
+  const hit = credentialCache.get(input.contactId);
+  credentialCache.delete(input.contactId);
+  if (hit && Date.now() - hit.at < CREDENTIALS_MAX_AGE_MS) {
+    return hit.promise.catch(() => fetchCredentials(input));
+  }
+  return fetchCredentials(input);
+}
+
+// ------------------------------------------------------------ session
+
+/**
+ * Start voice. Resolves as soon as the microphone is recording (≈100–300 ms
+ * once permission is granted); the LiveKit room connects in the background
+ * and reports progress through handlers.onStatus. Failures after this point
+ * arrive through handlers.onError followed by handlers.onEnded.
+ */
+export async function startVoiceSession(
+  input: VoiceSessionInput & {
+    playAgentAudio?: boolean;
+    handlers: VoiceHandlers;
+  },
+): Promise<VoiceSessionHandle> {
+  const { handlers } = input;
+  const playAgentAudio = input.playAgentAudio ?? false;
+  const t0 = performance.now();
+  const mark = (what: string) =>
+    console.debug(`[voice] ${what} +${Math.round(performance.now() - t0)}ms`);
+
+  handlers.onStatus?.("connecting");
+  const credentials = takeCredentials(input);
+  credentials.catch(() => undefined); // surfaced below
+  const lk = await preloadVoiceModule();
+  const { Room, RoomEvent, Track } = lk;
+
+  // 1. Mic first, recording into the pre-connect buffer.
+  let track: LocalAudioTrack;
+  try {
+    track = await lk.createLocalAudioTrack({
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    });
+  } catch (err) {
+    throw new Error(friendlyError(err));
+  }
+  try {
+    track.startPreConnectBuffer();
+  } catch {
+    /* older browsers without MediaRecorder — live audio still works */
+  }
+  mark("mic live");
+  handlers.onStatus?.("mic_live");
+
   const room: LkRoom = new Room({ adaptiveStream: true, dynacast: true });
   const attached: HTMLMediaElement[] = [];
   let stopped = false;
   let ended = false;
+  let published = false;
+  let firstTranscript = true;
 
   const fireEnded = () => {
     if (ended) return;
@@ -183,15 +283,21 @@ export async function startVoiceSession(input: {
   const isLocal = (identity?: string) =>
     !identity || identity === room.localParticipant.identity;
 
-  // 3. Register handlers BEFORE connect.
+  const emit = (role: VoiceRole, text: string, meta: { isFinal?: boolean; segmentId?: string }) => {
+    if (stopped) return;
+    if (firstTranscript && role === "user") {
+      firstTranscript = false;
+      mark("first transcript");
+    }
+    handlers.onTranscript?.(role, text, meta);
+  };
+
+  // 2. Register handlers before connect.
   room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
     const role: VoiceRole = isLocal(participant?.identity) ? "user" : "agent";
     for (const seg of segments) {
       if (!seg.text?.trim()) continue;
-      handlers.onTranscript?.(role, seg.text, {
-        isFinal: seg.final,
-        segmentId: seg.id,
-      });
+      emit(role, seg.text, { isFinal: seg.final, segmentId: seg.id });
     }
   });
 
@@ -205,10 +311,7 @@ export async function startVoiceSession(input: {
     }
     const parsed = parseTranscriptPayload(json);
     if (!parsed) return;
-    handlers.onTranscript?.(parsed.role, parsed.text, {
-      isFinal: parsed.isFinal,
-      segmentId: parsed.segmentId,
-    });
+    emit(parsed.role, parsed.text, { isFinal: parsed.isFinal, segmentId: parsed.segmentId });
   });
 
   if (typeof room.registerTextStreamHandler === "function") {
@@ -216,41 +319,37 @@ export async function startVoiceSession(input: {
       room.registerTextStreamHandler(TEXT_STREAM_TOPIC, async (reader, info) => {
         const text = await reader.readAll().catch(() => "");
         if (!text.trim()) return;
-        handlers.onTranscript?.(isLocal(info?.identity) ? "user" : "agent", text, {
-          isFinal: true,
-        });
+        emit(isLocal(info?.identity) ? "user" : "agent", text, { isFinal: true });
       });
     } catch {
       /* already registered / unsupported */
     }
   }
 
-  room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
-    if (!playAgentAudio || track.kind !== Track.Kind.Audio) return;
-    const el = track.attach();
+  room.on(RoomEvent.TrackSubscribed, (remote: RemoteTrack) => {
+    if (!playAgentAudio || remote.kind !== Track.Kind.Audio) return;
+    const el = remote.attach();
     el.style.display = "none";
     document.body.appendChild(el);
     attached.push(el);
   });
 
   room.on(RoomEvent.Reconnecting, () => handlers.onStatus?.("reconnecting"));
-  room.on(RoomEvent.Reconnected, () => handlers.onStatus?.("connected"));
+  room.on(RoomEvent.Reconnected, () => handlers.onStatus?.("ready"));
   room.on(RoomEvent.Disconnected, () => {
     if (!stopped) fireEnded();
   });
 
   async function teardown() {
+    if (stopped) return;
     stopped = true;
     try {
-      await room.localParticipant.setMicrophoneEnabled(false);
+      track.stop();
     } catch {
       /* ignore */
     }
-    for (const pub of [...room.localParticipant.audioTrackPublications.values()]) {
-      const track = pub.track;
-      if (!track) continue;
+    if (published) {
       try {
-        track.stop();
         await room.localParticipant.unpublishTrack(track, true);
       } catch {
         /* ignore */
@@ -279,38 +378,51 @@ export async function startVoiceSession(input: {
     fireEnded();
   }
 
-  try {
-    // 4–5. Connect, unlock autoplay.
-    await room.connect(session.url, session.token);
-    handlers.onStatus?.("connected");
-    await room.startAudio().catch(() => undefined);
-
-    // 6. session_init — the worker gates STT on this.
-    await room.localParticipant.publishData(
-      new TextEncoder().encode(
-        JSON.stringify({
-          type: "session_init",
-          user: session.user ?? input.user ?? {},
-          context: session.context ?? input.context ?? {},
-        }),
-      ),
-      { reliable: true, topic: SESSION_INIT_TOPIC },
-    );
-
-    // 7. Mic on.
-    await room.localParticipant.setMicrophoneEnabled(true);
-  } catch (err) {
-    await teardown();
-    throw new Error(friendlyError(err));
-  }
+  // 3. Connect in the background — the user is already being recorded.
+  void (async () => {
+    try {
+      const creds = await credentials;
+      mark("token ready");
+      if (stopped) return;
+      await room.connect(creds.url, creds.token);
+      if (stopped) return;
+      mark("room connected");
+      handlers.onStatus?.("connected");
+      await room.startAudio().catch(() => undefined);
+      await room.localParticipant.publishData(
+        new TextEncoder().encode(
+          JSON.stringify({
+            type: "session_init",
+            user: creds.user ?? input.user ?? {},
+            context: creds.context ?? input.context ?? {},
+          }),
+        ),
+        { reliable: true, topic: SESSION_INIT_TOPIC },
+      );
+      if (stopped) return;
+      await room.localParticipant.publishTrack(track, {
+        source: Track.Source.Microphone,
+        preConnectBuffer: true,
+      });
+      published = true;
+      mark("mic published");
+      handlers.onStatus?.("ready");
+    } catch (err) {
+      if (stopped) return;
+      const message = friendlyError(err);
+      await teardown();
+      handlers.onError?.(message);
+    }
+  })();
 
   return {
-    callSid: session.callSid,
     stop: teardown,
+    // Mute/unmute the local track: works before and after it is published.
     setMicEnabled: async (enabled: boolean) => {
       if (stopped) return;
       try {
-        await room.localParticipant.setMicrophoneEnabled(enabled);
+        if (enabled) await track.unmute();
+        else await track.mute();
       } catch (err) {
         const message = friendlyError(err);
         handlers.onError?.(message);
