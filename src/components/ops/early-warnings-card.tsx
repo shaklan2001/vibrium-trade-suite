@@ -7,6 +7,9 @@ import { friendlyMailboxError } from "@/lib/trade/mailboxHydrate";
 import type { EarlyWarning } from "@/lib/trade/earlyWarnings";
 import type { MailboxBookStatus } from "@/lib/trade/store";
 
+/** Warnings read from a specific email (they link to that email, not just the newest one). */
+const MAIL_KINDS = new Set(["reply_owed", "waiting_on_them", "approval_pending", "issue_open", "payment_unconfirmed"]);
+
 export function EarlyWarningBody({
   rows,
   status,
@@ -52,7 +55,7 @@ export function EarlyWarningBody({
               className="relative z-10 mt-1 inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:underline"
             >
               <Mail className="h-3 w-3" aria-hidden />
-              Open latest email
+              {MAIL_KINDS.has(row.kind) ? "Open the email" : "Open latest email"}
             </Link>
           ) : null}
         </div>

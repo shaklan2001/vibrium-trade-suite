@@ -849,6 +849,8 @@ export interface Deal {
   recordAsOf?: string;
   /** Has mail in a connected mailbox, so its emails open in the inbox (archive-only deals do not). */
   liveMail?: boolean;
+  /** Open items read from the deal's emails (src/lib/mail/mailSignals.ts): reply owed, approval pending… */
+  mailSignals?: import("@/lib/mail/mailSignals").MailSignal[];
   /** Copilot context only: payment-ledger lines for this deal's orders (src/lib/trade/copilot/paymentsContext.ts). */
   paymentNotes?: string[];
   /** Copilot context only: text excerpts of the deal's files (document layer). */

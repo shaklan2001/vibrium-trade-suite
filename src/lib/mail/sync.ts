@@ -17,8 +17,9 @@ import { buildDealPack, buildEvidence, dealContextNotes, type DealPack } from ".
 import { presign } from "./attachmentUrl";
 import { isBankStatementMail } from "./bankStatement";
 import { ensureDocText } from "./docStore";
+import { refreshSignals } from "./signalStore";
 import { ocrEnabled, processOcr, startOcr, wantsOcr } from "./ocr";
-import { paymentReaderId, paymentRowFor, processPayments, type PaymentRow } from "./paymentJobs";
+import { paymentReaderId, paymentRowFor, processPayments, queueNewPayments, type PaymentRow } from "./paymentJobs";
 import { parseRawMail, storeAttachment } from "./parse";
 import { isRdsProxyEnabled } from "@/lib/rdsProxy";
 import {
@@ -70,6 +71,8 @@ export type SyncResult = {
   errors?: number;
   remaining?: number;
   deals_touched?: number;
+  /** Deal keys that got new mail this run (mail-driven warnings are refreshed for these). */
+  touched_keys?: string[];
   error?: string;
 };
 
@@ -186,7 +189,7 @@ export async function syncConnection(
 
     const flush = async () => {
       if (payments.length && paymentReaderId()) {
-        await store.upsertPayments(payments.splice(0)).catch((err) => console.warn("[payments] queue failed", err));
+        await queueNewPayments(store, payments.splice(0)).catch((err) => console.warn("[payments] queue failed", err));
       }
       if (!pending.length) return;
       await store.insertMessages(pending);
@@ -328,7 +331,7 @@ export async function syncConnection(
       },
     };
     await store.saveConnection(next);
-    return { ...base, ...stats, deals_touched: touched.size };
+    return { ...base, ...stats, deals_touched: touched.size, touched_keys: [...touched] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const latest = (await store.getConnection(conn.id).catch(() => null)) || conn;
@@ -342,7 +345,7 @@ export async function syncConnection(
       .catch(() => undefined);
     // Messages already stored still deserve processing.
     await store.markJobsDirty([...touched]).catch(() => undefined);
-    return { ...base, ...stats, deals_touched: touched.size, error: message };
+    return { ...base, ...stats, deals_touched: touched.size, touched_keys: [...touched], error: message };
   } finally {
     await session?.close().catch(() => undefined);
     await store.releaseLock(conn.id).catch(() => undefined);
@@ -733,7 +736,17 @@ export async function runMailCycle(opts: {
     console.warn("[payments] round failed", err);
     return null;
   });
-  return { connections, jobs, documents, ocr, payments, job_counts: await store.jobCounts() };
+  // Mail-driven warnings: re-read open items on deals with new mail or a payment email just read.
+  const signalKeys = [...connections.flatMap((c) => c.touched_keys || []), ...(payments?.dealKeys || [])];
+  const signals = signalKeys.length
+    ? await refreshSignals(signalKeys, store).catch((err) => {
+        console.warn("[signals] refresh failed", err instanceof Error ? err.message : err);
+        return null;
+      })
+    : null;
+  // The key lists are internal; the cycle's response keeps the counts only.
+  const connectionsOut = connections.map((c) => ({ ...c, touched_keys: undefined }));
+  return { connections: connectionsOut, jobs, documents, ocr, payments, signals, job_counts: await store.jobCounts() };
 }
 
 /**

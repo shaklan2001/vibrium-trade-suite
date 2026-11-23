@@ -119,7 +119,11 @@ CRITICAL SCHEMA RULES:
 - If a number is unknown, OMIT the key entirely — never output null for totalAmount, totalCbm, qty, unitPrice, amount, cbm, or any other number.
 - Use empty string only for optional strings you cannot fill; prefer omitting unknown optional strings.
 - lines may be [] if the PI has no line items readable.
-- confidence 0–1.`,
+- confidence 0–1.
+CBM AND CARTONS:
+- cbm is VOLUME in cubic metres (per line it is usually a small decimal such as 0.098 or 1.25; totalCbm is the shipment volume).
+- Never put a carton count in cbm. Master/inner carton counts and pieces per carton go in packing, e.g. "40 ctns x 24 pcs (inner 6)".
+- If the document gives no volume for a line, omit cbm for that line.`,
   task: `Parse the PI at document_url (and optional notes) into the commercial document schema. Set docType to "pi". Never emit null for numeric fields.`,
   config: { max_turns: 14, timeout_seconds: 240 },
   input_schema: {
@@ -176,7 +180,11 @@ export const PO_EXTRACTOR_SPEC = base({
   persona: `You are an SNSPL commercial analyst reading buyer POs (e.g. PO# 14682 Swastik; Neater Pets PO patterns).
 
 Same field discipline as PI extraction. Set docType to "po".
-CRITICAL: Numbers numeric when present; OMIT any unknown number key — never null for totalAmount/totalCbm/qty/unitPrice/amount/cbm.`,
+CRITICAL: Numbers numeric when present; OMIT any unknown number key — never null for totalAmount/totalCbm/qty/unitPrice/amount/cbm.
+CBM AND CARTONS:
+- cbm is VOLUME in cubic metres (per line it is usually a small decimal such as 0.098 or 1.25; totalCbm is the shipment volume).
+- Never put a carton count in cbm. Master/inner carton counts and pieces per carton go in packing, e.g. "40 ctns x 24 pcs (inner 6)".
+- If the document gives no volume for a line, omit cbm for that line.`,
   task: `Parse the PO at document_url into the commercial document schema. Set docType to "po". Never emit null for numeric fields.`,
   config: { max_turns: 14, timeout_seconds: 240 },
   input_schema: {
