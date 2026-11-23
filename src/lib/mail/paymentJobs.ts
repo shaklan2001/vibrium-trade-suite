@@ -133,7 +133,7 @@ export async function finishPaymentRead(row: PaymentRow): Promise<PaymentRow | n
 
 /** One round: finish running reads, then start up to `limit` pending ones. */
 export async function processPayments(store: MailStore, opts: { deadline: number; limit?: number }) {
-  const out = { finished: 0, started: 0, failed: 0 };
+  const out = { finished: 0, started: 0, failed: 0, dealKeys: [] as string[] };
   if (!paymentReaderId()) return out;
   for (const row of await store.listPayments({ status: "running", limit: 50 })) {
     if (Date.now() > opts.deadline) return out;
@@ -142,6 +142,7 @@ export async function processPayments(store: MailStore, opts: { deadline: number
       if (done) {
         await store.upsertPayments([done]);
         out.finished += 1;
+        if (done.dealKey) out.dealKeys.push(done.dealKey);
       }
     } catch (err) {
       out.failed += 1;

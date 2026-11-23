@@ -1,4 +1,5 @@
 import { mapProcessedDeal, type ProcessedDealRow } from "./processedDealMapper";
+import type { MailSignal } from "@/lib/mail/mailSignals";
 import { enrichMailboxDeals } from "./enrichMailboxDeals";
 import { useTradeStore } from "./store";
 import { readBookSnapshot, writeBookSnapshot } from "./bookCache";
@@ -54,7 +55,7 @@ function isTradeRow(row: ProcessedDealRow): boolean {
 }
 
 /** Map raw rows to deals and replace the mailbox slice of the store. */
-function applyRows(rows: ProcessedDealRow[], liveIds: Set<string>): number {
+function applyRows(rows: ProcessedDealRow[], liveIds: Set<string>, signals?: SignalIndexPayload): number {
   const mapped = enrichMailboxDeals(
     rows
       .filter(isTradeRow)
@@ -64,10 +65,24 @@ function applyRows(rows: ProcessedDealRow[], liveIds: Set<string>): number {
   // Deals with mail in a connected mailbox: their emails open in the inbox.
   for (const d of mapped) {
     if (d.mailboxSourceId && liveIds.has(d.mailboxSourceId)) d.liveMail = true;
+    // Mail-driven warnings: open items read from the deal's emails.
+    const open = d.mailboxSourceId ? signals?.deals[d.mailboxSourceId]?.items : undefined;
+    if (open?.length) d.mailSignals = open;
   }
   // Real mailbox book replaces synthetic portfolio seeds.
   if (mapped.length > 0) useTradeStore.getState().mergeMailboxDeals(mapped);
   return mapped.length;
+}
+
+type SignalIndexPayload = { updatedAt: string; deals: Record<string, { items: MailSignal[] }> };
+
+async function fetchSignals(): Promise<SignalIndexPayload | undefined> {
+  try {
+    const r = await fetch("/api/mail/signals", { cache: "no-store" });
+    return r.ok ? ((await r.json()) as SignalIndexPayload) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function fetchLiveIds(): Promise<string[]> {
@@ -128,6 +143,7 @@ async function runHydrate(opts: HydrateOptions): Promise<MailboxHydrateResult> {
   let partialApplied = false;
   try {
     const livePromise = fetchLiveIds();
+    const signalsPromise = fetchSignals();
     const result = await fetchAllProcessedDeals<ProcessedDealRow>({
       fresh: opts.force,
       onFirstPage: (rows, total) => {
@@ -149,14 +165,14 @@ async function runHydrate(opts: HydrateOptions): Promise<MailboxHydrateResult> {
         }
       },
     });
-    const liveIds = await livePromise;
-    const signature = `${result.signature}:${hashString(liveIds.slice().sort().join(","))}`;
+    const [liveIds, signals] = await Promise.all([livePromise, signalsPromise]);
+    const signature = `${result.signature}:${hashString(liveIds.slice().sort().join(","))}:${signals?.updatedAt || ""}`;
     const failed = result.counts.byStatus?.failed;
     lastSpendUsd = Number(result.counts.spendUsd || 0);
 
     const changed = signature !== lastSignature;
     if (changed || opts.force || partialApplied) {
-      lastCount = applyRows(result.rows, new Set(liveIds));
+      lastCount = applyRows(result.rows, new Set(liveIds), signals);
       lastSignature = signature;
       void writeBookSnapshot({
         signature,

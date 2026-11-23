@@ -26,6 +26,11 @@ import { askCopilot } from "../src/lib/mail/replyAgent";
 import { getMailStore } from "../src/lib/mail/store";
 import type { InboxMessageRow } from "../src/lib/mail/types";
 import { tokens } from "../src/lib/mail/replyLearning";
+import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { docTextsFor, ensureDocText, type StoredFile } from "../src/lib/mail/docStore";
+import { digestFromIngestPath } from "../src/lib/trade/ingestFiles";
+import { getSignalIndex } from "../src/lib/mail/signalStore";
+import { DOC_TYPE_LABELS } from "../src/lib/mail/docText";
 import { getCopilotBook, type CopilotBook } from "../src/lib/trade/copilot/book";
 import { collectEarlyWarnings } from "../src/lib/trade/earlyWarnings";
 import { findDealByRef, shortDealHref } from "../src/lib/trade/dealLink";
@@ -36,6 +41,7 @@ const ONLY = new Set(
   (args.includes("--only") ? args[args.indexOf("--only") + 1] : "1,2,3,4,5,6,7,8").split(",").map(Number),
 );
 const REFRESH = args.includes("--refresh");
+/** "direct" runs the chat steps in-process (no app server needed). */
 const BASE = (process.env.COPILOT_BASE || "http://localhost:3000").replace(/\/$/, "");
 const DIR = path.join(process.cwd(), "data", "mail-criteria");
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -157,6 +163,8 @@ type Mail = {
   body: string;
   fresh: string;
   attachments: string[];
+  /** Stored files (for the document layer's text). */
+  files: StoredFile[];
   ours: boolean;
 };
 
@@ -201,7 +209,8 @@ async function loadMails(): Promise<{ mails: Mail[]; mailboxes: string[] }> {
             date: r.sent_at,
             body,
             fresh: freshText(body),
-            attachments: (r.attachments_json || []).map((a) => a.filename).filter(Boolean),
+            attachments: (r.attachments_json || []).map((a) => a.name).filter(Boolean),
+            files: ((r.attachments_json || []) as StoredFile[]).filter((a) => a.sha256 && a.s3_key && !a.inline),
             ours: OURS.test(from),
           });
         }
@@ -385,11 +394,28 @@ async function criterion2(mails: Mail[], book: CopilotBook) {
       const deal = book.byId.get(dealKey)!;
       const facts = factsOf(deal.agentResult).filter((f) => !/^0+(\.0+)?$/.test(f.value));
       if (!facts.length) return { dealKey, code: deal.code, slot: deal.mailboxSlot || null, facts: [] as FactCheck[] };
-      const text = dm.map((m) => `${m.subject}\n${m.fresh}`).join("\n");
+      // Document layer: the checker also sees the text of the deal's attachments (POs, PIs, invoices…).
+      // The file the agent read comes first: figures are checked against their own source, not a
+      // later partial-shipment invoice or packing list that legitimately shows smaller quantities.
+      const sourceName = (deal.documents[0]?.name || "").toLowerCase();
+      const allFiles = [...dm].reverse().flatMap((m) => m.files);
+      const ordered = [...allFiles.filter((f) => f.name.toLowerCase() === sourceName), ...allFiles.filter((f) => f.name.toLowerCase() !== sourceName)];
+      // The source file may sit only in the deal's records (not in a listed thread): read it from there.
+      if (sourceName && !ordered.some((f) => f.name.toLowerCase() === sourceName)) {
+        const src = await sourceFileFor(dealKey, deal.documents[0]!.name).catch(() => null);
+        if (src) ordered.unshift(src);
+      }
+      if (ordered[0] && ordered[0].name.toLowerCase() === sourceName) await ensureDocText(ordered[0]).catch(() => null);
+      const docs = await docTextsFor(ordered, 6).catch(() => []);
+      const docText = docs.map((d) => `[${DOC_TYPE_LABELS[d.docType]}] ${d.name}\n${d.text.slice(0, 2500)}`).join("\n\n");
+      const text = [...dm.map((m) => `${m.subject}\n${m.fresh}`), docText].join("\n");
       const ai = await askJson<{ n: number; verdict: string; correct_value?: string }[]>(
         [
-          "A stage agent extracted these figures from a trade deal's emails and attached documents. Check each one against the emails below.",
-          'For each figure return verdict "correct" (the emails support it), "wrong" (the emails show a different value for the same thing; give correct_value), or "not_in_mails" (the emails do not mention it; it may come from an attachment).',
+          "A stage agent extracted these figures from a trade deal's emails and attached documents. Check each one against the emails and the attached documents below.",
+          sourceName
+            ? `The figures were extracted from the file "${deal.documents[0]!.name}". Check them against THAT file first. Other files (a commercial invoice or packing list for one shipment, a revised PO) can legitimately show different quantities or amounts: only mark a figure wrong if the source file itself, or a later correction for the same document, shows a different value.`
+            : "",
+          'For each figure return verdict "correct" (the emails or documents support it), "wrong" (they show a different value for the same thing; give correct_value), or "not_in_mails" (neither the emails nor the documents below mention it).',
           'Return a JSON array [{"n": <number>, "verdict": "...", "correct_value": "..."}].',
           "",
           "FIGURES:",
@@ -397,19 +423,19 @@ async function criterion2(mails: Mail[], book: CopilotBook) {
           "",
           "EMAILS:",
           dealMailText(dm, 14, 900),
+          ...(docText ? ["", "ATTACHED DOCUMENTS (text read from the files):", docText] : []),
         ].join("\n"),
         "c2",
       );
       const checks: FactCheck[] = facts.map((f, i) => {
         const a = Array.isArray(ai) ? ai.find((x) => Number(x.n) === i + 1) : undefined;
-        return {
-          ...f,
-          literal: inText(f.value, text),
-          verdict: (a?.verdict as FactCheck["verdict"]) || null,
-          correct: a?.correct_value ? String(a.correct_value) : null,
-        };
+        let verdict = (a?.verdict as FactCheck["verdict"]) || null;
+        const correct = a?.correct_value ? String(a.correct_value) : null;
+        // The file shows a rounded value (2.78) where the extract kept full precision (2.7756): same figure.
+        if (verdict === "wrong" && sameNumber(f.value, correct)) verdict = "correct";
+        return { ...f, literal: inText(f.value, text), verdict, correct };
       });
-      return { dealKey, code: deal.code, slot: deal.mailboxSlot || null, facts: checks };
+      return { dealKey, code: deal.code, slot: deal.mailboxSlot || null, facts: checks, docs: docs.length };
     }),
   );
   const all = rows.flatMap((r) => r.facts);
@@ -437,6 +463,28 @@ async function criterion2(mails: Mail[], book: CopilotBook) {
     rows,
   };
 }
+/** The stored file a deal's main extract was read from (from its evidence), for the checker. */
+async function sourceFileFor(dealKey: string, name: string): Promise<StoredFile | null> {
+  const row = await getMailStore().getProcessedDeal(dealKey);
+  const raw = row?.evidence_json as unknown;
+  const ev = (typeof raw === "string" ? JSON.parse(raw) : raw) as { messages?: { attachments?: { name?: string; path?: string }[] }[] } | null;
+  const att = (ev?.messages || []).flatMap((m) => m.attachments || []).find((a) => a.name === name);
+  const sha = digestFromIngestPath(att?.path);
+  if (!sha) return null;
+  const s3 = new S3Client({ region: process.env.AWS_REGION || "ap-south-1" });
+  const list = await s3.send(new ListObjectsV2Command({ Bucket: process.env.AWS_S3_BUCKET!, Prefix: `${process.env.AWS_S3_PREFIX}/${sha}`, MaxKeys: 2 }));
+  const key = list.Contents?.find((o) => o.Key && !o.Key.endsWith("/"))?.Key;
+  return key ? { name, sha256: sha, s3_key: key } : null;
+}
+
+/** Two figures that differ only by rounding (within 1%, or 0.015 for small values). */
+function sameNumber(a: string | null, b: string | null) {
+  const x = Number(String(a ?? "").replace(/[^\d.-]/g, ""));
+  const y = Number(String(b ?? "").replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !String(b ?? "").match(/\d/)) return false;
+  return Math.abs(x - y) <= Math.max(0.015, 0.01 * Math.max(Math.abs(x), Math.abs(y)));
+}
+
 type FactCheck = { path: string; value: string; literal: boolean; verdict: "correct" | "wrong" | "not_in_mails" | null; correct: string | null };
 
 function groupDeals(mails: Mail[]) {
@@ -518,7 +566,12 @@ function summaryOf(c: { dealKey: string; context: Mail[]; actual: Mail[] }) {
 
 async function criterion4(mails: Mail[], book: CopilotBook) {
   const byDeal = groupDeals(mails);
-  const deals = [...byDeal.keys()].map((k) => book.byId.get(k)).filter((d): d is Deal => Boolean(d));
+  // Mail-driven warnings: the open items read from each deal's emails (src/lib/mail/signalStore.ts).
+  const signals = await getSignalIndex().catch(() => ({ updatedAt: "", deals: {} as Record<string, { items: Deal["mailSignals"] }> }));
+  const deals = [...byDeal.keys()]
+    .map((k) => book.byId.get(k))
+    .filter((d): d is Deal => Boolean(d))
+    .map((d) => ({ ...d, mailSignals: d.mailboxSourceId ? signals.deals[d.mailboxSourceId]?.items : undefined }));
   const uniq = [...new Map(deals.map((d) => [d.id, d])).values()];
   const warnings = collectEarlyWarnings(uniq).filter((w) => w.dealId);
   const mailsOf = (d: Deal) => byDeal.get(d.mailboxSourceId || d.id) || [];
@@ -599,7 +652,17 @@ async function criterion5(mails: Mail[], book: CopilotBook) {
       const q = "What decision do we need to take on this order right now? Give me the reason and link me to the emails it is based on.";
       let answer = "";
       let status = 0;
-      try {
+      if (BASE === "direct") {
+        // Same steps as /api/chat (deal context, then the Copilot bot) without a running app.
+        try {
+          const { buildGroundedChatMessage } = await import("../src/lib/trade/copilotGrounding");
+          const grounded = await buildGroundedChatMessage(q, { focusDealId: deal.id, activeDealIds: [deal.id] });
+          answer = await askCopilot(grounded.message.slice(0, 16000), "mail-criteria-c5", 120_000);
+          status = 200;
+        } catch (err) {
+          answer = `error: ${String(err)}`;
+        }
+      } else try {
         const res = await fetch(`${BASE}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

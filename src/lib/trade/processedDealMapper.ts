@@ -686,14 +686,23 @@ function commercialFrom(
   const lines = Array.isArray(result.lines)
     ? result.lines.map((line) => {
         const item = asRecord(line);
+        const qty = num(item.qty);
+        let cbm = num(item.cbm);
+        let packing = str(item.packing);
+        // Extractors sometimes put the master-carton count in cbm (960 pcs, "cbm" 40 = 40 ctns x 24).
+        const cartons = cartonCountInCbm(qty, cbm);
+        if (cartons) {
+          cbm = undefined;
+          packing = packing ? `${packing}; ${cartons} ctns` : `${cartons} ctns x ${qty! / cartons} pcs`;
+        }
         return {
           description: str(item.description),
-          qty: num(item.qty),
+          qty,
           unitPrice: num(item.unitPrice),
           amount: num(item.amount),
           itemCode: str(item.itemCode),
-          cbm: num(item.cbm),
-          packing: str(item.packing),
+          cbm,
+          packing,
         };
       })
     : [];
@@ -856,6 +865,15 @@ function applyCommercialDocs(
     factoryTotalUsd: factory?.usd,
     freightOnly: !buyer && !factory && Boolean(freight),
   };
+}
+
+/** Pieces per carton that real packs use; a "cbm" dividing the quantity into one of these is a carton count. */
+const PACK_SIZES = new Set([2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 18, 20, 24, 25, 30, 32, 36, 40, 48, 50, 60, 72, 96, 100, 120, 144, 200, 240, 288]);
+
+/** The carton count when a line's cbm is really "number of master cartons", else null. */
+export function cartonCountInCbm(qty: number | undefined, cbm: number | undefined): number | null {
+  if (!qty || !cbm || !Number.isInteger(cbm) || cbm < 2 || qty % cbm !== 0) return null;
+  return PACK_SIZES.has(qty / cbm) ? cbm : null;
 }
 
 export function mapProcessedDeal(
