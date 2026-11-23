@@ -1,13 +1,16 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans } from "next/font/google";
+import localFont from "next/font/local";
 import Script from "next/script";
 import { Toaster } from "sonner";
 import { SITE_URL } from "@/lib/legal";
 import "./globals.css";
 
-const jakarta = Plus_Jakarta_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
+// Self-hosted. next/font/google fetches Plus Jakarta Sans during `next build`,
+// and that fetch is what fails the Vercel webpack build.
+const jakarta = localFont({
+  src: "../fonts/plus-jakarta-sans.woff2",
+  weight: "200 800",
+  display: "swap",
   variable: "--font-jakarta",
 });
 
