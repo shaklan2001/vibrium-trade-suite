@@ -12,7 +12,18 @@ const NOISE_SUBJECT =
 const NOISE_SENDER = /no-?reply|noreply|mailer-daemon|postmaster|notification/i;
 const QUOTE_BODY_LIMIT = 20_000;
 const QUOTE_START =
-  /^(?:On [^\n]{5,240}wrote:|From:[^\n]{0,200}\n[^\n]{0,40}Sent:|-----Original Message-----|_{5,}|Get Outlook for (?:Android|iOS)|El [^\n]{0,180}escribi[oó]:|>.*)/im;
+  /^[ \t]*(?:On [^\n]{5,240}(?:\n[^\n]{0,160})?wrote:|From:[^\n]{0,200}\n(?:[^\n]{0,160}\n)?[ \t]*(?:Sent|Date):|From:[^\n]{0,200}@[^\n]{0,120}\n[ \t]*To:|From:[^\n]{1,160}\sSent:\s|-----Original Message-----|_{5,}|Get Outlook for (?:Android|iOS)|El [^\n]{0,180}escribi[oó]:|>.*)/im;
+/** A reply header glued to the end of a signature line ("…GROUP LTDFrom: Narsi <n@x.com>" then "Sent:"). */
+const GLUED_HEADER = /From:[ \t][^\n]{0,200}@[^\n]{0,120}\n(?:[^\n]{0,160}\n)?[ \t]*(?:Sent|Date):/i;
+
+/** Where the quoted thread starts in `text` at or after `from`, or -1. */
+function quoteStart(text: string, from = 0): number {
+  const part = text.slice(from);
+  const a = QUOTE_START.exec(part)?.index ?? -1;
+  const b = GLUED_HEADER.exec(part)?.index ?? -1;
+  const i = a < 0 ? b : b < 0 ? a : Math.min(a, b);
+  return i < 0 ? -1 : from + i;
+}
 
 export function parse<T>(value: unknown, fallback: T): T {
   if (value == null) return fallback;
@@ -32,11 +43,17 @@ function clipBody(text: string) {
 
 export function freshText(body: string, subject = "") {
   const text = (body || "").replace(/\r/g, "").slice(0, QUOTE_BODY_LIMIT);
-  const m = QUOTE_START.exec(text);
-  const fresh = (m ? text.slice(0, m.index) : text).replace(/\n\s*\n\s*\n+/g, "\n\n").trim();
-  // A forward that is only "FYI" plus the original: the original is the message.
+  const start = quoteStart(text);
+  const fresh = (start >= 0 ? text.slice(0, start) : text).replace(/\n\s*\n\s*\n+/g, "\n\n").trim();
+  // A forward that is only "FYI" plus the original: the original is the message, but not the
+  // older thread quoted under it.
   const forwarded = /(?:^|\s)(?:fw|fwd):/i.test(subject);
-  if (forwarded && fresh.length < 40 && m) return clipBody(text.trim());
+  if (forwarded && fresh.length < 40 && start >= 0) {
+    const headerEnd = text.indexOf("\n\n", start);
+    const older = headerEnd >= 0 ? quoteStart(text, headerEnd) : -1;
+    const kept = older >= 0 ? text.slice(0, older) : text;
+    return clipBody(kept.replace(/\n\s*\n\s*\n+/g, "\n\n").trim());
+  }
   const out = fresh || text.trim();
   return clipBody(out);
 }

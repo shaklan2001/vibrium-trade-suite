@@ -61,4 +61,18 @@ test("a later booking confirmation closes the approval warning", () => {
   assert.equal(rows.some((r) => r.kind === "approval_pending"), false);
 });
 
+test("quoted history: indented, glued, Date/To headers and forwards are cut; the new message stays", () => {
+  const yahoo = "Dear Mam, thanks for the new PO.\nTanuj\n\n    On Monday, September 14, 2026 at 03:20:22 PM GMT+5:30, kalpana@snspl.in <kalpana@snspl.in> wrote:  \n\nDear Tanuj Ji, old text";
+  assert.equal(freshText(yahoo, "Re: PO"), "Dear Mam, thanks for the new PO.\nTanuj");
+  const glued = "Hope you understand now.\n\nBest regards,\nKalpana\n\nBUFFALO JFP GROUP LTDFrom: Narsi Rajput <narsi@icl-india.com> \nSent: 17 September 2026 11:01\nTo: nimisha@snspl.in\nold";
+  assert.ok(!/From:/.test(freshText(glued, "RE: shipment")));
+  const fromTo = "Kindly confirm once received.\n\nFrom:  <swinder@snspl.in>\nTo: radha@snspl.in\nCc: x\nold thread";
+  assert.equal(freshText(fromTo, "Re: Cost"), "Kindly confirm once received.");
+  const route = "Rates below.\nFrom: Delhi\nTo: Moradabad\nUSD 3.75/KG";
+  assert.ok(freshText(route, "Rates").includes("Moradabad"));
+  const fw = "FYI\n\nFrom: Buyer <b@x.com>\nSent: 1 Nov 2026\nTo: us@snspl.in\nSubject: PO 0031\n\nPlease find PO 0031 attached, 500 pcs.\n\nFrom: Us <us@snspl.in>\nSent: 30 Oct 2026\nTo: b@x.com\nolder history";
+  const kept = freshText(fw, "Fwd: Purchase Order PO-0031");
+  assert.ok(kept.includes("Please find PO 0031 attached") && !kept.includes("older history"));
+});
+
 console.log(`\n${passed} passed`);

@@ -776,7 +776,16 @@ async function criterion6(mails: Mail[]) {
   // Incoming: does the fresh text the agents read still carry quoted history?
   const QUOTED = /^\s*(>|from:\s|sent:\s|-{3,}\s*original message|on .{5,160} wrote:)/im;
   const withHistory = mails.filter((m) => /\n\s*(from:|on .{5,160} wrote:|-{3,}\s*original)/i.test(m.body));
-  const leaked = withHistory.filter((m) => QUOTED.test(m.fresh));
+  // A forward keeps the forwarded message on purpose; only history quoted under it counts as leaked.
+  const isForward = (m: Mail) => /^\s*(fw|fwd)\s*:/i.test(m.subject);
+  const probe = (m: Mail) => {
+    if (!isForward(m)) return m.fresh;
+    const i = m.fresh.search(QUOTED);
+    if (i < 0) return m.fresh;
+    const end = m.fresh.indexOf("\n\n", i);
+    return end >= 0 ? m.fresh.slice(0, i) + m.fresh.slice(end) : m.fresh.slice(0, i);
+  };
+  const leaked = withHistory.filter((m) => QUOTED.test(probe(m)));
   const emptied = mails.filter((m) => m.body.trim().length > 40 && m.fresh.trim().length < 10);
 
   // Outgoing: Copilot reply drafts on these mailboxes (latest backtest run on --source mailboxes, live prompt v2).
