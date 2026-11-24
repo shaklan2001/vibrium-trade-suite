@@ -397,14 +397,53 @@ function statedBuyerSplit(deal: Deal): StatedSplit | null {
   return { advance, balance, blDeferred };
 }
 
-/** Deal Board id for a processed_deals row id (po:…, topic:…). */
+export const SLUG_ID_MAX = 100;
+
+function fnv1a32Hex(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Deal Board id for a processed_deals row id (po:…, topic:…).
+ *
+ * Slugs up to SLUG_ID_MAX chars are used as-is, so existing links keep working.
+ * Longer slugs keep their first SLUG_ID_MAX chars plus a hash of the full row
+ * id; two long topic ids that differ only near the end would otherwise get
+ * the same deal id. `findDealByRef` still resolves the old truncated form.
+ *
+ * The slug also folds punctuation ("prd # 13" and "prd#13" both become
+ * "prd_13"); `uniqueDealIds` separates those once the whole book is mapped.
+ */
 export function slugId(id: string) {
   const slug = id
     .replace(/[^a-zA-Z0-9._-]+/g, "_")
     .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "")
-    .slice(0, 100);
-  return `mb-${slug || "deal"}`;
+    .replace(/^_|_$/g, "");
+  if (slug.length <= SLUG_ID_MAX) return `mb-${slug || "deal"}`;
+  return `mb-${slug.slice(0, SLUG_ID_MAX)}-${fnv1a32Hex(id)}`;
+}
+
+/**
+ * Give every deal in a mapped book its own id. Deals whose slugged ids clash
+ * (row ids differing only in punctuation or spacing) all get
+ * `<id>-<hash of row id>`, so the result does not depend on row order and
+ * deals that clash with nothing keep their plain id. Run it on the full book,
+ * before anything keys deals by id.
+ */
+export function uniqueDealIds<T extends Pick<Deal, "id" | "mailboxSourceId">>(deals: T[]): T[] {
+  const count = new Map<string, number>();
+  for (const d of deals) count.set(d.id, (count.get(d.id) || 0) + 1);
+  for (const d of deals) {
+    if ((count.get(d.id) || 0) > 1 && d.mailboxSourceId) {
+      d.id = `${d.id}-${fnv1a32Hex(d.mailboxSourceId)}`;
+    }
+  }
+  return deals;
 }
 
 function dealCode(
