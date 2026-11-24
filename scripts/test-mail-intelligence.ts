@@ -195,4 +195,21 @@ test("PO check: US$ and USD are the same currency; a missing total is a data gap
   assert.ok(poSanity(poDoc({ totalAmount: undefined })).every((i) => i.field !== "totalAmount" || i.gap === true));
 });
 
+test("product search: plurals, verb forms, product families and listed items are found; one generic word is not enough", () => {
+  const doc = (lines: { description: string; unitPrice: number }[], factory: string) => ({ docType: "pi", side: "factory", factory, currency: "USD", sentAt: "2026-01-08", lines }) as never;
+  const deals = [
+    { id: "a", code: "A", commercialDocs: [doc([{ description: "Rawhide twisted stick White bones 4-5", unitPrice: 0.5 }, { description: "100PK Color Munchy Sticks", unitPrice: 1.16 }], "Allanasons")] },
+    { id: "b", code: "B", commercialDocs: [doc([{ description: "Early Bird Cat Scratcher", unitPrice: 0.84 }, { description: "8PCS SHALLOW STOCK POT SET W/RIVETTED HANDLE", unitPrice: 28.66 }, { description: "Glass lid for Multi-use canner", unitPrice: 2 }], "R.S. Paper")] },
+  ] as unknown as Deal[];
+  const idx = buildProductIndex(deals);
+  const found = (q: string) => searchProducts(idx, q, { before: "2026-12-01" }).hits.map((h) => h.line.description);
+  assert.ok(found("cat scratching pad").includes("Early Bird Cat Scratcher"));
+  assert.ok(found("stock pot style with 2 handles and a knob")[0]!.includes("STOCK POT"));
+  assert.ok(found("17 pc cookware")[0]!.includes("STOCK POT"));
+  const dog = found("items that a dog can eat, including rawhide, body parts, munchy, or other edible dog products");
+  assert.ok(dog.some((d) => d.startsWith("Rawhide")) && dog.some((d) => d.includes("Munchy")));
+  assert.deepEqual(found("multi pack rawhide"), ["Rawhide twisted stick White bones 4-5"]);
+  assert.deepEqual(found("products discussed"), []);
+});
+
 console.log(`\n${passed} passed`);
