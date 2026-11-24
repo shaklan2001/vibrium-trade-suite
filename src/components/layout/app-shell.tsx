@@ -24,6 +24,7 @@ import {
 import { MailboxHydrator } from "@/components/layout/mailbox-hydrator";
 import { Select } from "@/components/ui/select";
 import { MailAutoSync } from "@/components/layout/mail-auto-sync";
+import { NotificationBell } from "@/components/layout/notification-bell";
 import { useTradeStore } from "@/lib/trade/store";
 import {
   COMMERCIAL_MODEL_OPTIONS,
@@ -602,6 +603,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
               <CommercialModelToggle />
               <CurrencyToggle />
               <MailAutoSync />
+              <NotificationBell />
               <MailboxHydrator />
               <button
                 className="search-trigger"

@@ -14,6 +14,13 @@ import { withMailTrail } from "@/lib/trade/copilot/mailTrail";
 import { getPaymentLedger, paymentLines } from "@/lib/trade/copilot/paymentsContext";
 import { parseCopilotQuery, type CopilotQuery } from "@/lib/trade/copilot/query";
 import { retrieveForQuery, type Retrieval } from "@/lib/trade/copilot/retrieve";
+import { noteTextsFor } from "@/lib/mail/dealRecords";
+import type { NextActionState } from "@/lib/mail/nextAction";
+import { getMailStore, mailStoreConfigured } from "@/lib/mail/store";
+import { productHistoryLines } from "@/lib/trade/productHistory";
+import { searchProductHistory } from "@/lib/trade/productIndexStore";
+import { dealSailing, sailingLabel } from "@/lib/trade/sailing";
+import type { Deal } from "@/types/trade";
 
 const USER_MSG_MAX = 2_000;
 
@@ -70,11 +77,14 @@ export async function buildGroundedChatMessage(
       retrieval.deals.slice(0, 4).map(async (d) => {
         const withMail = await withMailTrail(d);
         const notes = ledger ? paymentLines(ledger, d) : [];
-        return notes.length ? { ...withMail, paymentNotes: notes } : withMail;
+        const extra = await dealExtraNotes(d);
+        const merged = { ...withMail, ...(extra.length ? { extraNotes: extra } : {}) };
+        return notes.length ? { ...merged, paymentNotes: notes } : merged;
       }),
     );
     retrieval.deals = [...head, ...retrieval.deals.slice(4)];
   }
+  const productBlock = retrieval.mode === "deal" ? "" : await productHistoryBlock(question);
   const block = buildContextBlock(query, retrieval, {
     bookFilterLabel: BOOK_LABEL[query.model || opts.bookFilter || "all"],
   });
@@ -89,6 +99,42 @@ export async function buildGroundedChatMessage(
       title: d.title.slice(0, 80),
       href: dealHref(d),
     })),
-    message: `${question}\n\n${block}`,
+    message: `${question}\n\n${block}${productBlock}`,
   };
+}
+
+const PRODUCT_QUESTION = /\b(price|prices|pricing|quote|quotation|vendor|vendors|supplier|suppliers|who (makes|supplies|made)|last (price|cost|rate)|rate for|cost of)\b/i;
+
+/** Vendors and last prices for a product question, from every PO / PI line in the book. */
+async function productHistoryBlock(question: string): Promise<string> {
+  if (!PRODUCT_QUESTION.test(question)) return "";
+  try {
+    const found = await searchProductHistory(question, 8);
+    const lines = productHistoryLines(found);
+    return lines.length ? `\n\nPRODUCT HISTORY (from PO / PI lines in the book; cite the deal codes):\n${lines.map((l) => `- ${l}`).join("\n")}` : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Team notes, the agent's next step and the agreed vs actual sailing date for one deal. */
+async function dealExtraNotes(d: Deal): Promise<string[]> {
+  const out: string[] = [];
+  const key = d.mailboxSourceId || d.id;
+  try {
+    if (mailStoreConfigured()) {
+      const store = getMailStore();
+      for (const n of await noteTextsFor(store, key, 5)) out.push(`- Team note ${n}`);
+      const [rec] = await store.listRecords({ kind: "next_action", dealKey: key, limit: 1 });
+      const state = rec?.data as unknown as NextActionState | undefined;
+      if (state?.status === "done" && state.result) {
+        out.push(`- Suggested next step (agent, read ${state.readAt?.slice(0, 10) || "recently"}): ${state.result.action}${state.result.owner ? ` — ${state.result.owner}` : ""}`);
+      }
+    }
+  } catch {
+    /* notes and next step are extras */
+  }
+  const label = sailingLabel(dealSailing(d));
+  if (label) out.push(`- Delivery: ${label}`);
+  return out;
 }

@@ -102,7 +102,7 @@ const PUBLIC_MAIL_DOMAINS = new Set([
 ]);
 
 const FREIGHT_RE =
-  /\b(1\s*x\s*40|1\s*x\s*20|40['’]?\s*hc|20['’]?\s*gp|\bh\/?bl\b|\bm\/?bl\b|bl draft|container|vgm|etd|eta\b|sailing|nhava\s*sheva|navasheva|mundra|forwarder|shipping bill|gated in|si submitted|cnee|shipper:|consignee|bill of lading|telex release|bkgconf|ocean freight|pol\b|pod\b)\b/i;
+  /\b(1\s*x\s*\*?\s*40|1\s*x\s*\*?\s*20|40['’]?\s*hc|20['’]?\s*gp|\bh\/?bl\b|\bm\/?bl\b|\bbl\b|bl draft|container|vgm|etd|eta\b|sailing|nhava\s*sheva|navasheva|mundra|forwarder|shipping bill|gated in|si submitted|cnee|shipper:|consignee|bill of lading|telex release|bkgconf|ocean freight|pol\b|pod\b|awb|airway bill|hawb|mawb|obl|surrender(?:ed)? (?:letter|bl|hbl)|bkg ref|booking ref|booking (?:confirmation|update)|sob|shipped on board|fcr|cut-?off|carting|stuffing|cntr|vessel|do-?\d+|delivery order)\b/i;
 const PO_RE = /\bpo[#\s:-]*([a-z]?\s?\d[\dA-Za-z/-]{2,})/i;
 const BOOKING_ID_RE = /\b(?:bkg|ebkg|bkgconf)[#\s:_-]*([A-Z0-9]{6,})\b/i;
 const RFQ_RE =
@@ -112,7 +112,8 @@ const PI_RE = /\b(proforma|\bpi\b|purchase order)\b/i;
 const SAMPLE_RE = /\b(sample|proto|strike off|lab dip)\b/i;
 const ARTWORK_RE = /\b(artwork|dieline|print file)\b/i;
 const QC_RE = /\b(inspection|qc\b|aql)\b/i;
-const PAY_RE = /\b(payment|remittance|\btt\b|\blc\b|outstanding|payment remitted)\b/i;
+const PAY_RE =
+  /\b(?:payment request|request(?:ing)? payment|tt copy|proof of payment|debit advice|credit advice|invoice due|payment advice|payment reminder|payment pending|payment remitted|payment|payemnt|remittance|outstanding|dues|swift|utr)\b|\bt\s*\/\s*t\b|\btt\b|\blc\b|\bmt ?103\b|advice of (?:debit|credit)/i;
 export const COMMISSION_RE =
   /\b(commission\s+invoice|agency\s+commission|qtr\s+commission)\b/i;
 const RE_PREFIX = /^(re|fw|fwd|aw|sv):\s*/i;
@@ -154,6 +155,12 @@ function domainOf(email: string) {
   return at >= 0 ? email.slice(at + 1) : "";
 }
 
+/** Roles learned from the deal book (learnedRoles.ts); filled by ensureLearnedRoles(). */
+let learnedRoles: Record<string, PartyRole> = {};
+export function setLearnedRoles(roles: Record<string, PartyRole>) {
+  learnedRoles = roles;
+}
+
 export function partyRole(email: string | null | undefined, ctx: ClassifyContext = {}): PartyRole {
   const em = (email || "").toLowerCase().trim();
   if (!em) return "other";
@@ -172,7 +179,7 @@ export function partyRole(email: string | null | undefined, ctx: ClassifyContext
   if (hit(em, [...FORWARDER_DOMAINS, ...extraDomains("MAIL_EXTRA_FORWARDER_DOMAINS")]))
     return "forwarder";
   if (hit(em, NOISE_DOMAINS)) return "noise";
-  return "other";
+  return learnedRoles[domainOf(em)] || "other";
 }
 
 export function isNoiseMessage(
@@ -224,15 +231,28 @@ export function dealKeyFor(subject: string | null | undefined, fallbackId: strin
   return `id:${fallbackId}`;
 }
 
+const STAGE_BODY_LIMIT = 1500;
+const OPENING_LINE_COUNT = 8;
+const OPENING_CHAR_LIMIT = 800;
+
+/** Subject plus the first lines — payment asks live here, not deep in a quoted thread. */
+function openingText(subject: string, body: string): string {
+  const head = body.split(/\r?\n/).slice(0, OPENING_LINE_COUNT).join("\n");
+  return `${subject}\n${head}`.slice(0, OPENING_CHAR_LIMIT);
+}
+
 export function stageOf(subject: string, body: string): string {
-  const text = `${subject} ${body.slice(0, 1500)}`;
+  const safeSubject = subject.slice(0, 500);
+  const safeBody = body.slice(0, STAGE_BODY_LIMIT);
+  const text = `${safeSubject} ${safeBody}`;
   if (COMMISSION_RE.test(text)) return "commission";
-  const freight = FREIGHT_RE.test(text);
-  if (freight) return "booking";
+  // A shipment mail that asks for payment is a payment request, even with a PO number.
+  if (PAY_RE.test(openingText(safeSubject, safeBody))) return "payment";
+  if (FREIGHT_RE.test(text)) return "booking";
   if (SAMPLE_RE.test(text)) return "samples";
   if (ARTWORK_RE.test(text)) return "artwork";
   if (QC_RE.test(text)) return "inspection";
-  if (PI_RE.test(text) || poKey(subject)) return "pi_po";
+  if (PI_RE.test(text) || poKey(safeSubject)) return "pi_po";
   if (QUOTE_RE.test(text)) return "quoting";
   if (RFQ_RE.test(text)) return "requirement";
   if (PAY_RE.test(text)) return "payment";

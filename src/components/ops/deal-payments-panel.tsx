@@ -190,6 +190,14 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
                     <span className="font-mono">{formatDocMoney(d.totalAmount, d.currency)}</span>
                   ) : null}
                   {d.sentAt ? <span className="text-zinc-400">{d.sentAt.slice(0, 10)}</span> : null}
+                  {d.verification?.unverified.length ? (
+                    <span
+                      className="text-amber-700"
+                      title={`Not found in the file: ${d.verification.unverified.slice(0, 8).join(", ")}`}
+                    >
+                      {d.verification.unverified.length} not found in file
+                    </span>
+                  ) : null}
                 </li>
               ))}
             </ul>

@@ -42,11 +42,32 @@ function loadEntries() {
   return entriesPromise;
 }
 
+type BankLine = { id: string; date: string; kind: string; amountInr: number; pos: string[]; invoiceNo: string | null };
+
+/** Bank statement trade lines, fetched once per page load (empty when none were read). */
+let bankPromise: Promise<BankLine[]> | null = null;
+function loadBankLines() {
+  bankPromise ||= fetch("/api/payments/bank-lines", { cache: "no-store" })
+    .then((r) => (r.ok ? (r.json() as Promise<{ lines: BankLine[] }>) : { lines: [] }))
+    .then((b) => b.lines || [])
+    .catch(() => []);
+  return bankPromise;
+}
+
 /** Paid vs PO value per order, reconciled from the payment emails (Payment Reader ledger). */
 export function DealPaymentLedger({ deal }: { deal: Deal }) {
   const deals = useTradeStore((s) => s.deals);
   const [entries, setEntries] = useState<PaymentEntry[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const [bank, setBank] = useState<BankLine[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    void loadBankLines().then((l) => alive && setBank(l));
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -105,6 +126,15 @@ export function DealPaymentLedger({ deal }: { deal: Deal }) {
                   </div>
                 </dl>
                 <ul className="mt-2 space-y-1">
+                  {bank
+                    .filter((b) => b.pos.some((p) => p.toUpperCase().replace(/[^A-Z0-9]/g, "") === o.po.toUpperCase().replace(/[^A-Z0-9]/g, "")))
+                    .map((b) => (
+                      <li key={`bank-${b.id}`} className="flex flex-wrap items-center gap-x-2 text-xs text-emerald-800">
+                        <span className="w-20 shrink-0 tabular-nums">{b.date}</span>
+                        <span className="font-medium">Confirmed in bank INR {Math.abs(b.amountInr).toLocaleString("en-IN")}</span>
+                        {b.invoiceNo ? <span>· commission invoice {b.invoiceNo}</span> : null}
+                      </li>
+                    ))}
                   {o.lines.map((l) => (
                     <li key={`${l.entryId}-${o.po}`} className="flex flex-wrap items-center gap-x-2 text-xs text-zinc-600">
                       <span className="w-20 shrink-0 tabular-nums text-zinc-500">{l.date}</span>

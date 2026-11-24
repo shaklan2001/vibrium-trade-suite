@@ -9,6 +9,7 @@ import { LoadingBlock, ListSkeleton } from "@/components/ui/loading-block";
 import { PaginationBar } from "@/components/ui/pagination";
 import { SyncNowButton } from "@/components/mail/sync-now-button";
 import { Select } from "@/components/ui/select";
+import { preferredStage } from "@/lib/mail/agentStage";
 import { fetchAllProcessedDeals } from "@/lib/trade/processedDealsClient";
 
 type ProcessedDeal = {
@@ -433,7 +434,14 @@ export default function MailboxPage() {
                             </div>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <Badge>{stageLabel(deal.primary_stage)}</Badge>
+                            <Badge>
+                              {stageLabel(
+                                preferredStage(deal.primary_stage || "other", {
+                                  slot: deal.slot,
+                                  confidence: deal.confidence,
+                                }),
+                              )}
+                            </Badge>
                             <Badge tone={statusTone(deal.status)}>
                               {deal.status || "queued"}
                             </Badge>

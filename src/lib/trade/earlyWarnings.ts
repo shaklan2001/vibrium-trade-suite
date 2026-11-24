@@ -153,6 +153,17 @@ function paymentRow(deal: Deal, today: string): EarlyWarning | null {
   return null;
 }
 
+function shipmentReleased(deal: Deal): boolean {
+  if (deal.docsPack?.complete) return true;
+  const blob = [
+    ...deal.documents.map((d) => d.name),
+    ...deal.sources.map((s) => `${s.subject || ""} ${s.body}`),
+  ]
+    .join("\n")
+    .slice(0, 8000);
+  return /\b(?:surrender(?:ed)? (?:hbl|bl|letter)|telex release)\b/i.test(blob);
+}
+
 function deliveryRow(deal: Deal, today: string): EarlyWarning | null {
   const eta = asDay(deal.booking?.eta);
   const etd = asDay(deal.booking?.etd);
@@ -173,6 +184,7 @@ function deliveryRow(deal: Deal, today: string): EarlyWarning | null {
   const mailDelta = dayDelta(mail, today);
   if (
     !eta &&
+    !shipmentReleased(deal) &&
     etdDelta != null &&
     etdDelta <= -3 &&
     mailDelta != null &&

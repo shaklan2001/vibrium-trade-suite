@@ -81,6 +81,10 @@ export type InboxItem = {
   payment?: InboxPayment;
   /** Text of the conversation's attachments (document layer), newest mail's files first. */
   documents?: InboxDocument[];
+  /** Team notes from calls and chats (mail_records kind deal_note), newest first. */
+  notes?: string[];
+  /** The one next step the Next Action agent read from the deal's emails. */
+  nextAction?: { action: string; owner: string | null; to: string | null; due: string | null; basedOn: string[] };
 };
 
 export type InboxDocument = {

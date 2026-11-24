@@ -1,7 +1,9 @@
 import { vibriumFetch } from "@/lib/vibrium/auth";
 import { startSession, streamCompletion } from "@/lib/vibrium/chat";
 import { getVibriumConfig } from "@/lib/vibrium/config";
+import { greetName } from "./greetName";
 import type { InboxItem } from "./inboxTypes";
+import { isGenericQuoteRequest } from "./quoteAssist";
 
 /**
  * Rewrites a reply with the Vibrium Ops Copilot agent (VB… bot), grounded on
@@ -118,6 +120,24 @@ function documentsText(item: InboxItem) {
   ].join("\n");
 }
 
+/** Their person to greet when the sender name is a company or a shared mailbox. */
+export function greetLine(item: InboxItem): string {
+  const name = greetName(item.latest, item.thread);
+  return name ? `Greet them as: ${name} (use "${name} ji" for Indian contacts).` : "";
+}
+
+/** A quote request that names no product: ask what is needed instead of guessing. */
+export function genericQuoteLine(item: InboxItem): string {
+  if (!isGenericQuoteRequest(item.latest)) return "";
+  return "They did not name specific products. Do not quote anything. Ask which items they need, the quantities, their target price and the destination, then say we will revert with prices.";
+}
+
+/** Team notes from calls and chats that are not in any email. */
+export function notesText(item: InboxItem): string {
+  const notes = item.notes?.filter(Boolean).slice(0, 5);
+  return notes?.length ? `Team notes on this deal (calls, chats; not in the emails):\n${notes.map((n) => `- ${n}`).join("\n")}` : "";
+}
+
 export function replyPrompt(item: InboxItem, signer: string) {
   const learned = learningText(item, signer);
   const words = item.learning?.typicalWords;
@@ -150,9 +170,12 @@ export function replyPrompt(item: InboxItem, signer: string) {
     "- Greet them the way our side greeted them earlier in the thread; otherwise \"Dear <first name> ji,\" for Indian contacts and \"Dear <first name>,\" for others.",
     "",
     `Reply to: ${item.latest.fromName || item.latest.from} <${item.latest.from}>.`,
+    greetLine(item),
     background ? `Background for you only — do not raise it unless their mail asks about it:\n${background}` : "",
     learned.deal,
     learned.style,
+    genericQuoteLine(item),
+    notesText(item),
     documentsText(item),
     learned.examples ? `\n${learned.examples}` : "",
     `End with:\nRegards,\n${signer}`,

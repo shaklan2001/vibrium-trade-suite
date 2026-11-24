@@ -21,6 +21,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { freshText } from "../src/lib/mail/inbox";
+import { preferredStage } from "../src/lib/mail/agentStage";
 import { partyRole, poKey, stageOf } from "../src/lib/mail/classify";
 import { askCopilot } from "../src/lib/mail/replyAgent";
 import { getMailStore } from "../src/lib/mail/store";
@@ -208,7 +209,7 @@ async function loadMails(): Promise<{ mails: Mail[]; mailboxes: string[] }> {
             cc: r.cc_text || "",
             date: r.sent_at,
             body,
-            fresh: freshText(body),
+            fresh: freshText(body, r.subject || ""),
             attachments: (r.attachments_json || []).map((a) => a.name).filter(Boolean),
             files: ((r.attachments_json || []) as StoredFile[]).filter((a) => a.sha256 && a.s3_key && !a.inline),
             ours: OURS.test(from),
@@ -263,6 +264,23 @@ type CatRow = {
 
 async function criterion1(mails: Mail[], mailboxes: string[]) {
   const rows = await cached("c1", async () => {
+    const agentByDeal = new Map<
+      string,
+      { slot: string | null; confidence: number | null; stage: string | null }
+    >();
+    try {
+      const deals = await getMailStore().recentDeals(20000);
+      for (const deal of deals) {
+        const result = deal.result_json as { agent_stage?: unknown } | null;
+        agentByDeal.set(deal.id, {
+          slot: deal.slot ?? null,
+          confidence: deal.confidence ?? null,
+          stage: typeof result?.agent_stage === "string" ? result.agent_stage : null,
+        });
+      }
+    } catch (err) {
+      console.warn("c1: agent stages unavailable", err instanceof Error ? err.message : String(err));
+    }
     const batches: Mail[][] = [];
     for (let i = 0; i < mails.length; i += 8) batches.push(mails.slice(i, i + 8));
     const out: CatRow[] = [];
@@ -283,12 +301,17 @@ async function criterion1(mails: Mail[], mailboxes: string[]) {
       batch.forEach((m, i) => {
         const a = Array.isArray(ai) ? ai.find((x) => Number(x.id) === i + 1) : undefined;
         const role = partyRole(m.from, { ownEmails: mailboxes });
+        const agent = m.dealKey ? agentByDeal.get(m.dealKey) : undefined;
         out.push({
           key: m.key,
           mailbox: m.mailbox,
           subject: m.subject,
           from: m.from,
-          system: { trade: m.status !== "noise", stage: stageOf(m.subject, m.fresh), role },
+          system: {
+            trade: m.status !== "noise",
+            stage: preferredStage(stageOf(m.subject, m.fresh), agent),
+            role,
+          },
           ai: a
             ? {
                 trade: Boolean(a.trade),

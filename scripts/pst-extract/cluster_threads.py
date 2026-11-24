@@ -110,12 +110,16 @@ INTERNAL_DOMAINS = ("snspl.in",)
 
 # Freight booking signals — bare "booking" alone is NOT enough (hotels/flights)
 FREIGHT_RE = re.compile(
-    r"\b(1\s*x\s*40|1\s*x\s*20|40['’]?\s*hc|20['’]?\s*gp|"
-    r"\bh/?bl\b|\bm/?bl\b|bl draft|container|vgm|"
+    r"\b(1\s*x\s*\*?\s*40|1\s*x\s*\*?\s*20|40['’]?\s*hc|20['’]?\s*gp|"
+    r"\bh/?bl\b|\bm/?bl\b|\bbl\b|bl draft|container|vgm|"
     r"etd|eta\b|sailing|nhava\s*sheva|navasheva|mundra|"
     r"forwarder|shipping bill|gated in|si submitted|"
     r"cnee|shipper:|consignee|bill of lading|telex release|"
-    r"bkgconf|ocean freight|pol\b|pod\b)\b",
+    r"bkgconf|ocean freight|pol\b|pod\b|"
+    r"awb|airway bill|hawb|mawb|obl|"
+    r"surrender(?:ed)? (?:letter|bl|hbl)|bkg ref|booking ref|"
+    r"booking (?:confirmation|update)|sob|shipped on board|fcr|cut-?off|"
+    r"carting|stuffing|cntr|vessel|do-?\d+|delivery order)\b",
     re.I,
 )
 PO_RE = re.compile(r"\bpo[#\s:-]*([a-z]?\s?\d[\dA-Za-z/-]{2,})", re.I)
@@ -135,7 +139,11 @@ SAMPLE_RE = re.compile(r"\b(sample|proto|strike off|lab dip)\b", re.I)
 ARTWORK_RE = re.compile(r"\b(artwork|dieline|print file)\b", re.I)
 QC_RE = re.compile(r"\b(inspection|qc\b|aql)\b", re.I)
 PAY_RE = re.compile(
-    r"\b(payment|remittance|\btt\b|\blc\b|outstanding|payment remitted)\b",
+    r"\b(?:payment request|request(?:ing)? payment|tt copy|proof of payment|"
+    r"debit advice|credit advice|invoice due|payment advice|payment reminder|"
+    r"payment pending|payment remitted|payment|payemnt|remittance|outstanding|dues|"
+    r"swift|utr)\b|\bt\s*/\s*t\b|\btt\b|\blc\b|\bmt ?103\b|"
+    r"advice of (?:debit|credit)",
     re.I,
 )
 COMMISSION_RE = re.compile(r"\b(commission\s+invoice|agency\s+commission|qtr\s+commission)\b", re.I)
@@ -287,12 +295,21 @@ def booking_key(text: str) -> str | None:
     return key
 
 
+def _opening(subject: str, body: str) -> str:
+    head = "\n".join(body.splitlines()[:8])
+    return f"{subject}\n{head}"[:800]
+
+
 def stage_of(subject: str, body: str) -> str:
-    text = f"{subject} {body[:1500]}"
+    subject = subject[:500]
+    body = body[:1500]
+    text = f"{subject} {body}"
     if COMMISSION_RE.search(text):
         return "commission"
-    freight = bool(FREIGHT_RE.search(text))
-    if freight:
+    # A shipment mail that asks for payment is a payment request, even with a PO number.
+    if PAY_RE.search(_opening(subject, body)):
+        return "payment"
+    if FREIGHT_RE.search(text):
         return "booking"
     if SAMPLE_RE.search(text):
         return "samples"
@@ -304,7 +321,7 @@ def stage_of(subject: str, body: str) -> str:
         return "pi_po"
     if QUOTE_RE.search(text):
         return "quoting"
-    if RFQ_RE.search(text) and not freight:
+    if RFQ_RE.search(text):
         return "requirement"
     if PAY_RE.search(text):
         return "payment"

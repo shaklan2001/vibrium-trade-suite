@@ -10,8 +10,9 @@ const BODY_CAP = 4000;
 const NOISE_SUBJECT =
   /^(automatic reply|auto(-|\s)?reply|out of office|undeliverable|delivery status notification|read:|accepted:|declined:|invitation:)/i;
 const NOISE_SENDER = /no-?reply|noreply|mailer-daemon|postmaster|notification/i;
+const QUOTE_BODY_LIMIT = 20_000;
 const QUOTE_START =
-  /^(On .{5,200}wrote:|From: .+|-----Original Message-----|_{10,}|>.*)$/m;
+  /^(?:On [^\n]{5,240}wrote:|From:[^\n]{0,200}\n[^\n]{0,40}Sent:|-----Original Message-----|_{5,}|Get Outlook for (?:Android|iOS)|El [^\n]{0,180}escribi[oó]:|>.*)/im;
 
 export function parse<T>(value: unknown, fallback: T): T {
   if (value == null) return fallback;
@@ -25,12 +26,19 @@ export function parse<T>(value: unknown, fallback: T): T {
   return value as T;
 }
 
-export function freshText(body: string) {
-  const text = (body || "").replace(/\r/g, "");
+function clipBody(text: string) {
+  return text.length > BODY_CAP ? `${text.slice(0, BODY_CAP)}\n…` : text;
+}
+
+export function freshText(body: string, subject = "") {
+  const text = (body || "").replace(/\r/g, "").slice(0, QUOTE_BODY_LIMIT);
   const m = QUOTE_START.exec(text);
   const fresh = (m ? text.slice(0, m.index) : text).replace(/\n\s*\n\s*\n+/g, "\n\n").trim();
+  // A forward that is only "FYI" plus the original: the original is the message.
+  const forwarded = /(?:^|\s)(?:fw|fwd):/i.test(subject);
+  if (forwarded && fresh.length < 40 && m) return clipBody(text.trim());
   const out = fresh || text.trim();
-  return out.length > BODY_CAP ? `${out.slice(0, BODY_CAP)}\n…` : out;
+  return clipBody(out);
 }
 
 export function outcomeFor(

@@ -1,4 +1,5 @@
 import type { ProcessedDealRow } from "@/lib/trade/processedDealMapper";
+import { preferredStage } from "./agentStage";
 import { partyRole, type ClassifyContext } from "./classify";
 import { freshText, outcomeFor, parse } from "./inbox";
 import { mailRef } from "./mailLink";
@@ -49,7 +50,7 @@ function toMessage(row: InboxMessageRow, ctx: ItemContext): InboxMessage {
     cc: row.cc_text || "",
     date: row.sent_at,
     subject: row.subject || "",
-    body: freshText(row.body_text || ""),
+    body: freshText(row.body_text || "", row.subject || ""),
     attachments: attachmentNames(row),
     internal: ctx.classify.ownEmails?.includes(from) || partyRole(from, ctx.classify) === "internal",
   };
@@ -93,6 +94,7 @@ export function buildInboxItem(threadKey: string, rows: InboxMessageRow[], ctx: 
   const slot = deal?.slot || null;
   const result = deal ? parse<Record<string, unknown>>(deal.result_json, {}) : {};
   const confidence = deal && typeof deal.confidence === "number" ? deal.confidence : null;
+  const agentStage = typeof result.agent_stage === "string" ? result.agent_stage : null;
 
   let outcome: InboxOutcome;
   let note: string | null;
@@ -120,7 +122,9 @@ export function buildInboxItem(threadKey: string, rows: InboxMessageRow[], ctx: 
     thread: thread.slice(-THREAD_CAP),
     outcome,
     note,
-    stage: deal?.primary_stage || null,
+    stage: deal
+      ? preferredStage(deal.primary_stage || "other", { slot, stage: agentStage, confidence })
+      : null,
     slot,
     agentName: (slot && AGENT_NAMES[slot]) || (deal ? "Stage worker" : "Vibrium Copilot"),
     agentId: deal?.agent_id || null,

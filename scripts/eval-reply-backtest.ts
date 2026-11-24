@@ -131,7 +131,7 @@ function toInbox(m: EvidenceMessage): InboxMessage {
     cc: list(m.cc),
     date: m.date || null,
     subject: m.subject || "",
-    body: freshText(m.body || ""),
+    body: freshText(m.body || "", m.subject || ""),
     attachments: (m.attachments || []).map((a) => a.name || "").filter(Boolean),
     internal: INTERNAL.test(from),
   };

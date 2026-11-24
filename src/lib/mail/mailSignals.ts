@@ -74,7 +74,8 @@ const ACK_ONLY = /^\s*(thanks?( you)?|noted|well noted|ok(ay)?|received|thank yo
 
 const APPROVAL_ASK =
   /\b(for (your )?approval|please approve|kindly approve|approve the|awaiting (your )?approval|need (your )?approval|seeking approval|request(ing)? approval)\b|\bapproval\b[^.]{0,40}\b(pending|awaited|required|needed)\b/i;
-const APPROVED = /\b(approved|approve[ds]? (it|this|the)|ok(ay)? to proceed|go ahead|you (may|can) proceed|please proceed|confirmed|approval (is )?given)\b/i;
+const APPROVED =
+  /\b(approved|approve[ds]? (it|this|the)|ok(ay)? to proceed|go ahead|you (may|can) proceed|please proceed|confirmed|approval (is )?given|proceed with production|booking (?:is )?confirmed|shipment (?:is )?booked|production (?:has )?started)\b/i;
 
 const ISSUE =
   /\b(short(age)?s?|short[- ]shipped|damaged?|defect(s|ive)?|broken|missing (cartons?|pcs|pieces|items?|qty)|rejected|reject(ion)?|failed (the )?inspection|quality (issue|problem|complaint)|complaint|wrong (item|qty|quantity|colou?r|size|label))\b/i;

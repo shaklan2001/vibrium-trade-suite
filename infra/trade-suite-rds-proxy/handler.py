@@ -188,6 +188,7 @@ def _migrate(conn: pg8000.native.Connection) -> dict:
                 "mail_deal_jobs",
                 "mail_reply_drafts",
                 "mail_payments",
+                "mail_records",
             ],
             "processed_deals_count": count,
         }
@@ -813,6 +814,21 @@ def _migrate_mail(conn: pg8000.native.Connection) -> None:
         )
         """,
         f"CREATE INDEX IF NOT EXISTS mail_payments_status ON {SCHEMA}.mail_payments (status, updated_at)",
+        # Small typed records that do not need their own table: deal notes, next actions, notifications.
+        f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.mail_records (
+          kind TEXT NOT NULL,
+          id TEXT NOT NULL,
+          deal_key TEXT,
+          owner TEXT,
+          data JSONB NOT NULL DEFAULT '{{}}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (kind, id)
+        )
+        """,
+        f"CREATE INDEX IF NOT EXISTS mail_records_deal ON {SCHEMA}.mail_records (kind, deal_key, created_at DESC)",
+        f"CREATE INDEX IF NOT EXISTS mail_records_owner ON {SCHEMA}.mail_records (kind, owner, created_at DESC)",
         f"CREATE INDEX IF NOT EXISTS mail_payments_deal ON {SCHEMA}.mail_payments (deal_key)",
     ):
         conn.run(stmt)
@@ -1070,7 +1086,7 @@ def _mail_jobs_claim(conn, payload):
               SELECT deal_key FROM {SCHEMA}.mail_deal_jobs
               WHERE (dirty AND status NOT IN ('running', 'starting'))
                  OR (status = 'starting' AND started_at < now() - interval '10 minutes')
-              ORDER BY updated_at ASC
+              ORDER BY dirty DESC, updated_at ASC
               LIMIT :limit
               FOR UPDATE SKIP LOCKED
             )
@@ -1251,6 +1267,59 @@ def _mail_payments_list(conn, payload):
     )
 
 
+def _mail_records_upsert(conn, payload):
+    """Insert or replace small typed records (notes, next actions, notifications)."""
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list):
+        return _err("rows must be a list")
+    n = 0
+    for r in rows[:200]:
+        if not isinstance(r, dict) or not r.get("kind") or not r.get("id"):
+            continue
+        conn.run(
+            f"""
+            INSERT INTO {SCHEMA}.mail_records (kind, id, deal_key, owner, data, created_at, updated_at)
+            VALUES (:kind, :id, :deal_key, :owner, CAST(:data AS jsonb),
+                    COALESCE(CAST(:created_at AS timestamptz), now()), now())
+            ON CONFLICT (kind, id) DO UPDATE SET
+              deal_key = EXCLUDED.deal_key, owner = EXCLUDED.owner, data = EXCLUDED.data, updated_at = now()
+            """,
+            kind=r["kind"],
+            id=r["id"],
+            deal_key=r.get("deal_key"),
+            owner=r.get("owner"),
+            data=json.dumps(r.get("data") or {}),
+            created_at=r.get("created_at"),
+        )
+        n += 1
+    return _ok({"upserted": n})
+
+
+def _mail_records_list(conn, payload):
+    kind = (payload.get("kind") or "").strip()
+    if not kind:
+        return _err("kind required")
+    limit = max(1, min(int(payload.get("limit") or 200), 5000))
+    return _ok(
+        _rows(
+            conn,
+            f"""
+            SELECT kind, id, deal_key, owner, data, created_at, updated_at FROM {SCHEMA}.mail_records
+            WHERE kind = :kind
+              AND (CAST(:deal_key AS text) IS NULL OR deal_key = :deal_key)
+              AND (CAST(:owner AS text) IS NULL OR owner = :owner)
+              AND (CAST(:since AS timestamptz) IS NULL OR created_at >= CAST(:since AS timestamptz))
+            ORDER BY created_at DESC LIMIT :limit
+            """,
+            kind=kind,
+            deal_key=payload.get("deal_key"),
+            owner=payload.get("owner"),
+            since=payload.get("since"),
+            limit=limit,
+        )
+    )
+
+
 INBOX_MESSAGE_COLS = (
     "connection_id, provider_message_id, internet_message_id, in_reply_to, thread_key, folder, "
     "deal_key, subject, from_email, from_name, to_text, cc_text, sent_at, attachments_json, "
@@ -1379,6 +1448,8 @@ MAIL_ACTIONS = {
     "mail_draft_list": _mail_draft_list,
     "mail_payments_upsert": _mail_payments_upsert,
     "mail_payments_list": _mail_payments_list,
+    "mail_records_upsert": _mail_records_upsert,
+    "mail_records_list": _mail_records_list,
 }
 
 

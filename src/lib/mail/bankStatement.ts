@@ -148,8 +148,51 @@ export type BankMatch = {
   line: BankLine;
   email: { id: string; subject: string; how: "reference" | "amount_date"; kind: string | null } | null;
   pos: string[];
-  poHow: "email" | "line" | null;
+  poHow: "email" | "line" | "commission_invoice" | null;
+  /** The commission invoice a remittance paid, when matched by buyer, amount and date. */
+  invoice?: { invoiceNo: string; amount: number | null; buyer: string | null } | null;
 };
+
+/** Commission invoice as the matcher needs it (see src/lib/trade/invoiceRegister.ts). */
+export type CommissionInvoice = {
+  invoiceNo: string;
+  pos: string[];
+  amount: number | null;
+  currency: string | null;
+  buyer: string | null;
+  date: string | null;
+};
+
+const NAME_NOISE = new Set(["the", "and", "inc", "llc", "ltd", "pvt", "private", "limited", "co", "corp", "company", "sa", "de", "cv", "gmbh"]);
+const nameWords = (s: string) =>
+  new Set(s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((t) => t.length > 2 && !NAME_NOISE.has(t)));
+
+/**
+ * A remittance names the buyer, not the PO. Match it to a commission invoice for that buyer:
+ * at least two shared name words, amount within 1% (USD or INR as the invoice states), within 60 days.
+ */
+export function matchCommissionInvoice(line: BankLine, invoices: CommissionInvoice[]): CommissionInvoice | null {
+  const amt = line.credit || line.debit;
+  const lineNames = nameWords(line.particulars);
+  const t = Date.parse(line.date);
+  let best: { inv: CommissionInvoice; score: number } | null = null;
+  for (const inv of invoices) {
+    if (!inv.pos.length || !inv.buyer) continue;
+    const buyerWords = nameWords(inv.buyer);
+    const shared = [...buyerWords].filter((w) => lineNames.has(w)).length;
+    // Two shared words; a buyer with one distinctive word (e.g. "Internacional") needs that word alone.
+    if (shared < Math.min(2, buyerWords.size) || shared === 0) continue;
+    const when = inv.date ? Date.parse(inv.date) : NaN;
+    if (Number.isFinite(when) && Number.isFinite(t) && Math.abs(t - when) > 60 * DAY) continue;
+    const money = inv.amount != null && amt > 0 ? Math.abs(inv.amount - amt) <= Math.max(1, amt * 0.01) : false;
+    // Foreign-currency invoices cannot be compared with an INR credit; the buyer match then carries it alone.
+    const foreign = inv.currency != null && inv.currency !== "INR";
+    if (!money && !foreign) continue;
+    const score = shared + (money ? 2 : 0);
+    if (!best || score > best.score) best = { inv, score };
+  }
+  return best?.inv ?? null;
+}
 
 const DAY = 86_400_000;
 
@@ -162,6 +205,7 @@ export function matchStatement(
   entries: PaymentEntry[],
   refText: (e: PaymentEntry) => string,
   partyNames: string[],
+  commissionInvoices: CommissionInvoice[] = [],
 ): BankMatch[] {
   const money = entries.filter((e) => e.status === "done" && e.kind && e.kind !== "other");
   return lines
@@ -198,6 +242,15 @@ export function matchStatement(
           poHow = "line";
         }
       }
-      return { line, email, pos, poHow };
+      let invoice: BankMatch["invoice"] = null;
+      if (!pos.length && commissionInvoices.length) {
+        const hit = matchCommissionInvoice(line, commissionInvoices);
+        if (hit) {
+          pos = [...new Set(hit.pos.map(normPo))];
+          poHow = "commission_invoice";
+          invoice = { invoiceNo: hit.invoiceNo, amount: hit.amount, buyer: hit.buyer };
+        }
+      }
+      return { line, email, pos, poHow, invoice };
     });
 }

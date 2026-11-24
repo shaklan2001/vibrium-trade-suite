@@ -11,6 +11,7 @@ import {
   pickDocument,
   type ClassifyContext,
 } from "./classify";
+import { preferredStage, stageForSlot } from "./agentStage";
 import { MAIL_LIMITS } from "./config";
 import { decryptSecret } from "./crypto";
 import { buildDealPack, buildEvidence, dealContextNotes, type DealPack } from "./dealPack";
@@ -18,7 +19,12 @@ import { presign } from "./attachmentUrl";
 import { isBankStatementMail } from "./bankStatement";
 import { ensureDocText } from "./docStore";
 import { refreshSignals } from "./signalStore";
-import { ocrEnabled, processOcr, startOcr, wantsOcr } from "./ocr";
+import { freshText } from "./inbox";
+import { processStatements } from "./statementJobs";
+import { markTakenFromMail, processNextActions, queueNextActions } from "./nextAction";
+import { ensureLearnedRoles } from "./learnedRolesStore";
+import { ocrEnabled, processOcr, startOcr, wantsOcr, wantsPaymentImageOcr } from "./ocr";
+import { isPaymentCandidate, PAYMENT_IMAGE_MIN_BYTES } from "./payments";
 import { paymentReaderId, paymentRowFor, processPayments, queueNewPayments, type PaymentRow } from "./paymentJobs";
 import { parseRawMail, storeAttachment } from "./parse";
 import { isRdsProxyEnabled } from "@/lib/rdsProxy";
@@ -266,10 +272,21 @@ export async function syncConnection(
           dealKey = dealKeyFor(mail.subject, mail.internet_message_id || ref.id);
         }
 
+        const paymentMail = isPaymentCandidate(
+          mail.subject,
+          freshText(mail.body_text, mail.subject),
+          mail.attachments.map((a) => a.meta.name),
+        );
         const attachments: StoredAttachment[] = [];
         for (const att of mail.attachments) {
           try {
-            const stored = await storeAttachment(att.meta, att.content);
+            const image =
+              /\.(jpe?g|png|gif|tiff?|webp)$/i.test(att.meta.name) ||
+              (att.meta.content_type || "").startsWith("image/");
+            const keepInline = Boolean(
+              att.meta.inline && paymentMail && image && att.meta.size >= PAYMENT_IMAGE_MIN_BYTES,
+            );
+            const stored = await storeAttachment(att.meta, att.content, { allowInline: keepInline });
             attachments.push(stored);
             // Document layer: text for PDFs, sheets and Word files, cached by content (read once);
             // scans and photographed documents go to OCR (collected on a later cycle).
@@ -277,7 +294,7 @@ export async function syncConnection(
               console.warn("[docs] text failed", stored.name, err);
               return null;
             });
-            if (ocrEnabled() && wantsOcr(stored, text)) {
+            if (ocrEnabled() && (wantsOcr(stored, text) || (paymentMail && wantsPaymentImageOcr(stored)))) {
               await startOcr(stored).catch((err) => console.warn("[ocr] not started", stored.name, err instanceof Error ? err.message : err));
             }
           } catch (err) {
@@ -589,6 +606,8 @@ async function finalizeJob(
 
   const result = executionResult(ex);
   const { summary, confidence } = summaryFrom(result);
+  const agentStage = stageForSlot(job.slot);
+  const storedResult = result && agentStage ? { ...result, agent_stage: agentStage } : result;
   const cost = executionCost(ex);
   let rowStatus = status;
   let error: string | null =
@@ -609,11 +628,19 @@ async function finalizeJob(
   } else {
     await store.upsertProcessedDeal({
       ...pack.row,
+      primary_stage:
+        rowStatus === "completed"
+          ? preferredStage(pack.row.primary_stage || "other", {
+              slot: job.slot,
+              stage: agentStage,
+              confidence,
+            })
+          : pack.row.primary_stage,
       execution_id: job.execution_id,
       status: rowStatus,
       summary,
       confidence,
-      result_json: result,
+      result_json: storedResult,
       error,
       processed_at: new Date().toISOString(),
       cost_usd: cost.usd,
@@ -705,6 +732,8 @@ export async function runMailCycle(opts: {
 }) {
   const store = getMailStore();
   const all = await store.listConnections();
+  // Sender roles learned from the deal book (rebuilt at most daily); static lists still apply without it.
+  await ensureLearnedRoles({ ownEmails: all.map((c) => c.email), rebuild: true });
   const targets = all.filter(
     (c) =>
       (opts.connectionId ? c.id === opts.connectionId : true) &&
@@ -744,9 +773,28 @@ export async function runMailCycle(opts: {
         return null;
       })
     : null;
+  // Next action per deal: queue deals with new mail, run the agent, close actions our side has carried out.
+  const nextActions = await runNextActionStep(store, signalKeys, opts.deadline);
+  // Bank statements: trade lines matched to payment emails, POs and commission invoices (fails soft).
+  const statements = await processStatements(store, { deadline: opts.deadline }).catch((err) => {
+    console.warn("[statements] round failed", err instanceof Error ? err.message : err);
+    return null;
+  });
   // The key lists are internal; the cycle's response keeps the counts only.
   const connectionsOut = connections.map((c) => ({ ...c, touched_keys: undefined }));
-  return { connections: connectionsOut, jobs, documents, ocr, payments, signals, job_counts: await store.jobCounts() };
+  return { connections: connectionsOut, jobs, documents, ocr, payments, signals, nextActions, statements, job_counts: await store.jobCounts() };
+}
+
+async function runNextActionStep(store: MailStore, touchedKeys: string[], deadline: number) {
+  try {
+    const queued = await queueNextActions(store, touchedKeys);
+    const ran = Date.now() < deadline ? await processNextActions(store, { deadline }) : { finished: 0, started: 0, failed: 0 };
+    const taken = touchedKeys.length ? await markTakenFromMail(store, touchedKeys) : 0;
+    return { queued, ...ran, taken };
+  } catch (err) {
+    console.warn("[next-action] step failed", err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 /**

@@ -43,7 +43,7 @@ export type PaymentEntry = {
 };
 
 const PAY_TEXT =
-  /\b(payment|remittance|remitted|swift|mt ?103|tt copy|t\/t|wire transfer|credited|debit (advice|note)|bank advice|utr|advance received|balance payment|proof of payment|payment advice|outstanding|dues?\b|statement of account|soa)\b/i;
+  /\b(payment|remittance|remitted|swift|mt ?103|tt copy|t\/t|wire transfer|credited|advice of (?:debit|credit)|debit (advice|note)|bank advice|utr|advance received|balance payment|proof of payment|payment advice|outstanding|dues?\b|statement of account|soa)\b/i;
 const PAY_FILE = /(remit|advice|swift|mt103|\btt\b|payment|statement|ledger|\bdues?\b|soa|debit|receipt)/i;
 const NOT_PAY = /\b(newsletter|unsubscribe|credit card|e-?statement|electricity bill|webinar)\b/i;
 
@@ -63,6 +63,24 @@ export function pickPaymentAttachment<T extends { name: string; s3_key?: string;
   const score = (n: string) =>
     /(remit|advice|swift|mt103|\btt\b|payment|receipt)/i.test(n) ? 3 : /(statement|ledger|dues?|soa)/i.test(n) ? 2 : /(inv|invoice|debit|bill)/i.test(n) ? 1 : 0;
   return usable.sort((a, b) => score(b.name) - score(a.name))[0] || null;
+}
+
+const PAYMENT_IMAGE_EXT = /\.(jpe?g|png|gif|tiff?|webp)$/i;
+/** Logos and signatures are smaller than a photographed debit advice. */
+export const PAYMENT_IMAGE_MIN_BYTES = 40 * 1024;
+
+/** Inline image large enough to be a bank advice, already stored. */
+export function paymentInlineImage<
+  T extends { name: string; sha256?: string; s3_key?: string; inline?: boolean; size?: number; content_type?: string },
+>(atts: T[]): T | null {
+  return (
+    atts.find(
+      (a) =>
+        Boolean(a.inline && a.s3_key && a.sha256) &&
+        (a.size || 0) >= PAYMENT_IMAGE_MIN_BYTES &&
+        (PAYMENT_IMAGE_EXT.test(a.name) || (a.content_type || "").startsWith("image/")),
+    ) || null
+  );
 }
 
 const KINDS = new Set<PaymentKind>(["payment_received", "payment_sent", "payment_request", "other"]);
