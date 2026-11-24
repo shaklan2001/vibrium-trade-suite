@@ -35,6 +35,8 @@ export type BankLine = {
   kind: BankLineKind;
   /** Bank reference for remittances (GRS/…), UTR or transfer id when present. */
   reference: string | null;
+  /** Account currency; INR when absent (the Finacle e-statements). */
+  currency?: string;
 };
 
 const MONTHS: Record<string, string> = {
@@ -70,7 +72,8 @@ function decode(s: string) {
 export function classifyBankLine(p: string, debit: number, credit: number): BankLineKind {
   const t = p.toUpperCase();
   if (/^GRS\//.test(t) && credit > 0) return "inward_remittance";
-  if (/SLAB [CS]GST|CHARGES|CHGS|COMMISSION CHG|GST ON/.test(t)) return "charges";
+  if (credit > 0 && /\bINWARD\b|REMITTANCE|\bSWIFT\b|TELEGRAPHIC|\bTT\b|CHAPS|\bFCY\b/.test(t)) return "inward_remittance";
+  if (/SLAB [CS]GST|CHARGES?\b|CHGS|COMMISSION CHG|GST ON|SERVICE FEE|BANK FEE/.test(t)) return "charges";
   if (/COMISSION|COMMISSION/.test(t) && credit > 0) return "commission";
   if (/AUTO LOAN|EMI\b|LOAN/.test(t)) return "loan_emi";
   if (/DTAX|GST PAYMENT|TDS|INCOME TAX|CBDT|GIB\//.test(t)) return "tax";
@@ -81,11 +84,14 @@ export function classifyBankLine(p: string, debit: number, credit: number): Bank
   return "other";
 }
 
-function referenceOf(p: string) {
+export function referenceOf(p: string) {
   const grs = /\b(\d{4}GRS[A-Z]\d{8})\b/i.exec(p);
   if (grs) return grs[1]!.toUpperCase();
   const inft = /\/(?:INFT|NEFT|RTGS|IMPS)\/([A-Z0-9]{8,})/i.exec(p);
   if (inft) return inft[1]!.toUpperCase();
+  // Other banks: "REF: FT26110123456", "UTR 123456789012", "SWIFT REF ABC123456789".
+  const generic = /\b(?:REF(?:ERENCE)?(?:\s*NO)?|UTR|TRN|TXN\s*ID|CHAPS|SWIFT\s*REF)[\s.:#-]*([A-Z0-9]{8,})\b/i.exec(p);
+  if (generic && /\d/.test(generic[1]!)) return generic[1]!.toUpperCase();
   return null;
 }
 
@@ -222,7 +228,7 @@ export function matchStatement(
         const hit = money.find(
           (e) =>
             e.amount != null &&
-            (!e.currency || e.currency === "INR") &&
+            (!e.currency || e.currency === (line.currency || "INR")) &&
             Math.abs(e.amount - amt) <= Math.max(1, amt * 0.01) &&
             Math.abs(Date.parse(e.valueDate || e.mailDate) - t) <= 10 * DAY,
         );
