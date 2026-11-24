@@ -15,6 +15,7 @@ import { buildInvoiceRegister, posForInvoice } from "../src/lib/trade/invoiceReg
 import { isValidContainer, normContainer, normDate, normInvoiceNo, sameNumber, vagueDateWindow } from "../src/lib/trade/normalize";
 import { buildProductIndex, productHistoryLines, searchProducts } from "../src/lib/trade/productHistory";
 import { dealSailing, sailDateIn, sailingLabel } from "../src/lib/trade/sailing";
+import { baselinePo, checkPo, poSanity } from "../src/lib/trade/poCheck";
 import { verifyExtract } from "../src/lib/trade/verifyExtract";
 import type { Deal } from "../src/types/trade";
 
@@ -145,6 +146,46 @@ test("commission invoice: remittance naming the buyer links to the PO", () => {
 test("next action: an outgoing mail that repeats the action's words closes it", () => {
   assert.equal(carriesOut("Send the BL draft to the buyer for approval", "Dear John, please find the BL draft attached for your approval."), true);
   assert.equal(carriesOut("Send the BL draft to the buyer for approval", "Thanks, noted."), false);
+});
+
+const poDoc = (o: Record<string, unknown>) => ({ docType: "po", side: "buyer", docNumber: "14946", buyer: "Acme Inc", currency: "USD", totalAmount: 1000, pod: "Houston", lines: [{ itemCode: "BB-101", description: "Bamboo bowl", qty: 100, unitPrice: 6, amount: 600 }, { itemCode: "BB-102", description: "Bamboo tray", qty: 50, unitPrice: 8, amount: 400 }], ...o }) as never;
+
+test("PO check: first buyer PO is the baseline, even when a later one is stored first", () => {
+  const deal = { commercialDocs: [poDoc({ sentAt: "2026-11-10", docNumber: "14946-R1" }), poDoc({ sentAt: "2026-11-01" })] } as unknown as Deal;
+  assert.equal(baselinePo(deal)?.docNumber, "14946");
+});
+
+test("PO sanity: line math and total are checked", () => {
+  assert.equal(poSanity(poDoc({ sentAt: "2026-11-01" })).filter((i) => i.severity === "high").length, 0);
+  const bad = poSanity(poDoc({ totalAmount: 1500, lines: [{ itemCode: "A1", qty: 10, unitPrice: 5, amount: 80 }] }));
+  assert.ok(bad.some((i) => i.field === "lines[0].amount"));
+  assert.ok(bad.some((i) => i.field === "totalAmount"));
+  assert.ok(poSanity(poDoc({ totalAmount: undefined })).some((i) => i.message === "PO total missing"));
+});
+
+test("PO check: a factory PI that matches the PO raises nothing high", () => {
+  const pi = poDoc({ docType: "pi", side: "factory", docNumber: "PI-77 for PO 14946", factory: "Bamboo Works", buyer: "Acme Inc", totalAmount: 800, sentAt: "2026-11-03", lines: [{ itemCode: "BB-101", qty: 100, unitPrice: 4.8, amount: 480 }, { itemCode: "BB-102", qty: 50, unitPrice: 6.4, amount: 320 }] });
+  const c = checkPo({ commercialDocs: [poDoc({ sentAt: "2026-11-01" }), pi] } as unknown as Deal);
+  assert.equal(c.hasHigh, false);
+});
+
+test("PO check: wrong quantity, missing line, dearer factory and wrong destination are flagged", () => {
+  const pi = poDoc({ docType: "pi", side: "factory", pod: "Rotterdam", totalAmount: 1200, sentAt: "2026-11-03", lines: [{ itemCode: "BB-101", qty: 120, unitPrice: 6.5, amount: 780 }] });
+  const c = checkPo({ commercialDocs: [poDoc({ sentAt: "2026-11-01" }), pi] } as unknown as Deal);
+  const fields = c.comparisons[0]!.issues.map((i) => i.field);
+  assert.ok(fields.includes("lines[0].qty"));
+  assert.ok(fields.includes("lines[0].unitPrice"));
+  assert.ok(fields.includes("lines[1]"));
+  assert.ok(fields.includes("totalAmount"));
+  assert.ok(fields.includes("pod"));
+  assert.equal(c.hasHigh, true);
+});
+
+test("PO check: a later buyer PO is a revision against the first, not a new baseline", () => {
+  const r = poDoc({ sentAt: "2026-11-09", docNumber: "14946", lines: [{ itemCode: "BB-101", description: "Bamboo bowl", qty: 150, unitPrice: 6, amount: 900 }, { itemCode: "BB-102", description: "Bamboo tray", qty: 50, unitPrice: 8, amount: 400 }], totalAmount: 1300 });
+  const c = checkPo({ commercialDocs: [poDoc({ sentAt: "2026-11-01" }), r] } as unknown as Deal);
+  assert.equal(c.comparisons[0]!.kind, "revision");
+  assert.ok(c.comparisons[0]!.issues.some((i) => i.field === "lines[0].qty"));
 });
 
 console.log(`\n${passed} passed`);
