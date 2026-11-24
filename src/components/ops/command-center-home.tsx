@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { ArrowRight, RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
-import type { EarlyWarning } from "@/lib/trade/earlyWarnings";
+import type { WarningGroup } from "@/lib/trade/groupWarnings";
+import { WarningGroups } from "@/components/ops/warning-groups";
 import type { AgingBucket } from "@/lib/trade/bookInsights";
 
 export type PillTone = "flat" | "good" | "warn" | "bad" | "info";
@@ -159,13 +160,16 @@ export function MorningBrief({
 /* ── Priority list (early warnings) ───────────────────────────────────── */
 
 export function PriorityList({
-  rows,
+  groups,
+  limit,
   total,
   critical,
   loading,
   error,
 }: {
-  rows: EarlyWarning[];
+  /** Warnings already grouped by issue (see groupWarnings). */
+  groups: WarningGroup[];
+  limit: number;
   total: number;
   /** Critical count across all warnings, not just the rows shown. */
   critical: number;
@@ -185,35 +189,17 @@ export function PriorityList({
           {error}
         </p>
       ) : null}
-      {loading && !rows.length ? <p className="cc-empty">Checking the book…</p> : null}
-      {!loading && !error && !rows.length ? (
+      {loading && !groups.length ? <p className="cc-empty">Checking the book…</p> : null}
+      {!loading && !error && !groups.length ? (
         <p className="cc-empty">Nothing needs you right now.</p>
       ) : null}
-      <ol className="cc-priority-list">
-        {rows.map((r) => (
-          <li
-            key={r.id}
-            className={`cc-priority-card ${r.severity === "critical" ? "is-critical" : "is-warning"}`}
-          >
-            <div className="cc-priority-top">
-              <span className={`cc-sev ${r.severity === "critical" ? "cc-sev-critical" : "cc-sev-warning"}`}>
-                {r.severity === "critical" ? "Critical" : "Warning"}
-              </span>
-              {r.dealCode ? <span className="cc-code">{r.dealCode}</span> : null}
-            </div>
-            <Link href={r.href} className="cc-priority-title">
-              {r.title}
-            </Link>
-            <p className="cc-priority-reason">{r.reason}</p>
-            {r.mailHref ? (
-              <Link href={r.mailHref} className="cc-inline-link">
-                Open the email
-                <ArrowRight className="h-3 w-3" aria-hidden />
-              </Link>
-            ) : null}
-          </li>
-        ))}
-      </ol>
+      {groups.length ? (
+        <p className="wg-summary">
+          {total.toLocaleString()} warnings come down to {groups.length} issue
+          {groups.length === 1 ? "" : "s"}.
+        </p>
+      ) : null}
+      <WarningGroups groups={groups} limit={limit} />
     </section>
   );
 }

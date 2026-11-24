@@ -19,6 +19,7 @@ import { useTradeStore } from "@/lib/trade/store";
 import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { filterDealsByCommercialModel } from "@/lib/trade/commercialModel";
 import { collectEarlyWarnings } from "@/lib/trade/earlyWarnings";
+import { groupWarnings } from "@/lib/trade/groupWarnings";
 import { companyPulse } from "@/lib/trade/opsIntelligence";
 import { buildCashExposureReport } from "@/lib/trade/cashExposure";
 import {
@@ -121,6 +122,7 @@ export default function CommandCenterHubPage() {
 
   const bookLoading = mailboxStatus === "idle" || mailboxStatus === "loading";
   const critical = warnings.filter((w) => w.severity === "critical").length;
+  const warningGroups = groupWarnings(warnings);
   const overdueLines = insights.overdueAging.reduce((n, b) => n + b.count, 0);
   const dateLabel = now
     ? now.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
@@ -303,15 +305,16 @@ export default function CommandCenterHubPage() {
         </div>
         <div>
           <PriorityList
-            rows={warnings.slice(0, PRIORITY_LIMIT)}
+            groups={warningGroups}
+            limit={PRIORITY_LIMIT}
             total={warnings.length}
             critical={critical}
             loading={false}
             error={mailboxStatus === "error" && mailboxError ? friendlyMailboxError(mailboxError) : null}
           />
-          {warnings.length > PRIORITY_LIMIT ? (
+          {warningGroups.length > PRIORITY_LIMIT ? (
             <Link href="/operations" className="cc-inline-link cc-more">
-              See all {warnings.length} warnings
+              See all {warningGroups.length} issues
               <ArrowRight className="h-3 w-3" aria-hidden />
             </Link>
           ) : null}
