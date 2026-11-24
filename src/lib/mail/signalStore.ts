@@ -49,7 +49,7 @@ export async function computeDealSignals(dealKey: string, store: MailStore = get
       internal: OURS.test(from) || own.has(from),
       date: new Date(m.sent_at).toISOString(),
       subject: m.subject || "",
-      body: freshText(m.body_text || ""),
+      body: freshText(m.body_text || "", m.subject || ""),
     });
   }
   const payments = (await store.listPayments({ status: "done", limit: 5000 }).catch(() => [])).filter((p) => p.dealKey === dealKey);

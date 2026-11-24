@@ -21,6 +21,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { freshText } from "../src/lib/mail/inbox";
+import { preferredStage } from "../src/lib/mail/agentStage";
 import { partyRole, poKey, stageOf } from "../src/lib/mail/classify";
 import { askCopilot } from "../src/lib/mail/replyAgent";
 import { getMailStore } from "../src/lib/mail/store";
@@ -35,6 +36,8 @@ import { getCopilotBook, type CopilotBook } from "../src/lib/trade/copilot/book"
 import { collectEarlyWarnings } from "../src/lib/trade/earlyWarnings";
 import { findDealByRef, shortDealHref } from "../src/lib/trade/dealLink";
 import type { CommercialDocument, Deal } from "../src/types/trade";
+import { buildProductIndex, searchProducts, vendorRecords } from "../src/lib/trade/productHistory";
+import { dealSailing } from "../src/lib/trade/sailing";
 
 const args = process.argv.slice(2);
 const ONLY = new Set(
@@ -208,7 +211,7 @@ async function loadMails(): Promise<{ mails: Mail[]; mailboxes: string[] }> {
             cc: r.cc_text || "",
             date: r.sent_at,
             body,
-            fresh: freshText(body),
+            fresh: freshText(body, r.subject || ""),
             attachments: (r.attachments_json || []).map((a) => a.name).filter(Boolean),
             files: ((r.attachments_json || []) as StoredFile[]).filter((a) => a.sha256 && a.s3_key && !a.inline),
             ours: OURS.test(from),
@@ -263,6 +266,23 @@ type CatRow = {
 
 async function criterion1(mails: Mail[], mailboxes: string[]) {
   const rows = await cached("c1", async () => {
+    const agentByDeal = new Map<
+      string,
+      { slot: string | null; confidence: number | null; stage: string | null }
+    >();
+    try {
+      const deals = await getMailStore().recentDeals(20000);
+      for (const deal of deals) {
+        const result = deal.result_json as { agent_stage?: unknown } | null;
+        agentByDeal.set(deal.id, {
+          slot: deal.slot ?? null,
+          confidence: deal.confidence ?? null,
+          stage: typeof result?.agent_stage === "string" ? result.agent_stage : null,
+        });
+      }
+    } catch (err) {
+      console.warn("c1: agent stages unavailable", err instanceof Error ? err.message : String(err));
+    }
     const batches: Mail[][] = [];
     for (let i = 0; i < mails.length; i += 8) batches.push(mails.slice(i, i + 8));
     const out: CatRow[] = [];
@@ -283,12 +303,17 @@ async function criterion1(mails: Mail[], mailboxes: string[]) {
       batch.forEach((m, i) => {
         const a = Array.isArray(ai) ? ai.find((x) => Number(x.id) === i + 1) : undefined;
         const role = partyRole(m.from, { ownEmails: mailboxes });
+        const agent = m.dealKey ? agentByDeal.get(m.dealKey) : undefined;
         out.push({
           key: m.key,
           mailbox: m.mailbox,
           subject: m.subject,
           from: m.from,
-          system: { trade: m.status !== "noise", stage: stageOf(m.subject, m.fresh), role },
+          system: {
+            trade: m.status !== "noise",
+            stage: preferredStage(stageOf(m.subject, m.fresh), agent),
+            role,
+          },
           ai: a
             ? {
                 trade: Boolean(a.trade),
@@ -984,31 +1009,33 @@ async function criterion8(mails: Mail[], book: CopilotBook, c1: CatRow[] | null)
     return out;
   });
   const lines = bookLines(book);
+  const productIndex = buildProductIndex(book.deals);
+  const vendorRecs = vendorRecords(book.deals);
   const rows = cands
     .filter((m) => extracted[m.key]?.quote && ["buyer_asks_us", "we_ask_factory"].includes(extracted[m.key]!.direction))
     .map((m) => {
       const x = extracted[m.key]!;
       const items = x.items.slice(0, 6).map((it) => {
-        const q = tokens(it.name);
-        const matches = lines
-          .filter((l) => l.date < m.date)
-          .map((l) => {
-            const hit = q.filter((w) => l.tokens.has(w)).length;
-            const code = l.itemCode && it.name.toLowerCase().includes(l.itemCode);
-            return { l, score: code ? 1 : q.length ? hit / q.length : 0, hit };
-          })
-          .filter((s) => s.score >= 1 || (s.hit >= 2 && s.score >= 0.6))
-          .sort((a, b) => b.score - a.score || b.l.date.localeCompare(a.l.date));
-        const vendors = [...new Set(matches.map((s) => s.l.factory).filter(Boolean))].slice(0, 5) as string[];
-        const priced = matches.filter((s) => s.l.unitPrice != null).sort((a, b) => b.l.date.localeCompare(a.l.date))[0];
-        const dl = matches.find((s) => s.l.agreed && s.l.actual);
-        const lateDays = dl ? Math.round((Date.parse(dl.l.actual!) - Date.parse(dl.l.agreed!)) / 86_400_000) : null;
+        // The product's own history search: item code or rare-word match, grouped by vendor.
+        const found = searchProducts(productIndex, it.name, { before: m.date.slice(0, 10), vendorRecord: vendorRecs, limit: 20 });
+        const vendors = found.vendors.map((v) => v.vendor);
+        const priced = found.vendors.flatMap((v) => v.lastPrices).sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+        const dealIds = [...new Set(found.hits.map((h) => h.line.dealId))];
+        let delivery: { agreed: string; actual: string; lateDays: number | null; deal: string } | null = null;
+        for (const id of dealIds) {
+          const deal = book.deals.find((d) => d.id === id);
+          const sail = deal ? dealSailing(deal) : null;
+          if (deal && sail?.agreedReady && sail.actualSail) {
+            delivery = { agreed: sail.agreedReady, actual: sail.actualSail, lateDays: sail.daysVsAgreed, deal: deal.code };
+            break;
+          }
+        }
         return {
           name: it.name,
-          matches: matches.length,
+          matches: found.hits.length,
           vendors,
-          lastPrice: priced ? { price: priced.l.unitPrice, currency: priced.l.currency, deal: priced.l.dealCode, date: priced.l.date.slice(0, 10), item: priced.l.desc } : null,
-          delivery: dl ? { agreed: dl.l.agreed!.slice(0, 10), actual: dl.l.actual!.slice(0, 10), lateDays: Number.isFinite(lateDays) ? lateDays : null, deal: dl.l.dealCode } : null,
+          lastPrice: priced ? { price: priced.unitPrice, currency: priced.currency, deal: priced.dealCode, date: priced.date, item: found.hits[0]?.line.description } : null,
+          delivery,
         };
       });
       return { subject: m.subject, date: m.date.slice(0, 10), direction: x.direction, from: m.from, items };

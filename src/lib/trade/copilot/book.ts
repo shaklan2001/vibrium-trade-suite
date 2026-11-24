@@ -12,6 +12,7 @@ import { enrichMailboxDeals } from "@/lib/trade/enrichMailboxDeals";
 import {
   buildDealSearchText,
   mapProcessedDeal,
+  uniqueDealIds,
   type ProcessedDealRow,
 } from "@/lib/trade/processedDealMapper";
 import type { Deal } from "@/types/trade";
@@ -143,14 +144,16 @@ async function loadBook(): Promise<CopilotBook> {
   }
 
   const deals = enrichMailboxDeals(
-    rows
-      .filter((row) => row.status === "completed")
-      .filter((row) => {
-        const result = row.result_json as { isTradeDeal?: boolean } | null;
-        return !(result && result.isTradeDeal === false);
-      })
-      .map((row) => mapProcessedDeal(row))
-      .filter((d): d is Deal => Boolean(d)),
+    uniqueDealIds(
+      rows
+        .filter((row) => row.status === "completed")
+        .filter((row) => {
+          const result = row.result_json as { isTradeDeal?: boolean } | null;
+          return !(result && result.isTradeDeal === false);
+        })
+        .map((row) => mapProcessedDeal(row))
+        .filter((d): d is Deal => Boolean(d)),
+    ),
   );
 
   const rowById = new Map(rows.map((r) => [r.id, r]));

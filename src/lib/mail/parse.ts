@@ -159,8 +159,10 @@ export function attachmentStoreConfigured() {
 export async function storeAttachment(
   meta: StoredAttachment,
   content: Buffer,
+  opts?: { allowInline?: boolean },
 ): Promise<StoredAttachment> {
-  if (meta.inline) return { ...meta, skipped: "inline" };
+  // Inline parts stay hidden in the inbox. Payment advice images are the exception: they are stored, still marked inline.
+  if (meta.inline && !opts?.allowInline) return { ...meta, skipped: "inline" };
   if (meta.size > MAIL_LIMITS.attachmentMaxBytes) return { ...meta, skipped: "too_large" };
   if (!BUCKET) return { ...meta, skipped: "no_bucket" };
   const key = `${PREFIX}/${meta.sha256}/${safeFilename(meta.name)}`;

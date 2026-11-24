@@ -363,7 +363,7 @@ function LaneMultiselect({
             className="absolute right-0 z-30 mt-1 w-52 rounded-md border border-zinc-200 bg-white py-1 shadow-lg"
           >
             <div className="flex items-center justify-between border-b border-zinc-100 px-2.5 py-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              <span className="text-[0.8rem] font-semibold text-zinc-600">
                 Show lanes
               </span>
               <button

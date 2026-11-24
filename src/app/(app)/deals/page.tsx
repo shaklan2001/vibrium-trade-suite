@@ -3,17 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { Search } from "lucide-react";
+import { ChevronRight, Search } from "lucide-react";
 import { PageHeader } from "@/components/layout/app-shell";
-import {
-  Badge,
-  Button,
-  Card,
-  ChannelBadge,
-  Input,
-  Stat,
-} from "@/components/ui/primitives";
-import { LoadingBlock, ListSkeleton } from "@/components/ui/loading-block";
+import { Button, Input } from "@/components/ui/primitives";
+import { ListSkeleton } from "@/components/ui/loading-block";
 import { PaginationBar } from "@/components/ui/pagination";
 import { useTradeStore } from "@/lib/trade/store";
 import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
@@ -24,6 +17,17 @@ import {
 import { STAGE_LABELS, ALL_STAGES } from "@/types/trade";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
 import { Select } from "@/components/ui/select";
+import { StatTile } from "@/components/ops/command-center-home";
+import { ModelTag, StageProgress } from "@/components/ops/deal-ui";
+import {
+  compactUsd,
+  dealBuyer,
+  dealHeadline,
+  dealLastActivity,
+  dealSupplier,
+  dealValueUsd,
+  relativeDay,
+} from "@/lib/trade/dealDisplay";
 
 const PAGE_SIZE = 25;
 
@@ -56,6 +60,23 @@ export default function DealsPage() {
     () => deals.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
     [deals, safePage],
   );
+
+  const [now, setNow] = useState(0);
+  useEffect(() => setNow(Date.now()), []);
+
+  const boardStats = useMemo(() => {
+    const sourcing = new Set(["requirement", "outreach", "quoting", "selection", "artwork", "samples"]);
+    const production = new Set(["pi_po", "packaging", "production"]);
+    const shipping = new Set(["booking", "docs_payment"]);
+    let a = 0, b = 0, c = 0, v = 0;
+    for (const d of deals) {
+      if (sourcing.has(d.stage)) a += 1;
+      else if (production.has(d.stage)) b += 1;
+      else if (shipping.has(d.stage)) c += 1;
+      if (dealValueUsd(d)) v += 1;
+    }
+    return { sourcing: a, production: b, shipping: c, withValue: v };
+  }, [deals]);
 
   // Only treat empty as "still loading" when hydrate has not finished.
   const showLoader =
@@ -152,36 +173,51 @@ export default function DealsPage() {
 
       {showLoader ? (
         <>
-          <LoadingBlock label="Loading deal board…" className="mb-4" />
-          <ListSkeleton rows={5} />
+          <div className="cc-tiles cc-tiles-4 mb-5" role="status" aria-label="Loading deals">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="cc-sk cc-sk-tile" />
+            ))}
+          </div>
+          <ListSkeleton rows={8} />
         </>
       ) : (
         <>
-          <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Stat label="Matching deals" value={deals.length} />
-            <Stat
-              label="In outreach"
-              value={deals.filter((d) => d.stage === "outreach").length}
+          <div className="cc-tiles cc-tiles-4 mb-5">
+            <StatTile
+              label="Matching deals"
+              value={deals.length.toLocaleString()}
+              caption={`${boardStats.withValue.toLocaleString()} with an order value`}
             />
-            <Stat
-              label="In production+"
-              value={deals.filter((d) =>
-                ["production", "booking", "docs_payment"].includes(d.stage),
-              ).length}
+            <StatTile
+              label="Sourcing"
+              value={boardStats.sourcing.toLocaleString()}
+              caption="requirement to samples"
+              tone="info"
             />
-            <Stat
-              label="With sources"
-              value={deals.filter((d) => (d.sources || []).length > 0).length}
+            <StatTile
+              label="In production"
+              value={boardStats.production.toLocaleString()}
+              caption="PI/PO to production"
+              tone="warn"
+            />
+            <StatTile
+              label="Shipping & payment"
+              value={boardStats.shipping.toLocaleString()}
+              caption="booking, docs, payment"
+              tone="good"
             />
           </div>
 
           {deals.length === 0 ? (
-            <Card className="p-8 text-center text-sm text-zinc-500">
-              {searchQuery.trim()
-                ? `No deals match “${searchQuery.trim()}”.`
-                : "No deals match these filters."}{" "}
+            <div className="cc-empty deal-empty">
+              <p>
+                {searchQuery.trim()
+                  ? `No deals match “${searchQuery.trim()}”.`
+                  : "No deals match these filters."}
+              </p>
               <button
-                className="text-teal-700 underline"
+                type="button"
+                className="cc-inline-link"
                 onClick={() => {
                   setSearchQuery("");
                   void hydrateMailboxBook({ force: true }).then((r) => {
@@ -190,75 +226,68 @@ export default function DealsPage() {
                   });
                 }}
               >
-                Clear search / refresh
+                Clear search and reload
               </button>
-            </Card>
+            </div>
           ) : (
-            <div className="space-y-2 animate-in fade-in duration-300">
-              {pageDeals.map((d) => {
-                const emails = [
-                  ...new Set(
-                    [
-                      ...d.parties.map((p) => p.email).filter(Boolean),
-                      ...d.sources
-                        .flatMap((s) => [s.from, s.to])
-                        .filter(Boolean),
-                    ].filter(Boolean) as string[],
-                  ),
-                ].slice(0, 2);
-                return (
-                  <Link key={d.id} href={`/deals/${encodeURIComponent(d.id)}`}>
-                    <Card className="mb-2 flex items-center justify-between gap-3 px-4 py-3 transition hover:border-teal-300 hover:shadow-sm">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded bg-zinc-900 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-white">
-                            {d.code}
+            <div className="deal-table">
+              <div className="deal-table-head" aria-hidden>
+                <span>Deal</span>
+                <span>Stage</span>
+                <span>Buyer and supplier</span>
+                <span className="deal-col-num">Order value</span>
+                <span className="deal-col-num">Last activity</span>
+              </div>
+              <ul className="deal-rows">
+                {pageDeals.map((d) => {
+                  const buyer = dealBuyer(d);
+                  const supplier = dealSupplier(d);
+                  const value = dealValueUsd(d);
+                  const last = dealLastActivity(d);
+                  return (
+                    <li key={d.id}>
+                      <Link
+                        href={`/deals/${encodeURIComponent(d.id)}`}
+                        className="deal-row"
+                      >
+                        <div className="deal-cell-main">
+                          <div className="deal-row-top">
+                            <span className="deal-code-chip">{d.code}</span>
+                            {d.mailboxIngest ? (
+                              <ModelTag model={dealCommercialModel(d)} />
+                            ) : null}
+                          </div>
+                          <span className="deal-row-title">{dealHeadline(d)}</span>
+                          <span className="deal-row-summary">{d.title}</span>
+                        </div>
+                        <div className="deal-cell-stage">
+                          <StageProgress stage={d.stage} />
+                        </div>
+                        <div className="deal-cell-parties">
+                          <span className={buyer ? "" : "is-missing"}>
+                            {buyer || "No buyer yet"}
                           </span>
-                          <span className="truncate text-sm font-medium">
-                            {d.title}
+                          <span className={supplier ? "" : "is-missing"}>
+                            {supplier || "No supplier yet"}
                           </span>
                         </div>
-                        <div className="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
-                          <Badge>{STAGE_LABELS[d.stage]}</Badge>
-                          {d.mailboxIngest ? (
-                            <Badge
-                              tone={
-                                dealCommercialModel(d) === "trader_principal"
-                                  ? "warning"
-                                  : "info"
-                              }
-                            >
-                              {dealCommercialModel(d) === "trader_principal"
-                                ? "Trader"
-                                : "Agency"}
-                            </Badge>
-                          ) : null}
-                          {emails.length ? (
-                            <span className="truncate">{emails.join(" · ")}</span>
-                          ) : null}
-                          {(d.sources || []).length > 0 ? (
-                            <span>
-                              {d.sources.length} sources
-                              {d.documents.length
-                                ? ` · ${d.documents.length} files`
-                                : ""}
-                            </span>
-                          ) : null}
-                          {d.timeline[0] ? (
-                            <span className="inline-flex items-center gap-1">
-                              <ChannelBadge channel={d.timeline[0].channel} />
-                              {d.timeline[0].title}
+                        <div className="deal-col-num deal-cell-value">
+                          {value ? compactUsd(value) : <span className="is-missing">—</span>}
+                        </div>
+                        <div className="deal-col-num deal-cell-when">
+                          <span>{relativeDay(last, now)}</span>
+                          {d.sources.length ? (
+                            <span className="deal-row-meta">
+                              {d.sources.length} email{d.sources.length === 1 ? "" : "s"}
                             </span>
                           ) : null}
                         </div>
-                      </div>
-                      <span className="shrink-0 text-xs text-teal-700">
-                        Open →
-                      </span>
-                    </Card>
-                  </Link>
-                );
-              })}
+                        <ChevronRight className="deal-row-chevron" aria-hidden />
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
               <PaginationBar
                 page={safePage}
                 pageSize={PAGE_SIZE}

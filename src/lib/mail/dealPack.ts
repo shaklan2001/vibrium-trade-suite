@@ -4,6 +4,7 @@ import type {
   EvidencePayload,
   ProcessedDealRow,
 } from "@/lib/trade/processedDealMapper";
+import { preferredStage } from "./agentStage";
 import {
   commercialModelOf,
   isUsefulAttachment,
@@ -255,6 +256,8 @@ export function buildDealPack(
   const lastBodies = messages.slice(-3).map((m) => m.body.slice(0, 800)).join(" ");
   const stages = new Set([stageOf(lastSubject, firstBodies), stageOf(lastSubject, lastBodies)]);
   if (existing?.primary_stage) stages.add(existing.primary_stage);
+  const existingResult = existing?.result_json as { agent_stage?: unknown } | null;
+  const agentStage = typeof existingResult?.agent_stage === "string" ? existingResult.agent_stage : null;
 
   const pos = new Set<string>(parseJson<string[]>(existing?.po_numbers, []));
   if (dealKey.startsWith("po:")) pos.add(dealKey.slice(3));
@@ -292,7 +295,11 @@ export function buildDealPack(
     subject: existing?.subject || messages[0]?.subject || lastSubject,
     subjects: subjects.slice(0, 8),
     po_numbers: [...pos].sort(),
-    primary_stage: primaryStage(stages),
+    primary_stage: preferredStage(primaryStage(stages), {
+      slot: existing?.slot,
+      stage: agentStage,
+      confidence: existing?.confidence,
+    }),
     commercial_model: model,
     date_start: messages[0]?.date || existing?.date_start || null,
     date_end: messages.at(-1)?.date || existing?.date_end || null,

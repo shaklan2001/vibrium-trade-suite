@@ -19,6 +19,7 @@ import os from "node:os";
 import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { GetDocumentTextDetectionCommand, StartDocumentTextDetectionCommand, TextractClient, type Block } from "@aws-sdk/client-textract";
 import { textKey, type StoredFile } from "./docStore";
+import { requeuePaymentsForOcrSha } from "./paymentJobs";
 import { classifyDocument, extOf, MAX_TEXT_CHARS, type DocText } from "./docText";
 import { attachmentBucket } from "./parse";
 
@@ -48,6 +49,15 @@ export function ocrEngine(): OcrEngine {
 
 export function ocrEnabled() {
   return (process.env.MAIL_OCR || "on").toLowerCase() !== "off";
+}
+
+/** Inline payment-advice photo: logos stay under the size floor, so this one is worth reading. */
+export function wantsPaymentImageOcr(a: StoredFile) {
+  if (!a.s3_key || !a.sha256 || !a.inline) return false;
+  const size = a.size || 0;
+  if (size < MIN_IMAGE_BYTES || size > MAX_BYTES) return false;
+  const ext = extOf(a.name);
+  return OCR_EXT.has(ext) && ext !== ".pdf";
 }
 
 /** Worth OCR: a stored PDF whose text layer was empty, or a document-sized image. */
@@ -216,7 +226,13 @@ export async function processOcr(opts: { deadline: number; limit?: number }) {
           out[(await save(m, null, "OCR timed out")) as "failed"] += 1;
           continue;
         }
-        out[(await save(m, read, null)) as "ok" | "empty"] += 1;
+        const status = await save(m, read, null);
+        out[status as "ok" | "empty"] += 1;
+        if (status === "ok") {
+          await requeuePaymentsForOcrSha(m.sha256).catch((err) =>
+            console.warn("[payments] ocr requeue failed", err instanceof Error ? err.message : err),
+          );
+        }
       } catch (err) {
         out.failed += 1;
         await save(m, null, (err instanceof Error ? err.message : String(err)).slice(0, 300)).catch(() => undefined);

@@ -57,6 +57,7 @@ function docLine(label: string, doc?: CommercialDocument): string | null {
     doc.factory && `factory ${doc.factory}`,
     doc.buyer && `buyer ${doc.buyer}`,
     doc.lines?.length ? `${doc.lines.length} line(s)` : undefined,
+    doc.verification?.unverified.length ? `(unverified: ${doc.verification.unverified.slice(0, 4).join(", ")} not found in the file)` : undefined,
   );
 }
 
@@ -194,6 +195,7 @@ export function dealCard(d: Deal, attention: AttentionItem[]): string {
   }
   rows.push(...(d.paymentNotes || []));
   rows.push(...(d.docNotes || []));
+  rows.push(...(d.extraNotes || []));
   rows.push(...mailTrail(d));
   return rows.filter(Boolean).join("\n");
 }
@@ -264,7 +266,10 @@ function bookSummary(r: Retrieval): string {
 }
 
 const RULES = `ANSWER RULES
-- Answer only from this context. If something is not here, say it is not in the book — never guess POs, amounts, dates, parties or statuses.
+- State only facts that appear in an email, a file or the deal fields, each with its link. Anything else is advice: put it under "Suggestion:" and do not present it as fact.
+- If the newest email and a deal field disagree, say so and use the email.
+- Do not cite an email's date or subject unless that line is in the context.
+- If something is not here, say it is not in the book — never guess POs, amounts, dates, parties or statuses.
 - Lead with the direct answer, then short supporting bullets. Use bullet lists, never Markdown tables (they don't render).
 - Use the totals above for any "how many / how much" — never count the rows listed (lists are trimmed).
 - Name deals by code and link them exactly as given, e.g. [PO-14837](/deals/PO-14837~ab12).

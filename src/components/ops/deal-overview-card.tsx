@@ -10,6 +10,36 @@ import {
   isNonUsdDocCurrency,
 } from "@/lib/trade/currencyDisplay";
 import { OpenableFileLink } from "@/components/ops/openable-file-link";
+import { cleanSubject } from "@/lib/trade/dealDisplay";
+
+/** "Narsi Rajput <narsi@x.in>" → "Narsi Rajput"; bare address → its local part. */
+function senderName(from: string | undefined): string {
+  if (!from) return "Unknown sender";
+  const named = from.match(/^\s*"?([^"<]+?)"?\s*</);
+  if (named?.[1]) return named[1].trim();
+  return from.split("@")[0].replace(/[._]/g, " ");
+}
+
+function mailDate(iso: string | undefined): string {
+  const t = Date.parse(iso || "");
+  if (!Number.isFinite(t)) return "";
+  return new Date(t).toLocaleString(undefined, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** First readable lines of a mail: drop quoted headers and collapse whitespace. */
+function mailSnippet(body: string | undefined): string {
+  const text = (body || "")
+    .split(/\n(?:From|Sent|On .+ wrote):/i)[0]
+    .split(/\s(?:From|Sent):\s/)[0]
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.slice(0, 240);
+}
 
 function recentSources(sources: SourceMessage[], limit = 5) {
   return [...sources]
@@ -132,7 +162,7 @@ export function DealOverviewCard({
     <Card>
       <CardHeader
         title="Deal overview"
-        description="Short brief from mailbox extract · recent activity"
+        description="What's happening on this deal, read from the emails"
       />
       <div className="space-y-4 px-4 py-3">
         <p className="text-sm leading-relaxed text-zinc-800">{summary}</p>
@@ -149,27 +179,21 @@ export function DealOverviewCard({
 
         {recent.length > 0 ? (
           <div>
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Recent mail
-            </div>
-            <ul className="divide-y divide-zinc-100 rounded-md border border-zinc-100">
+            <h3 className="mb-2 text-sm font-bold text-zinc-900">Recent mail</h3>
+            <ul className="mail-list">
               {recent.map((s) => (
-                <li key={s.id} className="px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone="info">{s.kind}</Badge>
-                    <span className="text-sm font-medium text-zinc-900">
-                      {s.subject || s.label || "Message"}
-                    </span>
+                <li key={s.id} className="mail-item">
+                  <div className="mail-item-top">
+                    <span className="mail-from">{senderName(s.from)}</span>
+                    <span className="mail-when">{mailDate(s.receivedAt)}</span>
                   </div>
-                  <div className="mt-0.5 text-[11px] text-zinc-500">
-                    {s.from || "—"}
-                    {s.receivedAt
-                      ? ` · ${new Date(s.receivedAt).toLocaleString()}`
-                      : ""}
+                  <div className="mail-subject">
+                    {s.kind && s.kind !== "other" ? (
+                      <Badge tone="info">{s.kind.replaceAll("_", " ")}</Badge>
+                    ) : null}
+                    <span>{cleanSubject(s.subject) || s.label || "No subject"}</span>
                   </div>
-                  <p className="mt-1 line-clamp-2 text-xs text-zinc-600">
-                    {(s.body || "").replace(/\s+/g, " ").slice(0, 220)}
-                  </p>
+                  <p className="mail-snippet">{mailSnippet(s.body)}</p>
                 </li>
               ))}
             </ul>
@@ -178,7 +202,7 @@ export function DealOverviewCard({
 
         {uniqueFiles.length > 0 ? (
           <div>
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="mb-2 text-sm font-bold text-zinc-900">
               Source files
             </div>
             <div className="grid gap-1.5 sm:grid-cols-2">

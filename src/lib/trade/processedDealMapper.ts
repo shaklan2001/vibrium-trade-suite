@@ -11,6 +11,7 @@ import type {
   SourceMessage,
   SourceMessageKind,
 } from "@/types/trade";
+import { preferredStage } from "@/lib/mail/agentStage";
 import { mailHref } from "@/lib/mail/mailLink";
 import { EUR_TO_USD, GBP_TO_USD, USD_TO_INR } from "./currencyDisplay";
 import { cleanPoNumbers, dealCodeFor, poNumbersIn } from "./dealReference";
@@ -93,6 +94,7 @@ const STAGE_MAP: Record<string, DealStage> = {
   inspection: "production",
   booking: "booking",
   payment: "docs_payment",
+  commission: "docs_payment",
   other: "requirement",
 };
 
@@ -395,14 +397,53 @@ function statedBuyerSplit(deal: Deal): StatedSplit | null {
   return { advance, balance, blDeferred };
 }
 
-/** Deal Board id for a processed_deals row id (po:…, topic:…). */
+export const SLUG_ID_MAX = 100;
+
+function fnv1a32Hex(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Deal Board id for a processed_deals row id (po:…, topic:…).
+ *
+ * Slugs up to SLUG_ID_MAX chars are used as-is, so existing links keep working.
+ * Longer slugs keep their first SLUG_ID_MAX chars plus a hash of the full row
+ * id; two long topic ids that differ only near the end would otherwise get
+ * the same deal id. `findDealByRef` still resolves the old truncated form.
+ *
+ * The slug also folds punctuation ("prd # 13" and "prd#13" both become
+ * "prd_13"); `uniqueDealIds` separates those once the whole book is mapped.
+ */
 export function slugId(id: string) {
   const slug = id
     .replace(/[^a-zA-Z0-9._-]+/g, "_")
     .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "")
-    .slice(0, 100);
-  return `mb-${slug || "deal"}`;
+    .replace(/^_|_$/g, "");
+  if (slug.length <= SLUG_ID_MAX) return `mb-${slug || "deal"}`;
+  return `mb-${slug.slice(0, SLUG_ID_MAX)}-${fnv1a32Hex(id)}`;
+}
+
+/**
+ * Give every deal in a mapped book its own id. Deals whose slugged ids clash
+ * (row ids differing only in punctuation or spacing) all get
+ * `<id>-<hash of row id>`, so the result does not depend on row order and
+ * deals that clash with nothing keep their plain id. Run it on the full book,
+ * before anything keys deals by id.
+ */
+export function uniqueDealIds<T extends Pick<Deal, "id" | "mailboxSourceId">>(deals: T[]): T[] {
+  const count = new Map<string, number>();
+  for (const d of deals) count.set(d.id, (count.get(d.id) || 0) + 1);
+  for (const d of deals) {
+    if ((count.get(d.id) || 0) > 1 && d.mailboxSourceId) {
+      d.id = `${d.id}-${fnv1a32Hex(d.mailboxSourceId)}`;
+    }
+  }
+  return deals;
 }
 
 function dealCode(
@@ -725,7 +766,16 @@ function commercialFrom(
     summary: str(result.summary),
     confidence: num(result.confidence),
     executionId,
+    verification: verificationFrom(result.verification),
   };
+}
+
+function verificationFrom(raw: unknown): CommercialDocument["verification"] {
+  const r = asRecord(raw);
+  const checked = num(r.checked);
+  const verified = num(r.verified);
+  if (checked == null || verified == null) return undefined;
+  return { checked, verified, unverified: Array.isArray(r.unverified) ? r.unverified.filter((p): p is string => typeof p === "string") : [] };
 }
 
 export type DealDocumentRow = {
@@ -814,6 +864,21 @@ function sideTotal(docs: CommercialDocument[], side: "buyer" | "factory"): SideT
 }
 
 /**
+ * Amount owed by the buyer, taken from the PO when one was read.
+ * A commercial invoice on the same side does not replace it.
+ */
+export function buyerOrderDocument(docs: CommercialDocument[]): CommercialDocument | undefined {
+  const pos = docs.filter(
+    (d) =>
+      d.side === "buyer" &&
+      d.docType === "po" &&
+      (d.totalAmount || 0) > 0 &&
+      !isNonCommercialFile(d.fileName),
+  );
+  return sideTotal(pos, "buyer")?.doc;
+}
+
+/**
  * Put every extracted PI / PO / invoice on the deal: the main extract plus the
  * per-document extracts in documents_json. deal.po becomes the buyer side and
  * deal.pi the factory side, whatever the files are called.
@@ -854,9 +919,12 @@ function applyCommercialDocs(
   docs.sort(newerFirst);
   deal.commercialDocs = docs;
 
+  const buyerPo = buyerOrderDocument(docs);
   const buyer = sideTotal(docs, "buyer");
   const factory = sideTotal(docs, "factory");
-  if (buyer) deal.po = buyer.doc;
+  // A buyer PO is what is owed. A later invoice must not replace that amount.
+  if (buyerPo) deal.po = buyerPo;
+  else if (buyer) deal.po = buyer.doc;
   if (factory) deal.pi = factory.doc;
   const freight = docs.find((d) => d.side === "freight");
   if (freight) deal.freightDoc = freight;
@@ -883,7 +951,13 @@ export function mapProcessedDeal(
   if (!row.id) return null;
   const result = asResult(row.result_json);
   const slot = row.slot || "";
-  const stage = STAGE_MAP[row.primary_stage || ""] || "requirement";
+  const agentStage = typeof result.agent_stage === "string" ? result.agent_stage : null;
+  const mailStage = preferredStage(row.primary_stage || "", {
+    slot: row.slot,
+    stage: agentStage,
+    confidence: row.confidence,
+  });
+  const stage = STAGE_MAP[mailStage] || "requirement";
   const created = row.date_start || row.processed_at || new Date().toISOString();
   const updated = row.date_end || row.processed_at || created;
   const summary =

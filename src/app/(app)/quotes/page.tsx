@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { UploadCloud } from "lucide-react";
 import { PageHeader } from "@/components/layout/app-shell";
 import {
   Badge,
@@ -35,6 +36,8 @@ export default function QuotesPage() {
   );
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const uploadBlocked = busy || !dealId || !routing.quote_normalizer;
 
   async function onUpload(file: File | null) {
     if (!file || !deal) {
@@ -163,13 +166,40 @@ export default function QuotesPage() {
             />
           </div>
           <div>
-            <Label>AS / quote Excel</Label>
-            <input
-              type="file"
-              accept=".xlsx,.xls,.csv,.pdf"
-              disabled={busy || !dealId || !routing.quote_normalizer}
-              onChange={(e) => void onUpload(e.target.files?.[0] || null)}
-            />
+            <Label>Quote sheet</Label>
+            <label
+              className={`dropzone ${uploadBlocked ? "is-disabled" : ""} ${dragOver ? "is-over" : ""}`}
+              onDragOver={(e) => {
+                if (uploadBlocked) return;
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                if (!uploadBlocked) void onUpload(e.dataTransfer.files?.[0] || null);
+              }}
+            >
+              <input
+                type="file"
+                className="sr-only"
+                accept=".xlsx,.xls,.csv,.pdf"
+                disabled={uploadBlocked}
+                onChange={(e) => void onUpload(e.target.files?.[0] || null)}
+              />
+              <UploadCloud className="h-5 w-5" aria-hidden />
+              <span className="dropzone-main">
+                {busy ? "Reading the sheet…" : "Drop a quote sheet or choose a file"}
+              </span>
+              <span className="dropzone-sub">
+                {!dealId
+                  ? "Pick a deal first"
+                  : !routing.quote_normalizer
+                    ? "Set up the quote reader in Agent Routing first"
+                    : "Excel, CSV or PDF"}
+              </span>
+            </label>
           </div>
         </div>
         {status ? <p className="mt-2 text-xs text-zinc-500">{status}</p> : null}
@@ -253,8 +283,20 @@ export default function QuotesPage() {
           </div>
         </Card>
       ) : (
-        <Card className="p-8 text-center text-sm text-zinc-500">
-          Select a deal and upload a quote sheet to build the SKU matrix.
+        <Card className="quote-empty">
+          <h2>Build a quote matrix</h2>
+          <ol>
+            <li>
+              <b>Pick the deal</b> the factory is quoting for.
+            </li>
+            <li>
+              <b>Drop the factory&apos;s quote sheet.</b> The agent reads each SKU,
+              MOQ, price and packing note.
+            </li>
+            <li>
+              <b>Tick the SKUs</b> the buyer wants, then lock the selection.
+            </li>
+          </ol>
         </Card>
       )}
     </div>

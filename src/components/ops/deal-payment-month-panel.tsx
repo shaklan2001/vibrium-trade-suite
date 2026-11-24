@@ -25,13 +25,14 @@ import {
 import type { CashDrillDeal } from "@/lib/trade/cashExposure";
 import { usd } from "@/lib/trade/commandCenterMetrics";
 
-const EMERALD = "#059669";
-const SKY = "#0284c7";
-const AMBER = "#d97706";
-const TEAL = "#0f766e";
+const EMERALD = "#0f8f68"; // --ok
+const SKY = "#2b6df6"; // --accent
+const AMBER = "#e08a2e"; // theme amber
+const TEAL = "#0d8a94"; // theme teal
 
 function k(n: number) {
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
+  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
   return usd(n);
 }
 
@@ -177,7 +178,7 @@ export function DealPaymentMonthPanel({
         </header>
 
         <div className="space-y-2 border-b border-zinc-100 px-4 py-3">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="text-[0.8rem] font-semibold text-zinc-600">
             Buyer (RCV)
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -236,7 +237,7 @@ export function DealPaymentMonthPanel({
             </button>
           </div>
 
-          <div className="pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="pt-1 text-[0.8rem] font-semibold text-zinc-600">
             Factory (PAY)
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -293,7 +294,7 @@ export function DealPaymentMonthPanel({
         </div>
 
         <div className="flex-1 overflow-auto px-4 py-3">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
             Month-wise · buyer & factory
           </div>
           <p className="mb-3 text-[11px] text-zinc-500">
@@ -317,11 +318,11 @@ export function DealPaymentMonthPanel({
                       ]
                 }
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <CartesianGrid vertical={false} stroke="#eef5f8" />
+                <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#657880" }} />
                 <YAxis
                   tickFormatter={(v) => k(Number(v))}
-                  tick={{ fontSize: 10 }}
+                  tick={{ fontSize: 12, fill: "#657880" }}
                   width={44}
                 />
                 <Tooltip formatter={(v: number) => usd(v)} />
@@ -401,7 +402,7 @@ export function DealPaymentMonthPanel({
 
           <div className="mt-4 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              <div className="text-[0.8rem] font-semibold text-zinc-600">
                 Installments
               </div>
               <div className="inline-flex rounded-full border border-zinc-200 p-0.5 text-[11px]">

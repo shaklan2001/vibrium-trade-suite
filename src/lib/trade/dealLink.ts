@@ -35,6 +35,14 @@ export function findDealByRef<T extends Pick<Deal, "id" | "code">>(
   if (!ref) return undefined;
   const direct = deals.find((d) => d.id === ref);
   if (direct) return direct;
-  if (!ref.includes("~")) return undefined;
-  return deals.find((d) => shortDealKey(d) === ref);
+  if (ref.includes("~")) return deals.find((d) => shortDealKey(d) === ref);
+  // Links made before clashing mailbox ids got a `-<8 hex>` suffix (see
+  // slugId / uniqueDealIds). Several deals may share the old id; the old link
+  // could only ever reach one of them, so take the first.
+  if (ref.startsWith("mb-")) {
+    return deals.find(
+      (d) => d.id.length === ref.length + 9 && d.id.startsWith(`${ref}-`),
+    );
+  }
+  return undefined;
 }

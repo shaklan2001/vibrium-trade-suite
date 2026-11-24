@@ -26,7 +26,7 @@ export function ProvenanceList({
     return (
       <ul className="mt-1 space-y-1.5">
         {title ? (
-          <li className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+          <li className="text-[0.8rem] font-semibold text-zinc-600">
             {title}
           </li>
         ) : null}

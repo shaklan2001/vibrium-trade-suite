@@ -577,6 +577,8 @@ export interface CommercialDocument {
   fileName?: string;
   /** When the document was sent (email date) — newest wins, so a revised PI replaces the old one */
   sentAt?: string;
+  /** Figures checked against the file text; `unverified` lists the ones not found (e.g. "totalAmount"). */
+  verification?: { checked: number; verified: number; unverified: string[] };
 }
 
 export interface DiscrepancyItem {
@@ -855,6 +857,8 @@ export interface Deal {
   paymentNotes?: string[];
   /** Copilot context only: text excerpts of the deal's files (document layer). */
   docNotes?: string[];
+  /** Copilot context only: team notes, the agent's next step and the agreed vs actual sailing date. */
+  extraNotes?: string[];
 }
 
 /** Cite the mail / artefact a KPI was grounded in */

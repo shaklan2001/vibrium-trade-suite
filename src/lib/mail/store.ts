@@ -63,6 +63,58 @@ export type JobUpdate = Partial<
   >
 >;
 
+export type MailRecordKind = "deal_note" | "next_action" | "next_action_log" | "notification" | "quote_use" | "bank_line";
+
+export type MailRecordInput = {
+  kind: MailRecordKind;
+  id: string;
+  dealKey?: string | null;
+  owner?: string | null;
+  data: Record<string, unknown>;
+  createdAt?: string;
+};
+
+export type MailRecord = Required<Pick<MailRecordInput, "kind" | "id" | "data">> & {
+  dealKey: string | null;
+  owner: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type MailRecordDbRow = {
+  kind: MailRecordKind;
+  id: string;
+  deal_key: string | null;
+  owner: string | null;
+  data: unknown;
+  created_at: string;
+  updated_at: string;
+};
+
+function recordFromDb(r: MailRecordDbRow): MailRecord {
+  const data = typeof r.data === "string" ? (JSON.parse(r.data) as Record<string, unknown>) : ((r.data || {}) as Record<string, unknown>);
+  return {
+    kind: r.kind,
+    id: r.id,
+    dealKey: r.deal_key,
+    owner: r.owner,
+    data,
+    createdAt: new Date(r.created_at).toISOString(),
+    updatedAt: new Date(r.updated_at).toISOString(),
+  };
+}
+
+function recordToDb(r: MailRecordInput) {
+  return {
+    kind: r.kind,
+    id: r.id,
+    deal_key: r.dealKey ?? null,
+    owner: r.owner ?? null,
+    data: r.data,
+    created_at: r.createdAt ?? null,
+  };
+}
+
 export interface MailStore {
   listConnections(): Promise<MailConnectionRow[]>;
   getConnection(id: string): Promise<MailConnectionRow | null>;
@@ -107,6 +159,9 @@ export interface MailStore {
   /** Payment ledger (mail_payments): insert or replace rows. */
   upsertPayments(rows: PaymentRow[]): Promise<void>;
   listPayments(opts: { status?: PaymentRow["status"]; ids?: string[]; limit: number }): Promise<PaymentRow[]>;
+  /** Small typed records (mail_records): deal notes, next actions, notifications. */
+  upsertRecords(rows: MailRecordInput[]): Promise<void>;
+  listRecords(opts: { kind: MailRecordKind; dealKey?: string; owner?: string; since?: string | null; limit: number }): Promise<MailRecord[]>;
 }
 
 type PaymentDbRow = Record<string, unknown>;
@@ -355,6 +410,22 @@ const rdsStore: MailStore = {
     const rows = (await rds<PaymentDbRow[]>("mail_payments_list", { status: status || null, ids: ids || null, limit })) || [];
     return rows.map(paymentFromDb);
   },
+  async upsertRecords(rows) {
+    for (let i = 0; i < rows.length; i += 100) {
+      await rds("mail_records_upsert", { rows: rows.slice(i, i + 100).map(recordToDb) });
+    }
+  },
+  async listRecords({ kind, dealKey, owner, since, limit }) {
+    const rows =
+      (await rds<MailRecordDbRow[]>("mail_records_list", {
+        kind,
+        deal_key: dealKey || null,
+        owner: owner || null,
+        since: since || null,
+        limit,
+      })) || [];
+    return rows.map(recordFromDb);
+  },
   async liveDealKeys() {
     const connection_ids = (await rdsStore.listConnections()).map((c) => c.id);
     if (!connection_ids.length) return [];
@@ -483,6 +554,14 @@ const NEON_SCHEMA = [
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS mail_payments_status ON mail_payments (status, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS mail_records (
+    kind TEXT NOT NULL, id TEXT NOT NULL, deal_key TEXT, owner TEXT,
+    data JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS mail_records_deal ON mail_records (kind, deal_key, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS mail_records_owner ON mail_records (kind, owner, created_at DESC)`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -907,6 +986,28 @@ const neonStore: MailStore = {
       [status || null, ids?.length ? ids : null, Math.max(1, Math.min(limit, 5000))],
     );
     return rows.map(paymentFromDb);
+  },
+  async upsertRecords(rows) {
+    for (const r of rows) {
+      const d = recordToDb(r);
+      await q(
+        `INSERT INTO mail_records (kind, id, deal_key, owner, data, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, COALESCE($6::timestamptz, now()), now())
+         ON CONFLICT (kind, id) DO UPDATE SET
+           deal_key = EXCLUDED.deal_key, owner = EXCLUDED.owner, data = EXCLUDED.data, updated_at = now()`,
+        [d.kind, d.id, d.deal_key, d.owner, JSON.stringify(d.data), d.created_at],
+      );
+    }
+  },
+  async listRecords({ kind, dealKey, owner, since, limit }) {
+    const rows = await q<MailRecordDbRow>(
+      `SELECT kind, id, deal_key, owner, data, created_at, updated_at FROM mail_records
+       WHERE kind = $1 AND ($2::text IS NULL OR deal_key = $2) AND ($3::text IS NULL OR owner = $3)
+         AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+       ORDER BY created_at DESC LIMIT $5`,
+      [kind, dealKey || null, owner || null, since || null, Math.max(1, Math.min(limit, 5000))],
+    );
+    return rows.map(recordFromDb);
   },
   liveDealKeys: async () =>
     (await q<{ deal_key: string }>(`SELECT DISTINCT deal_key FROM mail_messages WHERE deal_key IS NOT NULL`)).map(
