@@ -22,6 +22,7 @@ import { DealPaymentsPanel } from "@/components/ops/deal-payments-panel";
 import { DealOverviewCard } from "@/components/ops/deal-overview-card";
 import { DealNextAction } from "@/components/ops/deal-next-action";
 import { DealNotes } from "@/components/ops/deal-notes";
+import { DealPoCheck } from "@/components/ops/deal-po-check";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
 import { BookSwitch } from "@/components/ops/book-switch";
 import { findDealByRef } from "@/lib/trade/dealLink";
@@ -206,6 +207,7 @@ export default function DealRoomPage() {
 
       <div className="mb-4 space-y-4">
         <DealNextAction deal={deal} />
+        <DealPoCheck deal={deal} />
         {deal.mailboxSourceId ? <DealNotes dealKey={deal.mailboxSourceId} /> : null}
       </div>
 

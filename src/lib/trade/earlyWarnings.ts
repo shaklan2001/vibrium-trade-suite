@@ -5,6 +5,7 @@
 import { latestMailHref, mailHref } from "@/lib/mail/mailLink";
 import { SIGNAL_GRACE_DAYS, SIGNAL_STALE_DAYS, signalAgeDays, type MailSignalKind } from "@/lib/mail/mailSignals";
 import type { Deal } from "@/types/trade";
+import { checkPo } from "./poCheck";
 
 export type EarlyWarningKind = "po_risk" | "delivery_risk" | "action_needed" | MailSignalKind;
 
@@ -251,21 +252,23 @@ function cutoffRow(deal: Deal, today: string): EarlyWarning | null {
 
 function mismatchRow(deal: Deal, today: string): EarlyWarning | null {
   if (deal.commercialModel === "trader_principal") return null;
-  const buyer = deal.po?.totalAmount;
-  const factory = deal.pi?.totalAmount;
-  if (!buyer || !factory) return null;
-  const gap = Math.abs(buyer - factory) / Math.max(buyer, factory);
-  if (gap <= 0.05) return null;
+  const check = checkPo(deal);
+  const highs = check.all.filter((i) => i.severity === "high");
   const mailDelta = dayDelta(latestMail(deal), today);
   if (mailDelta == null || mailDelta < -90) return null;
-  return row(
-    deal,
-    "po_risk",
-    "Buyer and factory amounts differ",
-    3,
-    "mismatch",
-    "mismatch",
-  );
+  if (!highs.length) {
+    // Totals more than 5% apart (a wide agent margin, or a wrong figure) still warn.
+    const buyer = deal.po?.totalAmount;
+    const factory = deal.pi?.totalAmount;
+    if (!buyer || !factory || Math.abs(buyer - factory) / Math.max(buyer, factory) <= 0.05) return null;
+    return row(deal, "po_risk", "Buyer and factory amounts differ", 3, "mismatch", "mismatch");
+  }
+  const more = highs.length > 2 ? ` (+${highs.length - 2} more)` : "";
+  const reason = `${highs
+    .slice(0, 2)
+    .map((i) => i.message)
+    .join("; ")}${more}`;
+  return row(deal, "po_risk", reason, 3, "mismatch", "mismatch");
 }
 
 function skipDeal(deal: Deal) {
