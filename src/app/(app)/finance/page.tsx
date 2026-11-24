@@ -60,6 +60,7 @@ import { buildAgencyCommissionBook } from "@/lib/trade/commissionSettlement";
 import { resolveCommissionPaymentCurrency } from "@/lib/trade/commissionCurrency";
 import { buildBookInsights } from "@/lib/trade/bookInsights";
 import { BookInsightsStrip } from "@/components/ops/book-insights-strip";
+import { StatementUpload } from "@/components/ops/statement-upload";
 
 const TEAL = "#0d8a94"; // theme teal
 const AMBER = "#e08a2e"; // theme amber
@@ -416,6 +417,8 @@ export default function FinanceDashboardPage() {
       <div className={bookLoading ? "pointer-events-none opacity-40" : undefined}>
 
       <BookInsightsStrip insights={insights} bookRate={bookRate} />
+
+      <StatementUpload />
 
       {agencyMode ? (
         <div className="mb-4 space-y-2">
