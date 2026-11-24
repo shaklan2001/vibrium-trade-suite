@@ -47,7 +47,7 @@ You receive raw deal snapshots (stage, payment, docs, discrepancy, production bl
 Your job: decide what needs attention, assign severity, cluster themes, and suggest owners.
 
 ${GROUNDING}`,
-  task: `Given deals_json (stringified { asOf, deals[] }), return:
+  task: `Given deals_json (stringified { asOf, book, deals[] } — book = counts for the whole book, deals = top open deals by local priority), return:
 - attention: array of { dealId, dealCode, dealTitle, severity (critical|warning|info), category (payment|docs|discrepancy|production|artwork|samples|stage_aging|selection|booking|commission|outreach), title, detail, nextStep, dueAt }
 - clusters: array of { theme, severity, dealIds, dealTitles, summary, suggestedOwner }
 - topRisks: short strings (max 8)

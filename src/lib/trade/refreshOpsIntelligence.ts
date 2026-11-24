@@ -28,6 +28,17 @@ type RoutingSlice = {
   shipment_pulse?: string;
 };
 
+/** Agents sometimes list the same deal / item twice; the UI keys rows by id. */
+function uniqueBy<T>(rows: T[], key: (row: T) => string): T[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const k = key(row);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 function asAttention(
   raw: Record<string, unknown>,
   i: number,
@@ -263,9 +274,12 @@ export async function refreshOpsIntelligence(opts: {
             focusDealIds?: string[];
             summary?: string;
           };
-          const ranked = (r.ranked || [])
-            .map(asRanked)
-            .filter((x): x is DealPriority => Boolean(x));
+          const ranked = uniqueBy(
+            (r.ranked || [])
+              .map(asRanked)
+              .filter((x): x is DealPriority => Boolean(x)),
+            (x) => x.dealId,
+          );
           if (ranked.length) {
             patch.ranked = ranked;
             patch.rankedDealIds = ranked.map((x) => x.dealId);
@@ -278,9 +292,12 @@ export async function refreshOpsIntelligence(opts: {
             patch.rankedDealIds = r.focusDealIds;
           }
           if (r.todos?.length) {
-            patch.todos = r.todos
-              .map((t, i) => asAttention(t, i))
-              .filter((x): x is AttentionItem => Boolean(x));
+            patch.todos = uniqueBy(
+              r.todos
+                .map((t, i) => asAttention(t, i))
+                .filter((x): x is AttentionItem => Boolean(x)),
+              (x) => x.id,
+            );
           }
           if (r.summary) patch.prioritySummary = r.summary;
         } else {
@@ -308,9 +325,12 @@ export async function refreshOpsIntelligence(opts: {
             (r.topRisks || []).slice(0, 5).join(" · ") ||
             undefined;
           if (r.attention?.length) {
-            patch.attention = r.attention
-              .map((a, i) => asAttention(a, i))
-              .filter((x): x is AttentionItem => Boolean(x));
+            patch.attention = uniqueBy(
+              r.attention
+                .map((a, i) => asAttention(a, i))
+                .filter((x): x is AttentionItem => Boolean(x)),
+              (x) => x.id,
+            );
           }
         } else {
           onStatus?.(ex.error || "Risk scanner failed");
