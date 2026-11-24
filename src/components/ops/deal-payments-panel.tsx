@@ -101,7 +101,7 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
         />
         <div className="grid gap-3 border-b border-zinc-100 px-4 py-3 sm:grid-cols-2">
           <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="text-[0.8rem] font-semibold text-zinc-600">
               Buyer side
             </div>
             <p className="mt-1 text-sm text-zinc-800">
@@ -115,13 +115,13 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
             ) : (
             <div className="mt-3 grid grid-cols-3 gap-2 text-center">
               <div>
-                <div className="text-[10px] uppercase text-zinc-500">Agreed</div>
+                <div className="text-[0.75rem] font-medium text-zinc-500">Agreed</div>
                 <div className="font-mono text-sm font-semibold">
                   {money(buyer.agreed)}
                 </div>
               </div>
               <div>
-                <div className="text-[10px] uppercase text-zinc-500">
+                <div className="text-[0.75rem] font-medium text-zinc-500">
                   Received
                 </div>
                 <div className="font-mono text-sm font-semibold text-emerald-700">
@@ -129,7 +129,7 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
                 </div>
               </div>
               <div>
-                <div className="text-[10px] uppercase text-zinc-500">Open</div>
+                <div className="text-[0.75rem] font-medium text-zinc-500">Open</div>
                 <div className="font-mono text-sm font-semibold text-amber-700">
                   {money(buyer.outstanding)}
                 </div>
@@ -138,7 +138,7 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
             )}
           </div>
           <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-3">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="text-[0.8rem] font-semibold text-zinc-600">
               Factory side
             </div>
             <p className="mt-1 text-sm text-zinc-800">
@@ -152,19 +152,19 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
             ) : (
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <div className="text-[10px] uppercase text-zinc-500">Agreed</div>
+                  <div className="text-[0.75rem] font-medium text-zinc-500">Agreed</div>
                   <div className="font-mono text-sm font-semibold">
                     {money(factory.agreed)}
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10px] uppercase text-zinc-500">Paid</div>
+                  <div className="text-[0.75rem] font-medium text-zinc-500">Paid</div>
                   <div className="font-mono text-sm font-semibold text-emerald-700">
                     {money(factory.received)}
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10px] uppercase text-zinc-500">Still due</div>
+                  <div className="text-[0.75rem] font-medium text-zinc-500">Still due</div>
                   <div className="font-mono text-sm font-semibold text-amber-700">
                     {money(factory.outstanding)}
                   </div>
@@ -175,7 +175,7 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
         </div>
         {deal.commercialDocs?.length ? (
           <div className="border-b border-zinc-100 px-4 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="text-[0.8rem] font-semibold text-zinc-600">
               Documents read ({deal.commercialDocs.length})
             </div>
             <ul className="mt-1 space-y-0.5 text-[11px] text-zinc-600">
@@ -211,7 +211,7 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-100 text-left text-[10px] uppercase tracking-wide text-zinc-500">
+              <tr className="border-b border-zinc-100 text-left text-[0.75rem] font-medium text-zinc-500">
                 <th className="px-4 py-2 font-medium">
                   <button
                     type="button"

@@ -695,17 +695,40 @@ a.kpi {
   font-size: 1.35rem;
 }
 
-.kpi-danger {
-  background: color-mix(in srgb, var(--critical-bg) 75%, white);
+/* Tone = a short accent rule above the label and a tinted value,
+   not a pastel wash over the whole tile (easier to scan in a row). */
+.kpi {
+  position: relative;
+  background: rgba(255, 255, 255, 0.88);
 }
-.kpi-warning {
-  background: color-mix(in srgb, var(--warning-bg) 80%, white);
+.kpi-danger::before,
+.kpi-warning::before,
+.kpi-success::before,
+.kpi-info::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 1.25rem;
+  width: 1.75rem;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
 }
-.kpi-success {
-  background: color-mix(in srgb, var(--ok-bg) 80%, white);
+.kpi-danger::before { background: var(--critical); }
+.kpi-warning::before { background: #d99a1e; }
+.kpi-success::before { background: var(--ok); }
+.kpi-info::before { background: var(--accent); }
+.kpi-danger strong { color: var(--critical); }
+.kpi-warning strong { color: #8a5d00; }
+.kpi-success strong { color: var(--ok); }
+a.kpi:hover,
+button.kpi:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  box-shadow: var(--shadow-hover);
 }
-.kpi-info {
-  background: color-mix(in srgb, var(--info-bg) 80%, white);
+a.kpi:focus-visible,
+button.kpi:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
 }
 
 .ghost-button,

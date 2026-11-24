@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { compactMoney } from "@/lib/trade/compactMoney";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -60,24 +61,16 @@ import { resolveCommissionPaymentCurrency } from "@/lib/trade/commissionCurrency
 import { buildBookInsights } from "@/lib/trade/bookInsights";
 import { BookInsightsStrip } from "@/components/ops/book-insights-strip";
 
-const TEAL = "#0f766e";
-const AMBER = "#d97706";
-const RED = "#dc2626";
-const SKY = "#0284c7";
-const EMERALD = "#059669";
-const ZINC = "#3f3f46";
+const TEAL = "#0d8a94"; // theme teal
+const AMBER = "#e08a2e"; // theme amber
+const RED = "#dc3b3b"; // --critical
+const SKY = "#2b6df6"; // --accent
+const EMERALD = "#0f8f68"; // --ok
+const ZINC = "#4d636c"; // theme ink-muted
 
 /** Format commission amounts. INR filter uses deal/book FX — not a book-wide convert of all deals. */
 function k(n: number, rate = USD_TO_INR) {
-  const currency = getDisplayCurrency();
-  if (currency === "INR") {
-    const inr = n * (rate > 0 ? rate : USD_TO_INR);
-    if (Math.abs(inr) >= 100_000) return `₹${(inr / 100_000).toFixed(1)}L`;
-    if (Math.abs(inr) >= 1000) return `₹${(inr / 1000).toFixed(1)}k`;
-    return formatMoneyWithRate(n, "INR", rate);
-  }
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
-  return usd(n);
+  return compactMoney(n, rate);
 }
 
 export default function FinanceDashboardPage() {
@@ -426,7 +419,7 @@ export default function FinanceDashboardPage() {
 
       {agencyMode ? (
         <div className="mb-4 space-y-2">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="text-[0.8rem] font-semibold text-zinc-600">
             Agency commission book
           </div>
           <p className="text-[11px] text-zinc-500">
@@ -550,7 +543,7 @@ export default function FinanceDashboardPage() {
       ) : (
         <>
           {/* Trader / all — payment terms checkpoints */}
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="mb-2 text-[0.8rem] font-semibold text-zinc-600">
             Payment terms · checkpoints
           </div>
           <p className="mb-2 text-[11px] text-zinc-500">
@@ -703,7 +696,7 @@ export default function FinanceDashboardPage() {
 
       <div className="mb-4 grid gap-3 lg:grid-cols-2">
         <Card className="p-3">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
             {agencyMode ? "Commission by month" : "Payments by month"}
           </div>
           <p className="mb-2 text-[11px] text-zinc-500">
@@ -714,11 +707,11 @@ export default function FinanceDashboardPage() {
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={monthChart.length ? monthChart : [{ label: "—", Received: 0, Upcoming: 0, Overdue: 0, lines: [] }]}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <CartesianGrid vertical={false} stroke="#eef5f8" />
+                <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#657880" }} />
                 <YAxis
                   tickFormatter={(v) => k(Number(v))}
-                  tick={{ fontSize: 10 }}
+                  tick={{ fontSize: 12, fill: "#657880" }}
                   width={48}
                 />
                 <Tooltip formatter={(v: number) => usd(v)} />
@@ -775,7 +768,7 @@ export default function FinanceDashboardPage() {
         </Card>
 
         <Card className="p-3">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
             {agencyMode ? "Top deals by commission" : "Payments by order"}
           </div>
           <p className="mb-2 text-[11px] text-zinc-500">
@@ -803,17 +796,17 @@ export default function FinanceDashboardPage() {
                 layout="vertical"
                 margin={{ left: 8 }}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
+                <CartesianGrid vertical={false} stroke="#eef5f8" />
                 <XAxis
                   type="number"
                   tickFormatter={(v) => k(Number(v))}
-                  tick={{ fontSize: 10 }}
+                  tick={{ fontSize: 12, fill: "#657880" }}
                 />
                 <YAxis
                   type="category"
                   dataKey="label"
                   width={78}
-                  tick={{ fontSize: 10 }}
+                  tick={{ fontSize: 12, fill: "#657880" }}
                 />
                 <Tooltip
                   formatter={(v: number) => usd(v)}
@@ -885,7 +878,7 @@ export default function FinanceDashboardPage() {
 
       {!agencyMode ? (
         <>
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="mb-2 text-[0.8rem] font-semibold text-zinc-600">
             Working capital exposure
           </div>
           <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-3 xl:grid-cols-5">
@@ -988,7 +981,7 @@ export default function FinanceDashboardPage() {
         <div className="mb-4 space-y-3">
           <div className="grid gap-3 lg:grid-cols-2">
             <Card className="p-3">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
                 Collected · due · overdue
               </div>
               <p className="mb-2 text-[11px] text-zinc-500">
@@ -997,11 +990,11 @@ export default function FinanceDashboardPage() {
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={agencyStatusChart}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
+                    <CartesianGrid vertical={false} stroke="#eef5f8" />
                     <XAxis dataKey="label" tick={{ fontSize: 12 }} />
                     <YAxis
                       tickFormatter={(v) => k(Number(v), bookRate)}
-                      tick={{ fontSize: 10 }}
+                      tick={{ fontSize: 12, fill: "#657880" }}
                       width={48}
                     />
                     <Tooltip
@@ -1032,7 +1025,7 @@ export default function FinanceDashboardPage() {
               </div>
             </Card>
             <Card className="p-3">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
                 Book health
               </div>
               <ul className="space-y-3 px-1 py-2 text-sm text-zinc-700">
@@ -1074,7 +1067,7 @@ export default function FinanceDashboardPage() {
 
           {fxCompareRows.length > 0 ? (
             <Card className="p-3">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
                 Agreed FX vs market (INR commission deals)
               </div>
               <p className="mb-3 text-[11px] text-zinc-500">
@@ -1157,7 +1150,7 @@ export default function FinanceDashboardPage() {
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
           <Card className="p-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
               Funding need by horizon
             </div>
             <p className="mb-2 text-[11px] text-zinc-500">
@@ -1166,11 +1159,11 @@ export default function FinanceDashboardPage() {
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={rollingData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
+                  <CartesianGrid vertical={false} stroke="#eef5f8" />
                   <XAxis dataKey="label" tick={{ fontSize: 12 }} />
                   <YAxis
                     tickFormatter={(v) => k(Number(v))}
-                    tick={{ fontSize: 10 }}
+                    tick={{ fontSize: 12, fill: "#657880" }}
                     width={48}
                   />
                   <Tooltip formatter={(v: number) => usd(v)} />
@@ -1191,7 +1184,7 @@ export default function FinanceDashboardPage() {
           </Card>
 
           <Card className="p-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
               Where cash is blocked
             </div>
             <p className="mb-2 text-[11px] text-zinc-500">
@@ -1205,17 +1198,17 @@ export default function FinanceDashboardPage() {
                   layout="vertical"
                   margin={{ left: 8 }}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
+                  <CartesianGrid vertical={false} stroke="#eef5f8" />
                   <XAxis
                     type="number"
                     tickFormatter={(v) => k(Number(v))}
-                    tick={{ fontSize: 10 }}
+                    tick={{ fontSize: 12, fill: "#657880" }}
                   />
                   <YAxis
                     type="category"
                     dataKey="label"
                     width={72}
-                    tick={{ fontSize: 11 }}
+                    tick={{ fontSize: 12, fill: "#657880" }}
                   />
                   <Tooltip formatter={(v: number) => usd(v)} />
                   <Bar
@@ -1241,17 +1234,17 @@ export default function FinanceDashboardPage() {
           </Card>
 
           <Card className="p-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
               Deployed · still required · recoveries
             </div>
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={deployCompare}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <CartesianGrid vertical={false} stroke="#eef5f8" />
+                  <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#657880" }} />
                   <YAxis
                     tickFormatter={(v) => k(Number(v))}
-                    tick={{ fontSize: 10 }}
+                    tick={{ fontSize: 12, fill: "#657880" }}
                     width={48}
                   />
                   <Tooltip formatter={(v: number) => usd(v)} />
@@ -1274,7 +1267,7 @@ export default function FinanceDashboardPage() {
           </Card>
 
           <Card className="p-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
               Agency commission settlement
             </div>
             <p className="mb-2 text-[11px] text-zinc-500">
@@ -1305,10 +1298,10 @@ export default function FinanceDashboardPage() {
                       : [{ label: "—", Amount: 0, deals: [] }]
                   }
                 >
-                  <XAxis dataKey="label" tick={{ fontSize: 10 }} />
+                  <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#657880" }} />
                   <YAxis
                     tickFormatter={(v) => k(Number(v))}
-                    tick={{ fontSize: 10 }}
+                    tick={{ fontSize: 12, fill: "#657880" }}
                     width={44}
                   />
                   <Tooltip formatter={(v: number) => usd(v)} />

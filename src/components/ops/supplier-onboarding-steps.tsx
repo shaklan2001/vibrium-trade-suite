@@ -1780,7 +1780,7 @@ export function AssessmentStep({
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-zinc-100 text-left text-[10px] uppercase tracking-wide text-zinc-500">
+            <tr className="border-b border-zinc-100 text-left text-[0.75rem] font-medium text-zinc-500">
               <th className="py-2 pr-2 font-medium">Dimension</th>
               <th className="py-2 pr-2 font-medium">Weight</th>
               <th className="py-2 pr-2 font-medium">Score</th>
@@ -1840,7 +1840,7 @@ export function AssessmentStep({
 
       <div className="grid gap-3 rounded-lg border border-zinc-100 bg-zinc-50/80 p-3 sm:grid-cols-3">
         <div>
-          <div className="text-[10px] uppercase text-zinc-500">Total</div>
+          <div className="text-[0.75rem] font-medium text-zinc-500">Total</div>
           <div className="font-mono text-xl font-semibold">
             {a.totalScore}
             <span className="text-sm font-normal text-zinc-500"> / 100</span>

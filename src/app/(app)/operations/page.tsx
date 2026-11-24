@@ -39,7 +39,7 @@ import { useTradeStore } from "@/lib/trade/store";
 import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { filterDealsByCommercialModel } from "@/lib/trade/commercialModel";
 import { collectEarlyWarnings } from "@/lib/trade/earlyWarnings";
-import { companyPulse } from "@/lib/trade/opsIntelligence";
+import { buildLocalBrief, companyPulse, rankDeals } from "@/lib/trade/opsIntelligence";
 import { hydrateMailboxBook } from "@/lib/trade/mailboxHydrate";
 import {
   buildDealEconomicsList,
@@ -49,11 +49,11 @@ import { refreshOpsIntelligence } from "@/lib/trade/refreshOpsIntelligence";
 import type { CashDrillDeal } from "@/lib/trade/cashExposure";
 import { STAGE_LABELS } from "@/types/trade";
 
-const TEAL = "#0f766e";
-const AMBER = "#d97706";
-const RED = "#dc2626";
-const SKY = "#0284c7";
-const EMERALD = "#059669";
+const TEAL = "#0d8a94"; // theme teal
+const AMBER = "#e08a2e"; // theme amber
+const RED = "#dc3b3b"; // --critical
+const SKY = "#2b6df6"; // --accent
+const EMERALD = "#0f8f68"; // --ok
 
 /** Category axis. Full code when it fits; otherwise the unique tail. */
 function axisCode(code?: string) {
@@ -119,8 +119,20 @@ export default function OperationsDashboardPage() {
   const dealWarnings = warnings.filter((row) => row.dealId != null);
   const priorityRows = [...pinned, ...dealWarnings.slice(0, 5)];
   const hiddenDealRows = Math.max(0, dealWarnings.length - 5);
-  const rankedView = useMemo(() => opsIntel.ranked || [], [opsIntel.ranked]);
-  const brief = opsIntel.briefMarkdown || "";
+  // Agent output when it has run; until then the same views computed from the book.
+  const localRanked = useMemo(
+    () => (opsIntel.ranked?.length ? [] : rankDeals(deals)),
+    [opsIntel.ranked, deals],
+  );
+  const rankedView = opsIntel.ranked?.length ? opsIntel.ranked : localRanked;
+  const localBrief = useMemo(
+    () => (opsIntel.briefMarkdown || !deals.length ? "" : buildLocalBrief(deals)),
+    [opsIntel.briefMarkdown, deals],
+  );
+  const brief = opsIntel.briefMarkdown || localBrief;
+  const scoresVary =
+    new Set(rankedView.slice(0, 8).map((r) => Math.round(r.score))).size > 1;
+  const briefIsLocal = !opsIntel.briefMarkdown && Boolean(localBrief);
   const criticalN = warnings.filter((row) => row.severity === "critical").length;
   const warningN = warnings.filter((row) => row.severity === "warning").length;
   const countTone = mailboxStatus === "error" ? "neutral" : undefined;
@@ -262,11 +274,13 @@ export default function OperationsDashboardPage() {
       />
 
       {bookLoading ? (
-        <div className="mb-4 flex flex-col items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-6 py-16 text-center shadow-sm">
-          <span className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-teal-700" />
-          <p className="text-sm font-medium text-zinc-700">
-            Loading operations book…
-          </p>
+        <div className="mb-4 flex flex-col gap-3" role="status" aria-label="Loading the book">
+          <div className="cc-tiles">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="cc-sk cc-sk-tile" />
+            ))}
+          </div>
+          <div className="cc-sk cc-sk-panel" />
         </div>
       ) : null}
 
@@ -275,7 +289,7 @@ export default function OperationsDashboardPage() {
       <div
         className={`mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5 ${bookLoading ? "pointer-events-none opacity-40" : ""}`}
       >
-        <KpiTile size="lg" label="Open" value={pulse.openDeals} />
+        <KpiTile size="lg" label="Open deals" value={pulse.openDeals.toLocaleString()} />
         <KpiTile
           size="lg"
           label="Critical"
@@ -290,13 +304,13 @@ export default function OperationsDashboardPage() {
         />
         <KpiTile
           size="lg"
-          label="Sail"
+          label="About to sail"
           value={shipment.aboutToGo}
           tone="warning"
         />
         <KpiTile
           size="lg"
-          label="Waters"
+          label="At sea"
           value={shipment.inWaters}
           tone="info"
         />
@@ -307,19 +321,21 @@ export default function OperationsDashboardPage() {
           <CardHeader
             title="Morning brief"
             description={
-              opsIntel.riskSummary
-                ? opsIntel.riskSummary.slice(0, 160)
-                : "Daily operating snapshot"
+              briefIsLocal
+                ? busy
+                  ? "From the book now; the agent's brief replaces it when ready."
+                  : "From the book. Refresh intelligence for the agent's brief."
+                : opsIntel.riskSummary
+                  ? opsIntel.riskSummary.slice(0, 160)
+                  : "Today's operating snapshot"
             }
           />
-          <div className="max-h-56 overflow-auto px-4 py-3 text-sm">
+          <div className="ops-brief max-h-80 overflow-auto px-4 py-3 text-sm">
             {brief ? (
               <MarkdownMessage content={brief} />
             ) : (
               <p className="text-zinc-500">
-                {busy
-                  ? "Preparing brief…"
-                  : "Refresh intelligence to load today’s brief."}
+                {busy ? "Preparing brief…" : "No open deals to brief on."}
               </p>
             )}
           </div>
@@ -329,7 +345,7 @@ export default function OperationsDashboardPage() {
             title="Priority now"
             description={`${dealWarnings.length} deal warnings`}
           />
-          <div className="max-h-56 overflow-auto">
+          <div className="max-h-80 overflow-auto">
             <EarlyWarningBody
               rows={priorityRows}
               status={mailboxStatus}
@@ -342,7 +358,7 @@ export default function OperationsDashboardPage() {
 
       <div className="mb-4 grid min-w-0 gap-3 lg:grid-cols-3">
         <Card className="min-w-0 p-3">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
             Pipeline by stage
           </div>
           <div className="h-56 w-full min-w-0">
@@ -352,15 +368,15 @@ export default function OperationsDashboardPage() {
                 layout="vertical"
                 margin={{ left: 4, right: 8, top: 4, bottom: 4 }}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
+                <CartesianGrid vertical={false} stroke="#eef5f8" />
+                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 12, fill: "#657880" }} />
                 <YAxis
                   type="category"
                   dataKey="s"
                   width={108}
                   interval={0}
                   // width keeps the label on one line; recharts wraps to the axis width and clips the second line
-                  tick={{ fontSize: 10, width: 200 }}
+                  tick={{ fontSize: 12, fill: "#4d636c", width: 200 }}
                 />
                 <Tooltip />
                 <Bar
@@ -388,7 +404,7 @@ export default function OperationsDashboardPage() {
 
         <Card className="min-w-0 p-3">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="text-[0.8rem] font-semibold text-zinc-600">
               Shipments
             </div>
             <Link
@@ -445,7 +461,7 @@ export default function OperationsDashboardPage() {
         </Card>
 
         <Card className="min-w-0 p-3">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="mb-1 text-[0.8rem] font-semibold text-zinc-600">
             Cycle time · elapsed vs typical
           </div>
           <div className="h-56 w-full min-w-0">
@@ -455,14 +471,14 @@ export default function OperationsDashboardPage() {
                 layout="vertical"
                 margin={{ left: 4, right: 8, top: 4, bottom: 4 }}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-                <XAxis type="number" tick={{ fontSize: 10 }} />
+                <CartesianGrid vertical={false} stroke="#eef5f8" />
+                <XAxis type="number" tick={{ fontSize: 12, fill: "#657880" }} />
                 <YAxis
                   type="category"
                   dataKey="code"
                   width={84}
                   interval={0}
-                  tick={{ fontSize: 10, fontFamily: "ui-monospace" }}
+                  tick={{ fontSize: 12, fill: "#657880" }}
                 />
                 <Tooltip
                   labelFormatter={(_, p) => p?.[0]?.payload?.fullCode || ""}
@@ -509,12 +525,15 @@ export default function OperationsDashboardPage() {
           title="Priority queue"
           description={
             opsIntel.prioritySummary ||
-            "Ranked work order for the current book"
+            (opsIntel.ranked?.length
+              ? "Ranked work order for the current book"
+              : "Ranked from the book: risk, value and how long each deal has waited")
           }
         />
         {rankedView.length ? (
-          <div className="grid min-w-0 gap-4 p-4 lg:grid-cols-2">
-            <div className="h-64 min-w-0">
+          <div className={`grid min-w-0 gap-4 p-4 ${scoresVary ? "lg:grid-cols-2" : ""}`}>
+            {/* A chart of identical bars says nothing; the list carries it then. */}
+            <div className={scoresVary ? "h-64 min-w-0" : "hidden"}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   data={rankedView.slice(0, 8).map((r) => ({
@@ -532,9 +551,9 @@ export default function OperationsDashboardPage() {
                     angle={-40}
                     textAnchor="end"
                     height={64}
-                    tick={{ fontSize: 10, fontFamily: "ui-monospace" }}
+                    tick={{ fontSize: 12, fill: "#657880" }}
                   />
-                  <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} width={28} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 12, fill: "#657880" }} width={28} />
                   <Tooltip labelFormatter={(_, p) => p?.[0]?.payload?.full || ""} />
                   <Bar
                     dataKey="score"
@@ -620,7 +639,7 @@ export default function OperationsDashboardPage() {
           </div>
         ) : (
           <p className="px-4 py-3 text-sm text-zinc-500">
-            Refresh intelligence to load the priority ranking.
+            No open deals to rank.
           </p>
         )}
       </Card>

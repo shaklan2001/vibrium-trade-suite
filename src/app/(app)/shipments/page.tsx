@@ -3,7 +3,8 @@
 import { useEffect, useMemo } from "react";
 import Link from "next/link";
 import { PageHeader } from "@/components/layout/app-shell";
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import { Badge, Button, Card, CardHeader } from "@/components/ui/primitives";
+import { StatTile } from "@/components/ops/command-center-home";
 import { TradeMapCanvas } from "@/components/ops/trade-map";
 import { useTradeStore } from "@/lib/trade/store";
 import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
@@ -37,7 +38,9 @@ export default function ShipmentsMapPage() {
   const onWater = shipments.filter(
     (s) => s.status === "in_waters" || s.status === "about_to_sail",
   );
-  const delayed = shipments.filter((s) => s.delayDays > 0);
+  const delayed = shipments
+    .filter((s) => s.delayDays > 0)
+    .sort((a, b) => b.delayDays - a.delayDays);
   const onWaterValue = onWater.reduce((a, s) => a + s.cargoValueUsd, 0);
   const hottest = [...ports].sort(
     (a, b) =>
@@ -50,62 +53,50 @@ export default function ShipmentsMapPage() {
     <div>
       <PageHeader
         title="Shipment map"
+        description="Every booked container on one map: where it is, what's late and which ports are slow."
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="info">
-              {bookLoading ? "…" : onWater.length} on water
-            </Badge>
-            <Badge tone="warning">
-              {bookLoading ? "…" : delayed.length} delayed
-            </Badge>
-            <Badge>{ports.length} ports</Badge>
-            <Link href="/operations">
-              <Button variant="ghost">Operations</Button>
-            </Link>
-          </div>
+          <Link href="/operations">
+            <Button variant="ghost">Operations</Button>
+          </Link>
         }
       />
       {bookLoading ? (
-        <div className="mb-4 flex flex-col items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-6 py-16 text-center shadow-sm">
-          <span className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-teal-700" />
-          <p className="text-sm font-medium text-zinc-700">
-            Loading shipments…
-          </p>
+        <div className="cc-tiles cc-tiles-4 mb-4" role="status" aria-label="Loading shipments">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="cc-sk cc-sk-tile" />
+          ))}
         </div>
-      ) : null}
-
-      <div className="mb-4 grid gap-3 sm:grid-cols-3">
-        <Card className="p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-            Shipments tracked
-          </p>
-          <p className="mt-1 text-2xl font-semibold tabular-nums">
-            {shipments.length}
-          </p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-            On-water cargo (est.)
-          </p>
-          <p className="mt-1 text-2xl font-semibold tabular-nums">
-            {k(onWaterValue)}
-          </p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-            Hottest port
-          </p>
-          <p className="mt-1 text-2xl font-semibold">
-            {hottest?.code || "—"}
-          </p>
-          {hottest ? (
-            <p className="text-xs text-zinc-500">
-              L{hottest.congestionLevel} · {hottest.avgWaitDays.toFixed(1)}d
-              wait · {hottest.name}
-            </p>
-          ) : null}
-        </Card>
-      </div>
+      ) : (
+        <div className="cc-tiles cc-tiles-4 mb-4">
+          <StatTile
+            label="Shipments tracked"
+            value={shipments.length.toLocaleString()}
+            caption={`${ports.length} ports`}
+          />
+          <StatTile
+            label="On the water"
+            value={onWater.length.toLocaleString()}
+            caption={`${k(onWaterValue)} cargo (est.)`}
+            tone="info"
+          />
+          <StatTile
+            label="Delayed"
+            value={delayed.length.toLocaleString()}
+            caption={delayed.length ? "see the list below" : "all on schedule"}
+            tone={delayed.length ? "bad" : "good"}
+          />
+          <StatTile
+            label="Busiest port"
+            value={hottest?.code || "—"}
+            caption={
+              hottest
+                ? `${hottest.avgWaitDays.toFixed(1)} days wait, ${hottest.name}`
+                : "no congestion data"
+            }
+            tone={hottest && hottest.congestionLevel >= 3 ? "warn" : "flat"}
+          />
+        </div>
+      )}
 
       <TradeMapCanvas
         shipments={shipments}
@@ -113,13 +104,18 @@ export default function ShipmentsMapPage() {
       />
 
       <Card>
-        <div className="border-b border-zinc-100 px-4 py-3 text-sm font-semibold">
-          Delayed shipments
-        </div>
+        <CardHeader
+          title="Delayed shipments"
+          description={
+            delayed.length
+              ? "Behind the planned arrival, longest delay first."
+              : "Nothing is running late."
+          }
+        />
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-100 text-left text-[10px] uppercase tracking-wide text-zinc-500">
+              <tr className="border-b border-zinc-100 text-left text-[0.75rem] font-medium text-zinc-500">
                 <th className="px-4 py-2 font-medium">Vessel</th>
                 <th className="px-4 py-2 font-medium">Lane</th>
                 <th className="px-4 py-2 font-medium">Deal</th>
@@ -137,16 +133,18 @@ export default function ShipmentsMapPage() {
                       {s.vessel}
                     </Link>
                     {s.blNumber ? (
-                      <p className="text-[10px] text-zinc-500">{s.blNumber}</p>
+                      <p className="text-xs text-zinc-500">BL {s.blNumber}</p>
                     ) : null}
                   </td>
                   <td className="px-4 py-2.5 text-zinc-600">
-                    {s.originPort} → {s.destinationPort}
+                    {s.originPort} to {s.destinationPort}
                   </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">{s.dealCode}</td>
+                  <td className="px-4 py-2.5">
+                    <span className="deal-code-chip">{s.dealCode}</span>
+                  </td>
                   <td className="px-4 py-2.5 text-right">
                     <Badge tone={s.delayDays > 3 ? "danger" : "warning"}>
-                      +{s.delayDays}d
+                      {s.delayDays} day{s.delayDays === 1 ? "" : "s"} late
                     </Badge>
                   </td>
                 </tr>

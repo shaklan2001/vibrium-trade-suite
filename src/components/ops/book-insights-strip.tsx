@@ -1,18 +1,34 @@
 "use client";
 
-import { Badge, Card } from "@/components/ui/primitives";
 import type { BookInsights } from "@/lib/trade/bookInsights";
 import { formatMoneyWithRate, getDisplayCurrency, USD_TO_INR } from "@/lib/trade/currencyDisplay";
-import { usd } from "@/lib/trade/commandCenterMetrics";
 
-function money(n: number, rate = USD_TO_INR) {
-  const cur = getDisplayCurrency();
-  if (cur === "INR") return formatMoneyWithRate(n, "INR", rate);
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
-  return usd(n);
+function trim(x: number) {
+  const s = Math.abs(x) >= 100 ? x.toFixed(0) : x.toFixed(1);
+  return s.endsWith(".0") ? s.slice(0, -2) : s;
 }
 
-/** Compact book-quality strip for Finance / Command Center (investor visibility). */
+/** Compact money: $9.4M / $412k, ₹7.7 Cr / ₹4.1 L. */
+function money(n: number, rate = USD_TO_INR) {
+  if (getDisplayCurrency() === "INR") {
+    const inr = n * rate;
+    if (Math.abs(inr) >= 1e7) return `₹${trim(inr / 1e7)} Cr`;
+    if (Math.abs(inr) >= 1e5) return `₹${trim(inr / 1e5)} L`;
+    return formatMoneyWithRate(n, "INR", rate);
+  }
+  if (Math.abs(n) >= 1e6) return `$${trim(n / 1e6)}M`;
+  if (Math.abs(n) >= 1e3) return `$${trim(n / 1e3)}k`;
+  return `$${Math.round(n).toLocaleString()}`;
+}
+
+const AGE_COPY: Record<string, string> = {
+  "0_7": "1–7 days",
+  "8_30": "8–30 days",
+  "31_60": "31–60 days",
+  "61_plus": "60+ days",
+};
+
+/** Book health for Finance / Command Center: overdue by age plus coverage. */
 export function BookInsightsStrip({
   insights,
   bookRate = USD_TO_INR,
@@ -20,81 +36,74 @@ export function BookInsightsStrip({
   insights: BookInsights;
   bookRate?: number;
 }) {
+  const max = Math.max(1, ...insights.overdueAging.map((b) => b.amountUsd));
+  const lines = insights.overdueAging.reduce((n, b) => n + b.count, 0);
   return (
-    <Card className="mb-4 p-3">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-          Book pulse
-        </div>
-        <Badge tone="neutral">
-          {insights.dealCount} deals · {insights.coveragePct}% with schedules
-        </Badge>
-        <Badge tone="info">
-          {insights.inrSettlementCount} INR · {insights.usdSettlementCount} USD
-          settlement
-        </Badge>
-        <Badge tone={insights.shippedCount ? "success" : "neutral"}>
-          {insights.shippedCount} past commission gate
-        </Badge>
+    <section className="cc-panel book-pulse" aria-labelledby="book-pulse-title">
+      <div className="book-pulse-total">
+        <h2 id="book-pulse-title" className="book-pulse-label">Overdue across the book</h2>
+        <strong className="book-pulse-value">{money(insights.overdueTotalUsd, bookRate)}</strong>
+        <span className="book-pulse-sub">
+          {lines.toLocaleString()} payment line{lines === 1 ? "" : "s"} past due
+        </span>
+        <ul className="book-pulse-facts">
+          <li>
+            <b>{insights.dealCount.toLocaleString()}</b> deals,{" "}
+            <b>{insights.coveragePct}%</b> with payment terms
+          </li>
+          <li>
+            Settled in <b>{insights.inrSettlementCount}</b> INR and{" "}
+            <b>{insights.usdSettlementCount}</b> USD
+          </li>
+          <li>
+            <b>{insights.shippedCount}</b> past the commission gate
+          </li>
+        </ul>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-        <div className="rounded-md border border-zinc-100 bg-zinc-50/80 px-2.5 py-2">
-          <div className="text-[10px] uppercase tracking-wide text-zinc-500">
-            Overdue total
-          </div>
-          <div className="text-sm font-semibold tabular-nums text-red-700">
-            {money(insights.overdueTotalUsd, bookRate)}
-          </div>
-        </div>
-        {insights.overdueAging.map((b) => (
-          <div
-            key={b.key}
-            className="rounded-md border border-zinc-100 bg-white px-2.5 py-2"
-          >
-            <div className="text-[10px] uppercase tracking-wide text-zinc-500">
-              Age {b.label}
-            </div>
-            <div className="text-sm font-semibold tabular-nums text-zinc-800">
-              {money(b.amountUsd, bookRate)}
-            </div>
-            <div className="text-[10px] text-zinc-400">{b.count} lines</div>
-          </div>
-        ))}
-      </div>
-      {insights.agency ? (
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <div className="text-[11px] text-zinc-600">
-            Agency collected{" "}
-            <span className="font-semibold text-emerald-700">
-              {money(insights.agency.collectedUsd, bookRate)}
-            </span>{" "}
-            · {insights.agency.collectionPct}%
-          </div>
-          <div className="text-[11px] text-zinc-600">
-            Commission due{" "}
-            <span className="font-semibold text-amber-700">
-              {money(insights.agency.outstandingUsd, bookRate)}
+
+      <ul className="book-pulse-bars" aria-label="Overdue by age">
+        {insights.overdueAging.map((b, i) => (
+          <li key={b.key} className="cc-bar-row">
+            <span className="cc-bar-label">{AGE_COPY[b.key] || b.label} late</span>
+            <span className="cc-bar-track" aria-hidden>
+              <span
+                className={`cc-bar-fill cc-bar-${i}`}
+                style={{ width: `${b.amountUsd ? Math.max(3, (b.amountUsd / max) * 100) : 0}%` }}
+              />
             </span>
-          </div>
-          <div className="text-[11px] text-zinc-600">
-            Commission overdue{" "}
-            <span className="font-semibold text-red-700">
-              {money(insights.agency.overdueUsd, bookRate)}
+            <span className="cc-bar-value">
+              <strong>{money(b.amountUsd, bookRate)}</strong>
+              <span>
+                {b.count} line{b.count === 1 ? "" : "s"}
+              </span>
             </span>
-          </div>
-          <div className="text-[11px] text-zinc-600">
-            Not yet due{" "}
-            <span className="font-semibold text-zinc-700">
-              {money(insights.agency.notYetDueUsd, bookRate)}
-            </span>
-          </div>
-        </div>
-      ) : null}
-      <ul className="mt-2 space-y-0.5 text-[11px] text-zinc-500">
-        {insights.headlines.slice(0, 3).map((h) => (
-          <li key={h}>· {h}</li>
+          </li>
         ))}
       </ul>
-    </Card>
+
+      {insights.agency ? (
+        <dl className="book-pulse-agency">
+          <div>
+            <dt>Commission collected</dt>
+            <dd className="cc-text-good">
+              {money(insights.agency.collectedUsd, bookRate)}
+              <small>{insights.agency.collectionPct}%</small>
+            </dd>
+          </div>
+          <div>
+            <dt>Commission due</dt>
+            <dd className="cc-text-warn">{money(insights.agency.outstandingUsd, bookRate)}</dd>
+          </div>
+          <div>
+            <dt>Commission overdue</dt>
+            <dd className="cc-text-bad">{money(insights.agency.overdueUsd, bookRate)}</dd>
+          </div>
+          <div>
+            <dt>Not yet due</dt>
+            <dd>{money(insights.agency.notYetDueUsd, bookRate)}</dd>
+          </div>
+        </dl>
+      ) : null}
+    </section>
   );
 }
