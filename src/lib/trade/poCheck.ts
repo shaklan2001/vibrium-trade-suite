@@ -20,6 +20,8 @@ export type PoIssue = {
   message: string;
   baseline?: string | null;
   other?: string | null;
+  /** True when the problem is that a figure was not read from the file, not that the documents disagree. */
+  gap?: boolean;
 };
 
 export type DocRef = { label: string; docNumber: string | null; fileName: string | null; sentAt: string | null; side: string | null };
@@ -48,6 +50,16 @@ const LINE_TOLERANCE = 0.01;
 const compact = (s: string | undefined | null) => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 const STOP = new Set(["pvt", "private", "ltd", "limited", "llc", "inc", "co", "corp", "corporation", "the", "and", "india", "company", "trading", "exports", "export", "imports", "import"]);
 const words = (s: string | undefined | null) => (s || "").toLowerCase().match(/[a-z0-9]{3,}/g)?.filter((w) => !STOP.has(w)) || [];
+/** US$ / $ / USD → USD, and the same for the other usual currencies. */
+export function normCurrency(raw: string | undefined | null): string {
+  const c = (raw || "").toUpperCase().replace(/[^A-Z$€£₹]/g, "");
+  if (!c) return "";
+  if (c === "$" || c === "US$" || c === "USD" || c === "USDOLLAR" || c === "USDOLLARS" || c === "US") return "USD";
+  if (c === "€" || c === "EUR" || c === "EURO" || c === "EUROS") return "EUR";
+  if (c === "£" || c === "GBP") return "GBP";
+  if (c === "₹" || c === "RS" || c === "INR") return "INR";
+  return c;
+}
 const money = (n: number | undefined | null, cur?: string | null) => (n == null ? null : `${cur ? `${cur} ` : ""}${Math.round(n * 100) / 100}`);
 
 function ref(d: CommercialDocument): DocRef {
@@ -90,9 +102,9 @@ export function poSanity(po: CommercialDocument): PoIssue[] {
   if (!po.buyer && !po.consignee) out.push({ field: "buyer", severity: "medium", message: "Buyer name missing" });
   if (!po.currency) out.push({ field: "currency", severity: "medium", message: "Currency missing" });
   if (!po.sentAt && !po.readyDate) out.push({ field: "date", severity: "low", message: "No PO date or ready date" });
-  if (po.totalAmount == null || po.totalAmount <= 0) out.push({ field: "totalAmount", severity: "high", message: "PO total missing" });
+  if (po.totalAmount == null || po.totalAmount <= 0) out.push({ field: "totalAmount", severity: "high", message: "PO total missing", gap: true });
   if (!po.lines?.length) {
-    out.push({ field: "lines", severity: "high", message: "No lines read from the PO" });
+    out.push({ field: "lines", severity: "high", message: "No lines read from the PO", gap: true });
     return out;
   }
   let sum = 0;
@@ -173,12 +185,12 @@ export function compareDocs(base: CommercialDocument, other: CommercialDocument,
   const out: PoIssue[] = [];
   const cur = base.currency;
   const tag = kind === "factory" ? "factory document" : "later PO";
-  if (base.currency && other.currency && base.currency.toUpperCase() !== other.currency.toUpperCase()) {
+  if (normCurrency(base.currency) && normCurrency(other.currency) && normCurrency(base.currency) !== normCurrency(other.currency)) {
     out.push({ field: "currency", severity: "high", message: `Currency differs: buyer PO ${base.currency}, ${tag} ${other.currency}`, baseline: base.currency, other: other.currency });
   }
   // Lines: every baseline line must be on the other document with the same quantity.
   const used = new Set<number>();
-  const sameCurrency = !base.currency || !other.currency || base.currency.toUpperCase() === other.currency.toUpperCase();
+  const sameCurrency = !normCurrency(base.currency) || !normCurrency(other.currency) || normCurrency(base.currency) === normCurrency(other.currency);
   for (const [i, line] of (base.lines || []).entries()) {
     const label = line.itemCode || line.description?.slice(0, 40) || `line ${i + 1}`;
     const j = matchLine(line, other.lines || [], used);

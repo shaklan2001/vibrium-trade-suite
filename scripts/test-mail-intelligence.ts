@@ -188,4 +188,11 @@ test("PO check: a later buyer PO is a revision against the first, not a new base
   assert.ok(c.comparisons[0]!.issues.some((i) => i.field === "lines[0].qty"));
 });
 
+test("PO check: US$ and USD are the same currency; a missing total is a data gap, not a warning", () => {
+  const pi = poDoc({ docType: "pi", side: "factory", currency: "US$", totalAmount: 800, sentAt: "2026-11-03", lines: [{ itemCode: "BB-101", qty: 100, unitPrice: 4.8, amount: 480 }, { itemCode: "BB-102", qty: 50, unitPrice: 6.4, amount: 320 }] });
+  const c = checkPo({ commercialDocs: [poDoc({ sentAt: "2026-11-01" }), pi] } as unknown as Deal);
+  assert.ok(!c.all.some((i) => i.field === "currency"));
+  assert.ok(poSanity(poDoc({ totalAmount: undefined })).every((i) => i.field !== "totalAmount" || i.gap === true));
+});
+
 console.log(`\n${passed} passed`);
