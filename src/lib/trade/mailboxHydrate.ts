@@ -1,4 +1,4 @@
-import { mapProcessedDeal, type ProcessedDealRow } from "./processedDealMapper";
+import { mapProcessedDeal, uniqueDealIds, type ProcessedDealRow } from "./processedDealMapper";
 import type { MailSignal } from "@/lib/mail/mailSignals";
 import { enrichMailboxDeals } from "./enrichMailboxDeals";
 import { useTradeStore } from "./store";
@@ -57,10 +57,12 @@ function isTradeRow(row: ProcessedDealRow): boolean {
 /** Map raw rows to deals and replace the mailbox slice of the store. */
 function applyRows(rows: ProcessedDealRow[], liveIds: Set<string>, signals?: SignalIndexPayload): number {
   const mapped = enrichMailboxDeals(
-    rows
-      .filter(isTradeRow)
-      .map((row) => mapProcessedDeal(row))
-      .filter((deal): deal is NonNullable<typeof deal> => Boolean(deal)),
+    uniqueDealIds(
+      rows
+        .filter(isTradeRow)
+        .map((row) => mapProcessedDeal(row))
+        .filter((deal): deal is NonNullable<typeof deal> => Boolean(deal)),
+    ),
   );
   // Deals with mail in a connected mailbox: their emails open in the inbox.
   for (const d of mapped) {
