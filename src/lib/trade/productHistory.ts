@@ -45,7 +45,32 @@ export type ProductSearch = {
   vendors: ProductVendor[];
 };
 
-const STOP = new Set(["the", "and", "for", "with", "pcs", "piece", "pieces", "set", "sets", "size", "color", "colour", "assorted", "as", "per", "of", "in", "to", "a", "x"]);
+const STOP = new Set([
+  "the", "and", "for", "with", "pcs", "piece", "pieces", "set", "sets", "size", "color", "colour", "assorted", "as", "per", "of", "in", "to", "a", "x",
+  // Words that describe a request, not a product ("new items", "other options", "products discussed").
+  "new", "item", "items", "other", "option", "options", "including", "include", "that", "can", "product", "products", "style", "type", "types",
+  "kind", "kinds", "discussed", "development", "instead", "like", "similar", "different", "some", "any", "your", "our", "please", "price", "prices",
+]);
+
+/** Light stemmer so plurals and verb forms meet: handles → handle, scratching / scratcher → scratch, waldos → waldo. */
+export function stem(w: string): string {
+  if (/^\d/.test(w)) return w;
+  if (w.length > 5 && w.endsWith("ing")) return w.slice(0, -3);
+  if (w.length > 6 && w.endsWith("ers")) return w.slice(0, -3);
+  if (w.length > 6 && w.endsWith("er")) return w.slice(0, -2);
+  if (w.length > 4 && w.endsWith("ies")) return `${w.slice(0, -3)}y`;
+  if (w.length > 4 && /(ss|x|z|ch|sh)es$/.test(w)) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
+  return w;
+}
+
+/** Trade words that name a family of products: a request for “cookware” is answered by pots and pans. */
+const FAMILY: Record<string, string[]> = {
+  cookware: ["pot", "pan", "kadai", "casserole", "cookware", "wok", "saucepan"],
+  utensil: ["pot", "pan", "kadai", "ladle", "spoon", "utensil"],
+  treat: ["treat", "chew", "munchy", "rawhide", "stick", "bone"],
+  towel: ["towel", "terry"],
+};
 
 export function wordsOf(text: string): string[] {
   return [
@@ -54,9 +79,20 @@ export function wordsOf(text: string): string[] {
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, " ")
         .split(/\s+/)
+        .filter((w) => w.length > 2 && !STOP.has(w))
+        .map(stem)
         .filter((w) => w.length > 2 && !STOP.has(w)),
     ),
   ];
+}
+
+/** A request listing several products ("rawhide, body parts, munchy, or other chews") is also searched part by part. */
+export function queryParts(query: string): string[] {
+  const parts = (query || "")
+    .split(/[,;\n]|\bor\b|\band\/or\b/i)
+    .map((p) => p.trim())
+    .filter((p) => wordsOf(p).length > 0);
+  return parts.length > 1 ? [query, ...parts] : [query];
 }
 
 const cleanCode = (c: string | undefined) => (c || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -82,7 +118,8 @@ export function buildProductIndex(deals: Deal[]): ProductLine[] {
           words: wordsOf(`${description} ${l.itemCode || ""}`),
           vendor: doc.factory || doc.shipper || (doc.side === "factory" ? deal.pi?.factory : null) || null,
           buyer: doc.buyer || doc.consignee || null,
-          unitPrice: l.unitPrice ?? null,
+          // A zero or negative price is a placeholder on the document, not a price.
+          unitPrice: typeof l.unitPrice === "number" && l.unitPrice > 0 ? l.unitPrice : null,
           currency: doc.currency ?? null,
           qty: l.qty ?? null,
           date: doc.sentAt?.slice(0, 10) || deal.updatedAt?.slice(0, 10) || null,
@@ -104,24 +141,47 @@ export function searchProducts(
   opts: { limit?: number; before?: string | null; vendorRecord?: Map<string, { deals: number; avgDaysLate: number | null }> } = {},
 ): ProductSearch {
   const limit = opts.limit ?? 12;
-  const q = wordsOf(query);
   const codeQ = (query.match(/\b[A-Za-z]{1,5}[-_ ]?\d{3,}[A-Za-z]?\b/g) || []).map(cleanCode);
   const pool = opts.before ? index.filter((l) => !l.date || l.date < opts.before!) : index;
   // Rare words count more: idf over the pool.
   const df = new Map<string, number>();
   for (const l of pool) for (const w of l.words) df.set(w, (df.get(w) || 0) + 1);
   const idf = (w: string) => Math.log(1 + pool.length / (1 + (df.get(w) || 0)));
-  const hits: ProductHit[] = [];
-  for (const line of pool) {
-    let score = 0;
-    if (line.itemCode && codeQ.includes(line.itemCode)) score += 20;
-    const have = new Set(line.words);
-    const shared = q.filter((w) => have.has(w));
-    for (const w of shared) score += idf(w);
-    // Need a code hit or at least half the query words (and two when the query has several).
-    const enough = codeQ.includes(line.itemCode || "~") || (q.length > 0 && shared.length >= Math.min(2, q.length) && shared.length / q.length >= 0.5);
-    if (score > 0 && enough) hits.push({ score, line });
+  // A word this rare (a product name such as “rawhide” or “munchy”) is enough on its own.
+  const rareCut = Math.max(3, Math.round(pool.length * 0.004));
+  const best = new Map<string, ProductHit>();
+  for (const part of queryParts(query)) {
+    const q = wordsOf(part);
+    if (!q.length && !codeQ.length) continue;
+    for (const line of pool) {
+      let score = 0;
+      if (line.itemCode && codeQ.includes(line.itemCode)) score += 20;
+      const have = new Set(line.words);
+      const shared: string[] = [];
+      for (const w of q) {
+        const family = FAMILY[w] || [w];
+        const hit = family.find((f) => have.has(f));
+        if (hit) {
+          shared.push(hit);
+          score += idf(hit);
+        }
+      }
+      const share = q.length ? shared.length / q.length : 0;
+      // The rare word must be the product itself: the last word of the request ("multi pack rawhide" → rawhide).
+      const head = q[q.length - 1];
+      const headHit = head ? (FAMILY[head] || [head]).find((f) => have.has(f)) : undefined;
+      const rare = Boolean(headHit && (df.get(headHit) || 0) <= rareCut);
+      // Need a code hit, or at least half the words (two when the query has several), or the product word itself when it is rare.
+      const enough =
+        codeQ.includes(line.itemCode || "~") ||
+        (q.length > 0 && shared.length >= Math.min(2, q.length) && share >= 0.5) ||
+        (rare && share >= 0.3);
+      if (score <= 0 || !enough) continue;
+      const prev = best.get(line.key);
+      if (!prev || prev.score < score) best.set(line.key, { score, line });
+    }
   }
+  const hits = [...best.values()];
   hits.sort((a, b) => b.score - a.score || (b.line.date || "").localeCompare(a.line.date || ""));
   const top = hits.slice(0, limit);
   const byVendor = new Map<string, ProductVendor>();
