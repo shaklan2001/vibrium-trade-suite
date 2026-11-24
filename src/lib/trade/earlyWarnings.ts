@@ -253,7 +253,8 @@ function cutoffRow(deal: Deal, today: string): EarlyWarning | null {
 function mismatchRow(deal: Deal, today: string): EarlyWarning | null {
   if (deal.commercialModel === "trader_principal") return null;
   const check = checkPo(deal);
-  const highs = check.all.filter((i) => i.severity === "high");
+  // A figure the reader could not find is a data gap, not a risk to the order: only real disagreements warn.
+  const highs = check.all.filter((i) => i.severity === "high" && !i.gap);
   const mailDelta = dayDelta(latestMail(deal), today);
   if (mailDelta == null || mailDelta < -90) return null;
   if (!highs.length) {

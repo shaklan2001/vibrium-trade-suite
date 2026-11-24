@@ -248,6 +248,8 @@ export function stageOf(subject: string, body: string): string {
   if (COMMISSION_RE.test(text)) return "commission";
   // A shipment mail that asks for payment is a payment request, even with a PO number.
   if (PAY_RE.test(openingText(safeSubject, safeBody))) return "payment";
+  // An inspection named in the subject stays an inspection even if the body mentions shipping.
+  if (QC_RE.test(safeSubject)) return "inspection";
   if (FREIGHT_RE.test(text)) return "booking";
   if (SAMPLE_RE.test(text)) return "samples";
   if (ARTWORK_RE.test(text)) return "artwork";
