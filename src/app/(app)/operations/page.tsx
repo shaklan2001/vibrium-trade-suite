@@ -598,7 +598,7 @@ export default function OperationsDashboardPage() {
                   >
                     {rankedView.slice(0, 8).map((r, i) => (
                       <Cell
-                        key={r.dealId}
+                        key={`${r.dealId}-${i}`}
                         fill={i < 3 ? RED : i < 5 ? AMBER : "#3f3f46"}
                       />
                     ))}
@@ -608,7 +608,7 @@ export default function OperationsDashboardPage() {
             </div>
             <ol className="divide-y divide-zinc-100">
               {rankedView.slice(0, 6).map((r, i) => (
-                <li key={r.dealId}>
+                <li key={`${r.dealId}-${i}`}>
                   <Link
                     href={`/deals/${r.dealId}`}
                     className="flex items-center justify-between gap-3 py-2.5 hover:bg-zinc-50"
@@ -655,8 +655,8 @@ export default function OperationsDashboardPage() {
             </tr>
           </thead>
           <tbody>
-            {economics.map((e) => (
-              <tr key={e.dealId || e.dealCode} className="border-t border-zinc-50">
+            {economics.map((e, i) => (
+              <tr key={`${e.dealId || e.dealCode}-${i}`} className="border-t border-zinc-50">
                 <td className="py-1.5">
                   {e.dealId ? (
                     <Link

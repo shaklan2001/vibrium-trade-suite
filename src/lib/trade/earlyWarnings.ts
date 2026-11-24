@@ -315,5 +315,19 @@ export function collectEarlyWarnings(
       a.sortKey.localeCompare(b.sortKey) ||
       a.dealCode.localeCompare(b.dealCode),
   );
-  return rows;
+  return uniqueIds(rows);
+}
+
+/**
+ * Row ids are React keys. A book holding two deals with the same id (or one deal
+ * yielding two rows of a kind) would collide, so repeats get a `~n` suffix.
+ * Rows and their order are unchanged; the first occurrence keeps its plain id.
+ */
+function uniqueIds(rows: EarlyWarning[]): EarlyWarning[] {
+  const seen = new Map<string, number>();
+  return rows.map((r) => {
+    const n = seen.get(r.id) ?? 0;
+    seen.set(r.id, n + 1);
+    return n ? { ...r, id: `${r.id}~${n}` } : r;
+  });
 }
