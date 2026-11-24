@@ -41,11 +41,13 @@ export function CardHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 border-b border-[var(--line)] px-4 py-3">
-      <div>
-        <h2 className="text-sm font-semibold text-[var(--ink)]">{title}</h2>
+    <div className="flex items-start justify-between gap-3 border-b border-[var(--line)] px-4 py-3.5">
+      <div className="min-w-0">
+        <h2 className="text-[0.98rem] font-bold tracking-[-0.01em] text-[var(--ink)]">
+          {title}
+        </h2>
         {description ? (
-          <p className="mt-0.5 text-xs text-[var(--muted)]">{description}</p>
+          <p className="mt-0.5 text-[0.8rem] text-[var(--muted)]">{description}</p>
         ) : null}
       </div>
       {action}

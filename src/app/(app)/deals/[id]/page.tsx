@@ -3,15 +3,11 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { ChevronLeft, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/app-shell";
-import {
-  Badge,
-  Button,
-  Card,
-  CardHeader,
-} from "@/components/ui/primitives";
+import { Button, Card, CardHeader } from "@/components/ui/primitives";
 import { useTradeStore } from "@/lib/trade/store";
-import { STAGE_LABELS, type SourceMessage } from "@/types/trade";
+import type { SourceMessage } from "@/types/trade";
 import { DealAttentionPanel } from "@/components/ops/deal-attention-panel";
 import { DealTimeline } from "@/components/ops/deal-timeline";
 import { SourceEmailsPanel } from "@/components/ops/source-emails-panel";
@@ -26,6 +22,16 @@ import { DealPoCheck } from "@/components/ops/deal-po-check";
 import { dealCommercialModel } from "@/lib/trade/commercialModel";
 import { BookSwitch } from "@/components/ops/book-switch";
 import { findDealByRef } from "@/lib/trade/dealLink";
+import { ModelTag, StageProgress } from "@/components/ops/deal-ui";
+import {
+  compactUsd,
+  dealBuyer,
+  dealHeadline,
+  dealLastActivity,
+  dealSupplier,
+  dealValueUsd,
+  relativeDay,
+} from "@/lib/trade/dealDisplay";
 
 function recordReadLabel(iso: string | undefined, now: number): string | null {
   const readAt = Date.parse(iso || "");
@@ -51,6 +57,9 @@ export default function DealRoomPage() {
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const [sources, setSources] = useState<SourceMessage[]>(deal?.sources || []);
   const [readLabel, setReadLabel] = useState<string | null>(null);
+  const [now, setNow] = useState(0);
+
+  useEffect(() => setNow(Date.now()), []);
 
   useEffect(() => {
     setReadLabel(recordReadLabel(deal?.recordAsOf, Date.now()));
@@ -143,224 +152,217 @@ export default function DealRoomPage() {
   }
 
   const model = dealCommercialModel(deal);
+  const buyer = dealBuyer(deal);
+  const supplier = dealSupplier(deal);
+  const value = dealValueUsd(deal);
+  const route = [deal.booking?.pol, deal.booking?.pod].filter(Boolean).join(" to ");
+  const lastMail = dealLastActivity(deal);
+  const facts: { label: string; value: string; muted?: boolean }[] = [
+    { label: "Buyer", value: buyer || "Not in email yet", muted: !buyer },
+    { label: "Supplier", value: supplier || "Not in email yet", muted: !supplier },
+    { label: "Order value", value: value ? compactUsd(value) : "Not found", muted: !value },
+    { label: "Route", value: route || "Not booked", muted: !route },
+    { label: "Sails", value: deal.booking?.etd || "No date", muted: !deal.booking?.etd },
+    { label: "Last email", value: relativeDay(lastMail, now), muted: !lastMail },
+  ];
 
   return (
-    <div>
-      <PageHeader
-        title={deal.title}
-        description={`${deal.code} · ${STAGE_LABELS[deal.stage]}`}
-        actions={
-          <div className="flex flex-wrap gap-2">
-            <Link href="/home">
-              <Button variant="ghost">Command Center</Button>
-            </Link>
-            <Link href="/pipeline">
-              <Button variant="secondary">Pipeline</Button>
+    <div className="deal-room">
+      <Link href="/deals" className="deal-back">
+        <ChevronLeft className="h-4 w-4" aria-hidden />
+        Deal Board
+      </Link>
+
+      <header className="deal-hero">
+        <div className="deal-hero-top">
+          <div className="deal-hero-main">
+            <div className="deal-row-top">
+              <span className="deal-code-chip">{deal.code}</span>
+              <ModelTag model={model} />
+              <BookSwitch
+                deal={deal}
+                onChange={(next, pinned) =>
+                  updateDeal(deal.id, { commercialModel: next, commercialModelPinned: pinned })
+                }
+              />
+              {readLabel ? <span className="deal-hero-read">{readLabel}</span> : null}
+            </div>
+            <h1 className="deal-hero-title">{dealHeadline(deal)}</h1>
+            <p className="deal-hero-summary">{deal.title}</p>
+          </div>
+          <div className="deal-hero-actions">
+            <Link href="/outreach">
+              <Button>Outreach</Button>
             </Link>
             <Link href="/quotes">
               <Button variant="secondary">Quotes</Button>
             </Link>
-            <Link href="/outreach">
-              <Button>Outreach</Button>
+            <Link href="/pipeline">
+              <Button variant="secondary">Pipeline</Button>
             </Link>
-            <Button
-              variant="danger"
-              onClick={() => {
-                deleteDeal(deal.id);
-                window.location.href = "/deals";
-              }}
-            >
-              Delete
-            </Button>
           </div>
-        }
-      />
+        </div>
+        <StageProgress stage={deal.stage} size="lg" />
+        <dl className="deal-facts">
+          {facts.map((f) => (
+            <div key={f.label}>
+              <dt>{f.label}</dt>
+              <dd className={f.muted ? "is-missing" : undefined}>{f.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </header>
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <span className="rounded-md bg-zinc-900 px-2.5 py-1 font-mono text-sm font-semibold text-white">
-          {deal.code}
-        </span>
-        <Badge tone="info">{STAGE_LABELS[deal.stage]}</Badge>
-        <Badge tone={model === "trader_principal" ? "warning" : "success"}>
-          {model === "trader_principal"
-            ? "Trader · Global Praise"
-            : "Agency · SNSPL referee"}
-        </Badge>
-        <BookSwitch
-          deal={deal}
-          onChange={(next, pinned) =>
-            updateDeal(deal.id, { commercialModel: next, commercialModelPinned: pinned })
-          }
-        />
-        {readLabel ? <span className="text-xs text-zinc-500">{readLabel}</span> : null}
-        {deal.mailboxSlot ? <Badge>{deal.mailboxSlot}</Badge> : null}
-        {deal.mailboxSourceId ? (
-          <span className="font-mono text-[11px] text-zinc-500">
-            {deal.mailboxSourceId}
-          </span>
-        ) : null}
-      </div>
+      <div className="deal-layout">
+        <div className="deal-main">
+          <DealNextAction deal={deal} />
+          <DealOverviewCard deal={deal} sources={sources} />
+          <DealPoCheck deal={deal} />
+          <DealPaymentLedger deal={deal} />
+          <DealPaymentsPanel deal={deal} />
 
-      <div className="mb-4">
-        <DealOverviewCard deal={deal} sources={sources} />
-      </div>
+          <Card>
+            <CardHeader
+              title="Timeline"
+              description={`${(deal.timeline || []).length} events in this thread`}
+            />
+            <DealTimeline createdAt={deal.createdAt} events={deal.timeline} />
+          </Card>
 
-      <div className="mb-4 space-y-4">
-        <DealNextAction deal={deal} />
-        <DealPoCheck deal={deal} />
-        {deal.mailboxSourceId ? <DealNotes dealKey={deal.mailboxSourceId} /> : null}
-      </div>
+          <div className="space-y-2">
+            {evidenceLoading ? (
+              <p className="text-xs text-zinc-500">Loading source emails…</p>
+            ) : null}
+            {evidenceError ? (
+              <p className="text-xs text-amber-700">
+                Couldn&apos;t load the full emails: {evidenceError}. Showing the preview.
+              </p>
+            ) : null}
+            <SourceEmailsPanel sources={sources} title="Source emails" />
+          </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader
-            title="Timeline"
-            description={`${(deal.timeline || []).length} events across the thread · Day N from deal open`}
-          />
-          <DealTimeline createdAt={deal.createdAt} events={deal.timeline} />
-        </Card>
+          <details className="deal-raw">
+            <summary>Raw agent extract</summary>
+            <p className="deal-raw-note">
+              What the agent returned, for checking a figure.
+              {deal.mailboxSlot ? ` Worker: ${deal.mailboxSlot}.` : ""}
+              {deal.mailboxSourceId ? ` Record: ${deal.mailboxSourceId}.` : ""}
+            </p>
+            {deal.agentResult ? (
+              <pre>{JSON.stringify(deal.agentResult, null, 2)}</pre>
+            ) : (
+              <ul>
+                <li>Artwork: {deal.artwork?.summary || "—"}</li>
+                <li>Samples: {deal.samples?.summary || "—"}</li>
+                <li>
+                  PI/PO:{" "}
+                  {deal.discrepancy?.summary || deal.pi?.summary || deal.po?.summary || "—"}
+                </li>
+                <li>Packaging: {deal.packaging?.summary || deal.upcMatch?.summary || "—"}</li>
+                <li>Production: {deal.production?.summary || "—"}</li>
+                <li>Booking: {deal.booking?.summary || "—"}</li>
+                <li>Payment: {deal.payment?.summary || "—"}</li>
+                <li>Commission: {deal.commission?.summary || "—"}</li>
+              </ul>
+            )}
+          </details>
+        </div>
 
-        <div className="space-y-4">
+        <aside className="deal-side">
           <DealAttentionPanel deal={deal} />
-          <FactoryRecommendations requirement={deal.requirement} deal={deal} />
 
           <Card>
             <CardHeader title="Parties" />
-            <div className="space-y-2 px-4 py-3">
-              {deal.parties.map((p, i) => (
-                <div key={i} className="text-sm">
-                  <Badge>{p.role}</Badge>{" "}
-                  <span className="font-medium">{p.name}</span>
-                  {p.company ? (
-                    <span className="text-zinc-500"> · {p.company}</span>
-                  ) : null}
-                  {p.email ? (
-                    <div className="text-xs text-zinc-500">{p.email}</div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
+            <ul className="deal-parties">
+              {deal.parties.length === 0 ? (
+                <li className="is-missing">No parties found in the emails yet.</li>
+              ) : (
+                deal.parties.map((p, i) => (
+                  <li key={i}>
+                    <span className="deal-party-role">{p.role}</span>
+                    <span className="deal-party-name">{p.company || p.name}</span>
+                    {p.company && p.name && p.name !== p.company ? (
+                      <span className="deal-party-sub">{p.name}</span>
+                    ) : null}
+                    {p.email ? <span className="deal-party-sub">{p.email}</span> : null}
+                  </li>
+                ))
+              )}
+            </ul>
           </Card>
 
           <Card>
-            <CardHeader title="Requirement" />
-            <div className="space-y-1 px-4 py-3 text-sm">
-              {deal.requirement ? (
-                <>
-                  <div>
-                    <span className="text-zinc-500">Category:</span>{" "}
-                    {deal.requirement.productCategory}
-                  </div>
-                  <div>
-                    <span className="text-zinc-500">Target cost:</span>{" "}
+            <CardHeader
+              title="Documents"
+              description={`${deal.documents.length} file${deal.documents.length === 1 ? "" : "s"}`}
+            />
+            <ul className="deal-docs">
+              {deal.documents.length === 0 ? (
+                <li className="is-missing">No files attached yet.</li>
+              ) : (
+                deal.documents.map((doc) => (
+                  <li key={doc.id}>
+                    <div className="deal-doc-top">
+                      <OpenableFileLink name={doc.name} samplePath={doc.samplePath} url={doc.url} />
+                      <span className="deal-doc-type">{doc.type.replaceAll("_", " ")}</span>
+                    </div>
+                    {doc.extractedSummary ? (
+                      <p className="deal-doc-summary">{doc.extractedSummary}</p>
+                    ) : null}
+                  </li>
+                ))
+              )}
+            </ul>
+          </Card>
+
+          {deal.mailboxSourceId ? <DealNotes dealKey={deal.mailboxSourceId} /> : null}
+
+          {deal.requirement ? (
+            <Card>
+              <CardHeader title="Requirement" />
+              <dl className="deal-req">
+                <div>
+                  <dt>Category</dt>
+                  <dd>{deal.requirement.productCategory || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Target cost</dt>
+                  <dd>
                     {deal.requirement.targetFactoryCost != null
                       ? `$${deal.requirement.targetFactoryCost}`
                       : "—"}
-                  </div>
-                  <div>
-                    <span className="text-zinc-500">Retail:</span>{" "}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Retail</dt>
+                  <dd>
                     {deal.requirement.targetRetailPrice != null
                       ? `$${deal.requirement.targetRetailPrice}`
                       : "—"}
-                  </div>
-                </>
-              ) : (
-                <p className="text-zinc-500">Not extracted yet</p>
-              )}
-            </div>
-          </Card>
-
-          <Card>
-            <CardHeader title="Documents" description="Open source files" />
-            <div className="space-y-2 px-4 py-3 text-sm">
-              {deal.documents.length === 0 ? (
-                <p className="text-zinc-500">None</p>
-              ) : (
-                deal.documents.map((doc) => (
-                  <div key={doc.id} className="flex flex-col gap-0.5">
-                    <div className="flex justify-between gap-2">
-                      <OpenableFileLink
-                        name={doc.name}
-                        samplePath={doc.samplePath}
-                        url={doc.url}
-                      />
-                      <Badge>{doc.type}</Badge>
-                    </div>
-                    {doc.extractedBy || doc.extractedSummary ? (
-                      <p className="text-[11px] text-zinc-500">
-                        {doc.extractedBy ? (
-                          <span className="font-medium text-zinc-700">
-                            {doc.extractedBy}
-                          </span>
-                        ) : null}
-                        {doc.extractedSummary
-                          ? `${doc.extractedBy ? " — " : ""}${doc.extractedSummary}`
-                          : null}
-                      </p>
-                    ) : null}
-                  </div>
-                ))
-              )}
-            </div>
-          </Card>
-        </div>
-      </div>
-
-      <div className="mt-4">
-        <DealPaymentLedger deal={deal} />
-        <DealPaymentsPanel deal={deal} />
-      </div>
-
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <div className="space-y-2">
-          {evidenceLoading ? (
-            <p className="text-xs text-zinc-500">Loading source emails…</p>
+                  </dd>
+                </div>
+              </dl>
+            </Card>
           ) : null}
-          {evidenceError ? (
-            <p className="text-xs text-amber-700">
-              Evidence: {evidenceError} (showing preview if available)
-            </p>
-          ) : null}
-          <SourceEmailsPanel
-            sources={sources}
-            title="Source emails & evidence"
-          />
-        </div>
-        <Card>
-          <CardHeader
-            title="Agent extract"
-            description={
-              deal.mailboxSlot
-                ? `Worker · ${deal.mailboxSlot}`
-                : "Structured fields returned by the agent"
-            }
-          />
-          {deal.agentResult ? (
-            <pre className="max-h-[32rem] overflow-auto px-4 py-3 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap">
-              {JSON.stringify(deal.agentResult, null, 2)}
-            </pre>
-          ) : (
-            <div className="space-y-1 px-4 py-3 text-xs text-zinc-600">
-              <div>Artwork: {deal.artwork?.summary || "—"}</div>
-              <div>Samples: {deal.samples?.summary || "—"}</div>
-              <div>
-                PI/PO:{" "}
-                {deal.discrepancy?.summary ||
-                  deal.pi?.summary ||
-                  deal.po?.summary ||
-                  "—"}
-              </div>
-              <div>
-                Packaging:{" "}
-                {deal.packaging?.summary || deal.upcMatch?.summary || "—"}
-              </div>
-              <div>Production: {deal.production?.summary || "—"}</div>
-              <div>Booking: {deal.booking?.summary || "—"}</div>
-              <div>Payment: {deal.payment?.summary || "—"}</div>
-              <div>Commission: {deal.commission?.summary || "—"}</div>
-            </div>
-          )}
-        </Card>
+
+          <FactoryRecommendations requirement={deal.requirement} deal={deal} />
+
+          <button
+            type="button"
+            className="deal-delete"
+            onClick={() => {
+              const ok = window.confirm(
+                `Remove ${deal.code} from the board? This can't be undone here.`,
+              );
+              if (!ok) return;
+              deleteDeal(deal.id);
+              window.location.href = "/deals";
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden />
+            Remove deal
+          </button>
+        </aside>
       </div>
     </div>
   );
