@@ -29,7 +29,9 @@ import {
   KpiTile,
   ProvenanceList,
 } from "@/components/ops/command-center-ui";
-import { EarlyWarningBody } from "@/components/ops/early-warnings-card";
+import { WarningGroups } from "@/components/ops/warning-groups";
+import { LocalBrief } from "@/components/ops/local-brief";
+import { groupWarnings } from "@/lib/trade/groupWarnings";
 import { NextActionStats } from "@/components/ops/next-action-stats";
 import {
   ChartDrillPanel,
@@ -40,7 +42,7 @@ import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { filterDealsByCommercialModel } from "@/lib/trade/commercialModel";
 import { collectEarlyWarnings } from "@/lib/trade/earlyWarnings";
 import { buildLocalBrief, companyPulse, rankDeals } from "@/lib/trade/opsIntelligence";
-import { hydrateMailboxBook } from "@/lib/trade/mailboxHydrate";
+import { friendlyMailboxError, hydrateMailboxBook } from "@/lib/trade/mailboxHydrate";
 import {
   buildDealEconomicsList,
   buildShipmentPulseFromDeals,
@@ -115,10 +117,7 @@ export default function OperationsDashboardPage() {
       }),
     [allDeals, filter, failedExtracts],
   );
-  const pinned = warnings.filter((row) => row.dealId == null);
-  const dealWarnings = warnings.filter((row) => row.dealId != null);
-  const priorityRows = [...pinned, ...dealWarnings.slice(0, 5)];
-  const hiddenDealRows = Math.max(0, dealWarnings.length - 5);
+  const warningGroups = useMemo(() => groupWarnings(warnings), [warnings]);
   // Agent output when it has run; until then the same views computed from the book.
   const localRanked = useMemo(
     () => (opsIntel.ranked?.length ? [] : rankDeals(deals)),
@@ -331,7 +330,9 @@ export default function OperationsDashboardPage() {
             }
           />
           <div className="ops-brief max-h-80 overflow-auto px-4 py-3 text-sm">
-            {brief ? (
+            {briefIsLocal ? (
+              <LocalBrief deals={deals} />
+            ) : brief ? (
               <MarkdownMessage content={brief} />
             ) : (
               <p className="text-zinc-500">
@@ -343,15 +344,19 @@ export default function OperationsDashboardPage() {
         <Card className="lg:col-span-2">
           <CardHeader
             title="Priority now"
-            description={`${dealWarnings.length} deal warnings`}
+            description={
+              warnings.length
+                ? `${warnings.length.toLocaleString()} warnings in ${warningGroups.length} issue${warningGroups.length === 1 ? "" : "s"}`
+                : "No open warnings"
+            }
           />
-          <div className="max-h-80 overflow-auto">
-            <EarlyWarningBody
-              rows={priorityRows}
-              status={mailboxStatus}
-              error={mailboxError}
-              moreHref={hiddenDealRows > 0 ? "/home" : null}
-            />
+          <div className="max-h-[32rem] overflow-auto">
+            {mailboxStatus === "error" && mailboxError ? (
+              <p className="px-4 py-3 text-sm text-red-700" role="alert">
+                {friendlyMailboxError(mailboxError)}
+              </p>
+            ) : null}
+            <WarningGroups groups={warningGroups} compact />
           </div>
         </Card>
       </div>

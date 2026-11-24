@@ -1002,3 +1002,80 @@ a.cc-chip:hover {
   border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.78rem; font-weight: 800;
 }
 .quote-empty b { color: var(--ink); }
+
+/* ── Grouped warnings ───────────────────────────────────────────────── */
+.wg-summary { margin: -0.4rem 0 0.75rem; color: var(--muted); font-size: 0.85rem; }
+.wg-list { display: flex; flex-direction: column; gap: 0.6rem; margin: 0; padding: 0; list-style: none; }
+.wg-item {
+  position: relative;
+  padding: 0.8rem 0.95rem 0.85rem 1.1rem;
+  border: 1px solid rgba(221, 230, 234, 0.9);
+  border-radius: 0.85rem;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+.wg-item::before {
+  content: ""; position: absolute; left: 0; top: 0.7rem; bottom: 0.7rem; width: 3px; border-radius: 0 3px 3px 0;
+}
+.wg-item.is-critical::before { background: var(--critical); }
+.wg-item.is-warning::before { background: #d99a1e; }
+.wg-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.wg-count { color: var(--muted); font-size: 0.78rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wg-title { display: block; margin-top: 0.4rem; color: var(--ink); font-size: 0.95rem; font-weight: 700; text-decoration: none; }
+.wg-title-link:hover { color: var(--accent); }
+.wg-reason { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
+.wg-deals { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-top: 0.55rem; }
+.wg-more { display: contents; }
+.wg-more summary {
+  cursor: pointer; padding: 0.12rem 0.5rem; border-radius: 0.45rem; list-style: none;
+  color: var(--accent); font-size: 0.72rem; font-weight: 700;
+}
+.wg-more summary::-webkit-details-marker { display: none; }
+.wg-more summary:hover { background: var(--accent-soft); }
+.wg-more[open] summary { display: none; }
+.wg-more > .wg-deals { margin-top: 0; display: contents; }
+.wg-item .cc-inline-link { margin-top: 0.45rem; }
+
+/* Inside a card: flat rows, no per-item card chrome. */
+.wg-compact { gap: 0; }
+.wg-compact .wg-item { border: 0; border-radius: 0; box-shadow: none; padding: 0.8rem 1rem 0.85rem 1.15rem; }
+.wg-compact .wg-item + .wg-item { border-top: 1px solid var(--line); }
+.wg-compact .wg-item::before { top: 0.9rem; bottom: 0.9rem; }
+
+/* ── Local morning brief ────────────────────────────────────────────── */
+.lb { display: flex; flex-direction: column; gap: 1.1rem; }
+.lb-figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 0.15rem 0 0.9rem; border-bottom: 1px solid var(--line); }
+.lb-figures > div + div { padding-left: 0.9rem; border-left: 1px solid var(--line); }
+.lb-figures dt { color: var(--muted); font-size: 0.75rem; }
+.lb-figures dd { margin: 0.1rem 0 0; color: var(--ink); font-size: 1.25rem; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.lb-h { margin: 0 0 0.5rem; color: var(--ink); font-size: 0.92rem; font-weight: 800; }
+.lb-empty { margin: 0; color: var(--muted); font-size: 0.85rem; }
+.lb-needs { display: flex; flex-direction: column; gap: 0.55rem; margin: 0; padding: 0; list-style: none; }
+.lb-needs > li:not(.lb-empty) { padding: 0.65rem 0.8rem; border-radius: 0.7rem; background: color-mix(in srgb, var(--critical-bg) 55%, #fff); }
+.lb-needs-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+.lb-needs-title { color: var(--ink); font-size: 0.9rem; font-weight: 700; }
+.lb-needs-count { flex: none; color: var(--critical); font-size: 0.78rem; font-weight: 700; }
+.lb-needs-step { margin: 0.15rem 0 0; color: #4d636c; font-size: 0.84rem; line-height: 1.45; }
+.lb-more { color: var(--muted); font-size: 0.75rem; }
+.lb-queue { margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 0.75rem; overflow: hidden; }
+.lb-queue li + li { border-top: 1px solid var(--line); }
+.lb-queue-row { display: flex; align-items: flex-start; gap: 0.65rem; padding: 0.6rem 0.8rem; color: var(--ink); text-decoration: none; }
+.lb-queue-row:hover { background: color-mix(in srgb, var(--accent) 4%, #fff); }
+.lb-queue-row .deal-code-chip { flex: none; margin-top: 0.1rem; }
+.lb-queue-main { display: flex; flex-direction: column; min-width: 0; }
+.lb-queue-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.88rem; font-weight: 700; }
+.lb-queue-meta { color: var(--muted); font-size: 0.78rem; }
+
+/* Agent markdown brief: calmer type. */
+.ops-brief h2 { margin: 0 0 0.5rem; font-size: 1rem; font-weight: 800; color: var(--ink); }
+.ops-brief h3 { margin: 0.9rem 0 0.35rem; font-size: 0.92rem; font-weight: 800; color: var(--ink); }
+.ops-brief li { margin: 0.2rem 0; line-height: 1.5; color: #35505a; }
+
+@media (max-width: 640px) {
+  .lb-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 0.7rem; }
+  .lb-figures > div:nth-child(3) { padding-left: 0; border-left: 0; }
+}
+/* <details> with display:contents is unreliable; keep it a real box. */
+.wg-more { display: inline-flex; }
+.wg-more[open] { display: flex; flex-basis: 100%; }
+.wg-more > .wg-deals { display: flex; margin-top: 0; }
