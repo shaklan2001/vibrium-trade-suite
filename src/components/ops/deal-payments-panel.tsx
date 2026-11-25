@@ -97,7 +97,7 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
       <Card>
         <CardHeader
           title="Payments"
-          description="Agreed terms vs remittances confirmed from email"
+          description="Agreed terms vs money received: payment emails, Copilot updates and bank advices"
         />
         <div className="grid gap-3 border-b border-zinc-100 px-4 py-3 sm:grid-cols-2">
           <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-3">
@@ -311,6 +311,11 @@ export function DealPaymentsPanel({ deal }: { deal: Deal }) {
                           {cp.receivedAt ? (
                             <div className="font-mono text-zinc-500">
                               {cp.receivedAt}
+                            </div>
+                          ) : null}
+                          {cp.fromLedger ? (
+                            <div className="text-[11px] text-zinc-500">
+                              from payment ledger
                             </div>
                           ) : null}
                           {late ? (
