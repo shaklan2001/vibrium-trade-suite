@@ -75,6 +75,7 @@ export async function GET(req: Request) {
  * POST /api/people
  *   { action: "rebuild", full? }                                       read new / changed deals' mail (full: every deal)
  *   { action: "save_persona", id, name?, title?, emails?, kind?, active?, note?, by? }
+ *   { action: "patch_persona", id, addEmail?, removeEmail?, active?, by? }   one change (Copilot's card)
  *   { action: "pin_owner", dealKey, personId | null, by? }             set (or clear) a deal's owner by hand
  */
 export async function POST(req: Request) {
@@ -108,6 +109,21 @@ export async function POST(req: Request) {
         updatedBy: by,
         updatedAt: new Date().toISOString(),
       });
+      return NextResponse.json({ ok: true }, { headers: NO_STORE });
+    }
+    if (body.action === "patch_persona") {
+      // One change from Copilot's card: add / remove an address, or set active — the rest stays as stored.
+      const id = clean(body.id, 41).toLowerCase();
+      const index = await getPeopleIndex({ fresh: true });
+      const p = index?.people.find((x) => x.id === id);
+      if (!p) return jsonError("Unknown person", 404);
+      const add = clean(body.addEmail, 120).toLowerCase();
+      const remove = clean(body.removeEmail, 120).toLowerCase();
+      if (add && !/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(add)) return jsonError("Enter a full email address", 400);
+      const emails = [...new Set([...p.emails.filter((e) => e !== remove), ...(add ? [add] : [])])];
+      if (!emails.length) return jsonError("Keep at least one email address", 400);
+      const active = ["auto", "active", "inactive"].includes(String(body.active)) ? (body.active as ActiveSetting) : p.active;
+      await savePersona({ id, name: p.name, title: p.title, emails, kind: p.kind, active, note: p.note, updatedBy: by, updatedAt: new Date().toISOString() });
       return NextResponse.json({ ok: true }, { headers: NO_STORE });
     }
     if (body.action === "pin_owner") {

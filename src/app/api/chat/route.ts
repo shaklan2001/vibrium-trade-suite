@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { proposePeopleUpdate } from "@/lib/trade/people/peopleCommands";
 import { streamCompletion } from "@/lib/vibrium/chat";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { buildGroundedChatMessage } from "@/lib/trade/copilotGrounding";
@@ -78,6 +79,18 @@ export async function POST(req: NextRequest) {
         ? (body.bookFilter as CommercialModelFilter)
         : undefined,
     };
+
+    // "Kalpana is handling PO G2625146", "Yukta has left": a team change to confirm in a card.
+    const peopleProposal = await proposePeopleUpdate(userMessage, ctx).catch((err) => {
+      console.warn("[chat] people proposal failed", err instanceof Error ? err.message : err);
+      return null;
+    });
+    if (peopleProposal) {
+      return NextResponse.json(
+        { type: "people_update_proposal", proposal: peopleProposal },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
 
     // "Received $5K from the buyer on WhatsApp for PO 15269" is an update, not a question:
     // answer with a proposal the person confirms in the Copilot card. Nothing is saved here.
