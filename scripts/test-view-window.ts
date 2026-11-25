@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { isDead, withinYear } from "../src/lib/mail/viewWindow";
+import { isDead, isLiveDealRow, withinYear } from "../src/lib/mail/viewWindow";
 
 const now = Date.parse("2026-11-25T00:00:00Z");
 const ago = (d: number) => new Date(now - d * 86400000).toISOString();
@@ -10,9 +10,12 @@ assert.equal(r.kept.length, 2);
 assert.equal(r.done, true);
 assert.equal(withinYear([{ last_at: ago(2) }, { last_at: ago(364) }], now).done, false);
 
-// dead: no deal + quiet 6 months. A deal keeps the thread for the year.
-assert.equal(isDead(ago(200), false, now), true);
-assert.equal(isDead(ago(170), false, now), false);
-assert.equal(isDead(ago(200), true, now), false);
-assert.equal(isDead(ago(1), false, now), false);
-console.log("view window: 4 checks pass");
+// dead: quiet 6 months, mail threads and deals alike
+assert.equal(isDead(ago(200), now), true);
+assert.equal(isDead(ago(170), now), false);
+assert.equal(isDead(ago(1), now), false);
+assert.equal(isLiveDealRow({ date_end: ago(200) }, now), false);
+assert.equal(isLiveDealRow({ date_end: ago(30) }, now), true);
+assert.equal(isLiveDealRow({ date_end: null, processed_at: ago(300) }, now), false);
+assert.equal(isLiveDealRow({}, now), true);
+console.log("view window: 9 checks pass");

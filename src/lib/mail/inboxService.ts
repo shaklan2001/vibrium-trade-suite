@@ -105,8 +105,8 @@ export async function loadInboxPage(opts: {
       kept
         .map((t) => buildInboxItem(t.thread_key, byThread.get(t.thread_key) || [], ctx))
         .filter((i): i is InboxItem => Boolean(i))
-        // Dead: no deal and quiet for 6 months. Hidden from the list, not deleted.
-        .filter((i) => !isDead(lastAt.get(i.mailbox.threadKey) || 0, Boolean(i.dealId))),
+        // Dead: quiet for 6 months. Hidden from the list, not deleted.
+        .filter((i) => !isDead(lastAt.get(i.mailbox.threadKey) || Date.now())),
       byThread,
     ),
   );
