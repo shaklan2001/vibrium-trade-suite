@@ -2,6 +2,7 @@
 @import "../styles/suite.css";
 @import "../styles/ui-polish.css";
 @import "../styles/command-center.css";
+@import "../styles/deal-updates.css";
 
 @theme inline {
   --font-sans: var(--font-jakarta), "Segoe UI", sans-serif;

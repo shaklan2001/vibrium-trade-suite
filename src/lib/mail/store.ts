@@ -63,7 +63,7 @@ export type JobUpdate = Partial<
   >
 >;
 
-export type MailRecordKind = "deal_note" | "next_action" | "next_action_log" | "notification" | "quote_use" | "bank_line";
+export type MailRecordKind = "deal_note" | "next_action" | "next_action_log" | "notification" | "quote_use" | "bank_line" | "deal_update";
 
 export type MailRecordInput = {
   kind: MailRecordKind;

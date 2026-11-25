@@ -6,7 +6,10 @@ import { usePathname } from "next/navigation";
 import { v4 as uuid } from "uuid";
 import { Button, Card, CardHeader, Input } from "@/components/ui/primitives";
 import { MarkdownMessage } from "@/components/copilot/markdown-message";
-import { ArrowUpRight, MessageSquare, Mic, Square, Volume2, X } from "lucide-react";
+import { DealUpdateCard, type DealUpdateCardState } from "@/components/copilot/deal-update-card";
+import type { DealUpdateProposal } from "@/lib/trade/dealUpdate";
+import { onOpenCopilot } from "@/lib/trade/dealUpdateEvents";
+import { ArrowUpRight, MessageSquare, Mic, NotebookPen, Square, Volume2, X } from "lucide-react";
 import { useTradeStore } from "@/lib/trade/store";
 import type { CopilotDealRef } from "@/lib/trade/copilotGrounding";
 import { toast } from "sonner";
@@ -119,7 +122,23 @@ type ChatMessage = {
   content: string;
   /** Deals this answer is about (from the server) — shown as Open chips. */
   deals?: CopilotDealRef[];
+  /** An off-mail update Copilot understood — shown as a confirm card, saved only on confirm. */
+  proposal?: DealUpdateProposal;
+  card?: DealUpdateCardState;
 };
+
+const UPDATE_EXAMPLES = [
+  "Received $5K from the buyer on WhatsApp for PO 15269",
+  "We paid the factory ₹2.5 lakh today for PO 14682",
+  "Buyer said on call: ship 50% by air, balance by sea",
+];
+
+function proposalIntro(p: DealUpdateProposal): string {
+  if (!p.deal) return "I can log this, but I need to know which deal it's for. Pick it below, check the details and confirm.";
+  return p.type === "payment"
+    ? `Got it — here's the payment I'll add to **${p.deal.code}**. Check it and confirm; nothing is saved until you do.`
+    : `Got it — here's the note I'll add to **${p.deal.code}**. Check it and confirm; nothing is saved until you do.`;
+}
 
 function readDealRefs(res: Response): CopilotDealRef[] {
   const raw = res.headers.get("X-Copilot-Deals");
@@ -140,12 +159,16 @@ function readDealRefs(res: Response): CopilotDealRef[] {
 export function CopilotPanel({
   compact = false,
   dealId,
+  prefill,
 }: {
   compact?: boolean;
   dealId?: string;
+  /** Text to put in the composer when the panel opens (e.g. from "Log an update"). */
+  prefill?: { text: string; at: number };
 }) {
   const [contactId] = useState(() => `trade-${uuid()}`);
   const [input, setInput] = useState("");
+  const composerRef = useRef<HTMLInputElement>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const bookFilter = useTradeStore((s) => s.commercialModelFilter);
   /** Deals the last answer was about — lets "its payment term?" resolve. */
@@ -180,6 +203,16 @@ export function CopilotPanel({
   useEffect(() => {
     setVoiceSupported(isVoiceSessionSupported());
   }, []);
+
+  useEffect(() => {
+    if (!prefill) return;
+    setInput(prefill.text);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, [prefill]);
+
+  function setCard(index: number, card: DealUpdateCardState) {
+    setMessages((m) => m.map((msg, i) => (i === index ? { ...msg, card } : msg)));
+  }
 
   /** Who/where for the voice room — same values for prefetch and start. */
   function voiceInput() {
@@ -243,6 +276,20 @@ export function CopilotPanel({
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `Chat failed (${res.status})`);
+      }
+      // An update ("received $5K on WhatsApp") comes back as a proposal to confirm, not an answer.
+      if ((res.headers.get("Content-Type") || "").includes("application/json")) {
+        const j = (await res.json().catch(() => ({}))) as { type?: string; proposal?: DealUpdateProposal };
+        if (j.type !== "deal_update_proposal" || !j.proposal) throw new Error("Copilot sent an unexpected reply");
+        const proposal = j.proposal;
+        if (proposal.deal) activeDealIdsRef.current = [proposal.deal.id];
+        const intro = proposalIntro(proposal);
+        setMessages((m) => {
+          const copy = [...m];
+          copy[copy.length - 1] = { role: "assistant", content: intro, proposal, card: { status: "draft" } };
+          return copy;
+        });
+        return "I've got that update ready. Check it on screen and press confirm to save it.";
       }
       const deals = readDealRefs(res);
       if (deals.length) activeDealIdsRef.current = deals.map((d) => d.id);
@@ -445,12 +492,12 @@ export function CopilotPanel({
   return (
     <Card
       className={
-        compact ? "flex h-[420px] flex-col" : "flex h-[70vh] flex-col"
+        compact ? "flex h-[min(560px,calc(100vh-7rem))] flex-col" : "flex h-[70vh] flex-col"
       }
     >
       <CardHeader
         title="Trade Copilot · Savvy"
-        description="Ask about the live book — deals, payments, teammates, ops"
+        description="Ask about the live book, or tell it what happened on WhatsApp or a call"
       />
       <div className="flex-1 space-y-3 overflow-auto p-4">
         {messages.length === 0 ? (
@@ -469,6 +516,31 @@ export function CopilotPanel({
                 Or tap the mic and just ask — Savvy will answer out loud.
               </p>
             ) : null}
+            <div className="du-intro">
+              <p className="du-intro-title">
+                <NotebookPen className="h-3.5 w-3.5" aria-hidden />
+                Heard something on WhatsApp or a call?
+              </p>
+              <p className="text-xs">
+                Tell Savvy and it updates the deal — payments go into the ledger, everything else
+                becomes a team note. You always confirm first.
+              </p>
+              <div className="du-examples">
+                {UPDATE_EXAMPLES.map((ex) => (
+                  <button
+                    key={ex}
+                    type="button"
+                    className="du-example"
+                    onClick={() => {
+                      setInput(ex);
+                      composerRef.current?.focus();
+                    }}
+                  >
+                    {ex}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         ) : null}
         {messages.map((m, i) => (
@@ -477,10 +549,23 @@ export function CopilotPanel({
             className={
               m.role === "user"
                 ? "ml-8 rounded-lg bg-teal-50 px-3 py-2 text-sm text-zinc-800"
-                : "mr-8 rounded-lg bg-zinc-100 px-3 py-2.5"
+                : m.proposal
+                  ? "space-y-2"
+                  : "mr-8 rounded-lg bg-zinc-100 px-3 py-2.5"
             }
           >
-            {m.role === "assistant" ? (
+            {m.role === "assistant" && m.proposal ? (
+              <>
+                <div className="mr-8 rounded-lg bg-zinc-100 px-3 py-2.5">
+                  <MarkdownMessage content={m.content} />
+                </div>
+                <DealUpdateCard
+                  proposal={m.proposal}
+                  state={m.card || { status: "draft" }}
+                  onState={(card) => setCard(i, card)}
+                />
+              </>
+            ) : m.role === "assistant" ? (
               m.content ? (
                 <>
                   <MarkdownMessage content={m.content} />
@@ -536,6 +621,7 @@ export function CopilotPanel({
       ) : null}
       <div className="flex gap-2 border-t border-zinc-100 p-3">
         <Input
+          ref={composerRef}
           value={input}
           onChange={(e) => {
             // Editing while talking is allowed — the transcript continues after it.
@@ -544,7 +630,7 @@ export function CopilotPanel({
           }}
           disabled={voiceActive && busy}
           placeholder={
-            voiceActive ? "Listening… speak, then press Enter" : "Ask Savvy about Trade Suite…"
+            voiceActive ? "Listening… speak, then press Enter" : "Ask, or tell Savvy an update…"
           }
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing) {
@@ -607,7 +693,18 @@ function useDealOnScreen(): string | undefined {
 
 export function FloatingCopilot() {
   const [open, setOpen] = useState(false);
+  const [prefill, setPrefill] = useState<{ text: string; at: number } | undefined>();
   const dealOnScreen = useDealOnScreen();
+
+  // "Log an update" on Command Center / the deal page opens Copilot here.
+  useEffect(
+    () =>
+      onOpenCopilot((d) => {
+        setOpen(true);
+        if (d.prefill != null) setPrefill({ text: d.prefill, at: Date.now() });
+      }),
+    [],
+  );
 
   return (
     <div className="fixed bottom-4 right-4 z-40">
@@ -622,7 +719,7 @@ export function FloatingCopilot() {
               <X className="h-4 w-4" />
             </button>
           </div>
-          <CopilotPanel compact dealId={dealOnScreen} />
+          <CopilotPanel compact dealId={dealOnScreen} prefill={prefill} />
         </div>
       ) : (
         <button
