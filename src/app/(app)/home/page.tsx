@@ -15,6 +15,7 @@ import {
   PulseStrip,
   StatTile,
 } from "@/components/ops/command-center-home";
+import { OffMailUpdates } from "@/components/ops/off-mail-updates";
 import { useTradeStore } from "@/lib/trade/store";
 import { useVisibleDeals } from "@/lib/trade/useVisibleDeals";
 import { filterDealsByCommercialModel } from "@/lib/trade/commercialModel";
@@ -297,6 +298,7 @@ export default function CommandCenterHubPage() {
       <div className="cc-split">
         <div className="cc-stack">
           <MorningBrief dateLabel={dateLabel} rows={briefRows} />
+          <OffMailUpdates />
           <OverdueAgeChart
             buckets={insights.overdueAging}
             total={k(insights.overdueTotalUsd)}

@@ -32,6 +32,9 @@ export type MailConnectionSettings = {
 export type MailConnectionCursor = {
   /** Everything received before this instant has been listed and stored. */
   synced_through?: string;
+  /** A mailbox bigger than one listing: older mail between these dates is still to be listed. */
+  gap_from?: string;
+  gap_before?: string;
 };
 
 /** Decrypted secret payload — never leaves the server. */

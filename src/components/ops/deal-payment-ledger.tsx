@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Mail } from "lucide-react";
+import { Mail, MessageCircle, Plus } from "lucide-react";
 import { Badge, Card, CardHeader } from "@/components/ui/primitives";
 import type { PaymentEntry } from "@/lib/mail/payments";
 import { buildPaymentLedger, ordersForDeal, type OrderLedger } from "@/lib/trade/paymentLedger";
 import { useTradeStore } from "@/lib/trade/store";
+import { onDealUpdatesChanged, openCopilot } from "@/lib/trade/dealUpdateEvents";
 import type { Deal } from "@/types/trade";
 
 const STATUS: Record<OrderLedger["status"], { label: string; tone: "neutral" | "success" | "warning" | "info" | "danger" }> = {
@@ -71,11 +72,19 @@ export function DealPaymentLedger({ deal }: { deal: Deal }) {
 
   useEffect(() => {
     let alive = true;
-    loadEntries()
-      .then((e) => alive && setEntries(e))
-      .catch(() => alive && setFailed(true));
+    const read = () =>
+      loadEntries()
+        .then((e) => alive && setEntries(e))
+        .catch(() => alive && setFailed(true));
+    void read();
+    // A payment logged or undone through Copilot: read the ledger again.
+    const off = onDealUpdatesChanged(() => {
+      entriesPromise = null;
+      void read();
+    });
     return () => {
       alive = false;
+      off();
     };
   }, []);
 
@@ -89,7 +98,15 @@ export function DealPaymentLedger({ deal }: { deal: Deal }) {
 
   return (
     <Card className="mb-4">
-      <CardHeader title="Payments from email" description="Read from payment advices, TT copies and requests in the connected mailboxes" />
+      <CardHeader
+        title="Payment ledger"
+        description="Read from payment advices, TT copies and requests in the mailboxes, plus payments the team logged from WhatsApp or calls"
+        action={
+          <button type="button" className="du-text-btn" onClick={() => openCopilot({ prefill: "" })}>
+            <Plus className="h-3 w-3" aria-hidden /> Log a payment
+          </button>
+        }
+      />
       {!orders ? (
         <p className="px-4 pb-4 text-sm text-zinc-500">Reading the payment ledger…</p>
       ) : (
@@ -149,6 +166,11 @@ export function DealPaymentLedger({ deal }: { deal: Deal }) {
                         </span>
                       ) : null}
                       {l.reference ? <span>· ref {l.reference}</span> : null}
+                      {l.offMail ? (
+                        <span className="du-offmail-tag" title={l.summary || undefined}>
+                          <MessageCircle className="h-3 w-3" aria-hidden /> logged off-mail
+                        </span>
+                      ) : null}
                       {l.mailHref ? (
                         <Link href={l.mailHref} className="inline-flex items-center gap-1 text-teal-700 hover:underline">
                           <Mail className="h-3 w-3" aria-hidden /> email

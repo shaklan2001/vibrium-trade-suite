@@ -1,53 +1,69 @@
 /**
- * Team sign-in session — a signed, expiring cookie checked by src/middleware.ts.
+ * Admin sign-in — a JWT session cookie checked by src/middleware.ts.
  *
- * The app has one shared team password (APP_ACCESS_PASSWORD). Signing in sets
- * an HttpOnly cookie `<expiresAtSec>.<hmac>` where the HMAC key is
- * APP_SESSION_SECRET + the password, so rotating either one signs everyone out.
+ * There is one account, defined entirely by env:
+ *   APP_ADMIN_EMAIL     the login email (e.g. admin@snspl.in)
+ *   APP_ADMIN_PASSWORD  its password
+ *   APP_JWT_SECRET      signs the session JWT (32+ chars)
+ *
+ * Signing in issues an HS256 JWT `{ sub: email, role: "admin", iat, exp }` in an
+ * HttpOnly cookie. The signing key is APP_JWT_SECRET + the password, so changing
+ * the secret, the password or the email signs everyone out.
+ *
+ * Login is mandatory: if any of the three is missing the app fails closed
+ * (pages show the sign-in screen with a setup note, /api returns 503).
  *
  * Uses Web Crypto only, so it runs in the middleware (edge) runtime and in
  * Node route handlers alike.
  */
 
 export const SESSION_COOKIE = "vt_session";
-/** Readable marker (no secret) so the UI knows to show "Sign out". */
-export const SIGNED_IN_HINT_COOKIE = "vt_signed_in";
-export const SESSION_TTL_SEC = 30 * 24 * 60 * 60;
+export const SESSION_TTL_SEC = 7 * 24 * 60 * 60;
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
-type AuthEnv = { secret: string; password: string };
+export type AuthEnv = { email: string; password: string; secret: string };
+export type SessionClaims = { sub: string; role: "admin"; iat: number; exp: number };
 
-/**
- * Sign-in is opt-in:
- * - "off": APP_ACCESS_PASSWORD is unset — no login, everything is open
- *   (the POC default).
- * - "misconfigured": a password is set but APP_SESSION_SECRET is missing or
- *   shorter than 32 chars — protection was intended, so fail closed.
- * - "on": both set — the middleware requires a session.
- */
-export type AuthMode = "off" | "misconfigured" | "on";
-
-export function authMode(): AuthMode {
-  if (!process.env.APP_ACCESS_PASSWORD) return "off";
-  return authEnv() ? "on" : "misconfigured";
-}
-
-/** Null unless sign-in is fully configured (see authMode). */
+/** Null unless APP_ADMIN_EMAIL, APP_ADMIN_PASSWORD and APP_JWT_SECRET (32+) are all set. */
 export function authEnv(): AuthEnv | null {
-  const secret = process.env.APP_SESSION_SECRET?.trim() || "";
-  const password = process.env.APP_ACCESS_PASSWORD || "";
-  if (secret.length < 32 || !password) return null;
-  return { secret, password };
+  const email = normalizeEmail(process.env.APP_ADMIN_EMAIL || "");
+  const password = process.env.APP_ADMIN_PASSWORD || "";
+  const secret = process.env.APP_JWT_SECRET?.trim() || "";
+  if (!email || !password || secret.length < 32) return null;
+  return { email, password, secret };
 }
 
-function toBase64Url(bytes: ArrayBuffer): string {
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function b64urlFromBytes(bytes: ArrayBuffer | Uint8Array): string {
   let bin = "";
-  for (const b of new Uint8Array(bytes)) bin += String.fromCharCode(b);
+  for (const b of bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) {
+    bin += String.fromCharCode(b);
+  }
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function hmac(key: string, data: string): Promise<string> {
+function b64urlEncodeJson(value: unknown): string {
+  return b64urlFromBytes(encoder.encode(JSON.stringify(value)));
+}
+
+function b64urlDecodeJson(part: string): unknown {
+  if (!/^[A-Za-z0-9_-]+$/.test(part)) return null;
+  const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  try {
+    return JSON.parse(decoder.decode(bytes));
+  } catch {
+    return null;
+  }
+}
+
+async function hmacSha256(key: string, data: string): Promise<string> {
   const k = await crypto.subtle.importKey(
     "raw",
     encoder.encode(key),
@@ -55,15 +71,14 @@ async function hmac(key: string, data: string): Promise<string> {
     false,
     ["sign"],
   );
-  return toBase64Url(await crypto.subtle.sign("HMAC", k, encoder.encode(data)));
+  return b64urlFromBytes(await crypto.subtle.sign("HMAC", k, encoder.encode(data)));
 }
 
 /** Constant-time compare via HMAC digests (equal length, no early exit). */
 export async function timingSafeEqualStr(a: string, b: string): Promise<boolean> {
-  const key = crypto.getRandomValues(new Uint8Array(32));
   const k = await crypto.subtle.importKey(
     "raw",
-    key,
+    crypto.getRandomValues(new Uint8Array(32)),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -83,24 +98,48 @@ function signingKey(env: AuthEnv): string {
   return `${env.secret}\u0000${env.password}`;
 }
 
-export async function createSessionValue(env: AuthEnv): Promise<string> {
-  const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SEC;
-  return `${exp}.${await hmac(signingKey(env), `v1.${exp}`)}`;
-}
-
-export async function verifySessionValue(
-  value: string | undefined,
+/** Checks both fields in constant time (no early exit on a wrong email). */
+export async function checkCredentials(
+  email: string,
+  password: string,
   env: AuthEnv,
 ): Promise<boolean> {
-  if (!value) return false;
-  const dot = value.indexOf(".");
-  if (dot <= 0) return false;
-  const expRaw = value.slice(0, dot);
-  if (!/^\d{1,12}$/.test(expRaw)) return false;
-  const exp = Number(expRaw);
-  if (exp <= Math.floor(Date.now() / 1000)) return false;
-  const expected = await hmac(signingKey(env), `v1.${exp}`);
-  return timingSafeEqualStr(value.slice(dot + 1), expected);
+  const [emailOk, passwordOk] = await Promise.all([
+    timingSafeEqualStr(normalizeEmail(email), env.email),
+    timingSafeEqualStr(password, env.password),
+  ]);
+  return emailOk && passwordOk;
+}
+
+const JWT_HEADER = b64urlEncodeJson({ alg: "HS256", typ: "JWT" });
+
+export async function signSessionJwt(env: AuthEnv): Promise<string> {
+  const iat = Math.floor(Date.now() / 1000);
+  const claims: SessionClaims = { sub: env.email, role: "admin", iat, exp: iat + SESSION_TTL_SEC };
+  const unsigned = `${JWT_HEADER}.${b64urlEncodeJson(claims)}`;
+  return `${unsigned}.${await hmacSha256(signingKey(env), unsigned)}`;
+}
+
+/** Returns the claims of a valid, unexpired token for the current admin, else null. */
+export async function verifySessionJwt(
+  token: string | undefined,
+  env: AuthEnv,
+): Promise<SessionClaims | null> {
+  if (!token || token.length > 4096) return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [header, payload, signature] = parts;
+
+  // Only accept exactly our header — rejects alg:none and alg swaps.
+  if (header !== JWT_HEADER) return null;
+  const expected = await hmacSha256(signingKey(env), `${header}.${payload}`);
+  if (!(await timingSafeEqualStr(signature, expected))) return null;
+
+  const claims = b64urlDecodeJson(payload) as Partial<SessionClaims> | null;
+  if (!claims || typeof claims.exp !== "number" || typeof claims.sub !== "string") return null;
+  if (claims.exp <= Math.floor(Date.now() / 1000)) return null;
+  if (claims.sub !== env.email || claims.role !== "admin") return null;
+  return claims as SessionClaims;
 }
 
 /**
