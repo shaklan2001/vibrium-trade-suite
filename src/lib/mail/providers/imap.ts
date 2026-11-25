@@ -1,6 +1,7 @@
 import { ImapFlow, type MailboxLockObject } from "imapflow";
 import type { MailConnectionSettings } from "../types";
 import { MailAuthError } from "./http";
+import { beforeInclusive, laterOf } from "../syncWindow";
 import type { OpenSession, ProviderRef } from "./types";
 
 type ImapSettings = NonNullable<MailConnectionSettings["imap"]>;
@@ -63,22 +64,33 @@ export const openImapSession: OpenSession = async (conn, secret) => {
   return {
     secret,
     secretChanged: false,
-    async listSince(since, cap) {
+    async listSince(since, cap, before) {
       const folders = ["INBOX"];
       const boxes = await client.list();
       const sent = boxes.find((b) => b.specialUse === "\\Sent");
       if (sent && sent.path !== "INBOX") folders.push(sent.path);
+      // The inbox gets most of the room; the sent folder keeps a share so replies are never crowded out.
+      const sentShare = folders.length > 1 ? Math.floor(cap * 0.2) : 0;
 
       const refs: ProviderRef[] = [];
-      for (const path of folders) {
+      let truncatedAt: Date | null = null;
+      for (const [i, path] of folders.entries()) {
         await open(path);
         const box = client.mailbox;
         const validity = box && typeof box === "object" ? box.uidValidity : 0;
-        const uids = (await client.search({ since }, { uid: true })) || [];
-        for (const uid of uids) refs.push({ id: refId(path, validity, uid) });
-        if (refs.length >= cap) break;
+        const query = before ? { since, before: beforeInclusive(before) } : { since };
+        const uids = ((await client.search(query, { uid: true })) || []).sort((a, b) => a - b);
+        const room = i === 0 ? cap - sentShare : cap - refs.length;
+        const kept = uids.length > room ? uids.slice(uids.length - Math.max(room, 0)) : uids;
+        if (kept.length < uids.length && kept.length) {
+          // Where the cut fell: the received date of the oldest message kept.
+          const m = await client.fetchOne(String(kept[0]), { internalDate: true }, { uid: true });
+          const d = m && m.internalDate ? new Date(m.internalDate) : null;
+          truncatedAt = laterOf(truncatedAt, d || since);
+        }
+        for (const uid of kept) refs.push({ id: refId(path, validity, uid) });
       }
-      return refs.slice(0, cap);
+      return { refs, truncatedAt };
     },
     async fetchRaw(ref) {
       const { path, uid } = parseRef(ref.id);

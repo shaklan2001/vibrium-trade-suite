@@ -17,6 +17,7 @@ import { decryptSecret } from "./crypto";
 import { buildDealPack, buildEvidence, dealContextNotes, type DealPack } from "./dealPack";
 import { presign } from "./attachmentUrl";
 import { isBankStatementMail } from "./bankStatement";
+import { listForRun, nextCursor, pendingGap } from "./syncWindow";
 import { ensureDocText } from "./docStore";
 import { refreshSignals } from "./signalStore";
 import { freshText } from "./inbox";
@@ -172,19 +173,20 @@ export async function syncConnection(
 
     const cursor = conn.cursor_json || {};
     const floor = startedAt.getTime() - backfillDays(conn) * DAY_MS;
-    const since = cursor.synced_through
-      ? Math.max(floor, Date.parse(cursor.synced_through) - MAIL_LIMITS.overlapMs)
-      : floor;
-
-    const refs = await session.listSince(new Date(since), MAIL_LIMITS.listCap);
-    stats.listed = refs.length;
-    if (refs.length >= MAIL_LIMITS.listCap) {
-      warning = `More than ${MAIL_LIMITS.listCap} messages in the sync window — lower the backfill days to cover older mail`;
-    }
-    const known = new Set(await store.knownMessageIds(conn.id, refs.map((r) => r.id)));
+    // The recent window first; once it has nothing new, the older part a big mailbox left behind
+    // (a window holds at most listCap messages, the newest are kept, the rest becomes a gap).
+    const run = await listForRun({
+      cursor,
+      floorMs: floor,
+      overlapMs: MAIL_LIMITS.overlapMs,
+      cap: MAIL_LIMITS.listCap,
+      list: (since, cap, before) => session!.listSince(since, cap, before),
+      known: async (ids) => new Set(await store.knownMessageIds(conn.id, ids)),
+    });
+    stats.listed = run.listed;
     // Newest first: a freshly connected mailbox fills the shared inbox from the
     // top while older mail keeps backfilling on later runs.
-    const fresh = refs.filter((r) => !known.has(r.id)).reverse();
+    const fresh = [...run.fresh].reverse();
     stats.fresh = fresh.length;
 
     const batch = fresh.slice(0, MAIL_LIMITS.messagesPerRun);
@@ -336,16 +338,24 @@ export async function syncConnection(
 
     stats.remaining = fresh.length - handled;
     const latest = await store.getConnection(conn.id);
+    const allKnown = stats.remaining === 0;
+    const nextCur = nextCursor((latest || conn).cursor_json || {}, {
+      startedAt,
+      // Reading the gap means the recent window had nothing new.
+      recentDone: run.usedGap || allKnown,
+      usedGap: run.usedGap,
+      gapDone: run.usedGap && allKnown,
+      truncatedAt: run.truncatedAt,
+      listedFrom: run.listedFrom,
+    });
+    const gap = pendingGap(nextCur);
+    warning = gap ? `Reading older mail in steps: mail before ${gap.before.toISOString().slice(0, 10)} is still to be listed` : null;
     const next: MailConnectionRow = {
       ...(latest || conn),
       status: "active",
       last_sync_at: new Date().toISOString(),
       last_error: warning,
-      cursor_json: {
-        ...((latest || conn).cursor_json || {}),
-        synced_through:
-          stats.remaining === 0 ? startedAt.toISOString() : cursor.synced_through,
-      },
+      cursor_json: nextCur,
     };
     await store.saveConnection(next);
     return { ...base, ...stats, deals_touched: touched.size, touched_keys: [...touched] };
