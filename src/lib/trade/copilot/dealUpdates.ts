@@ -21,6 +21,7 @@ import {
   CHANNEL_LABEL,
   describeUpdate,
   detectDealUpdate,
+  formatMoney,
   type DealUpdateChannel,
   type DealUpdateDealRef,
   type DealUpdateInput,
@@ -31,7 +32,8 @@ import {
 import type { Deal } from "@/types/trade";
 import { getCopilotBook, type CopilotBook } from "./book";
 import { dealHref } from "./context";
-import { invalidatePaymentLedger } from "./paymentsContext";
+import { getPaymentLedger, invalidatePaymentLedger } from "./paymentsContext";
+import { ordersForDeal } from "@/lib/trade/paymentLedger";
 import { parseCopilotQuery } from "./query";
 import { dealPos, retrieveForQuery } from "./retrieve";
 
@@ -121,8 +123,40 @@ export async function proposeDealUpdate(
   const deal = candidates.length === 1 ? candidates[0]! : null;
   const mentioned = parseCopilotQuery(parsed.dealText).poNumbers.map((p) => p.toUpperCase());
   const po = deal ? deal.pos.find((p) => mentioned.some((m) => p.startsWith(m))) || deal.pos[0] || null : null;
-  const payment = parsed.payment && deal && !parsed.payment.currency ? { ...parsed.payment, currency: deal.currency || "USD" } : parsed.payment;
-  return { ...parsed, payment, id: randomUUID(), deal, candidates, po, dealHint: deal ? null : hint };
+  let payment = parsed.payment && deal && !parsed.payment.currency ? { ...parsed.payment, currency: deal.currency || "USD" } : parsed.payment;
+  let amountNote: string | null = null;
+  // "Received the payment of PO 11301777" (no amount): pre-fill what is still due on that PO.
+  if (payment && payment.amount == null && deal && payment.side === "buyer" && payment.kind !== "payment_request") {
+    const due = await balanceDue(book, deal.id, po).catch(() => null);
+    if (due) {
+      payment = { ...payment, amount: due.amount, currency: due.currency || payment.currency };
+      amountNote = `Amount pre-filled with the balance still due on PO ${due.po} (${due.basis}). Change it if this was a part payment.`;
+    }
+  }
+  return { ...parsed, payment, id: randomUUID(), deal, candidates, po, dealHint: deal ? null : hint, amountNote };
+}
+
+/** What the buyer still owes on a PO: the payment ledger's outstanding, else the PO value when nothing is recorded. */
+async function balanceDue(book: CopilotBook, dealId: string, po: string | null) {
+  const deal = book.byId.get(dealId);
+  if (!deal) return null;
+  const ledger = await getPaymentLedger(book.deals);
+  const orders = ledger ? ordersForDeal(ledger, deal) : [];
+  const order = (po && orders.find((o) => o.po === po.toUpperCase().replace(/[^A-Z0-9]/g, ""))) || orders[0];
+  const fmt = (n: number, c: string | null) => formatMoney(n, c);
+  if (order?.outstanding != null && order.outstanding > 0) {
+    const value = order.poValue || order.factoryValue || order.invoiced;
+    return {
+      amount: Math.round(order.outstanding * 100) / 100,
+      currency: order.currency,
+      po: order.po,
+      basis: `${value ? `value ${fmt(value, order.currency)}, ` : ""}received so far ${fmt(order.buyer.received + order.buyer.sentUnconfirmed, order.currency)}`,
+    };
+  }
+  if (order && order.outstanding != null) return null; // already paid in full: let the person type it
+  const value = deal.po?.totalAmount;
+  if (!value || value <= 0) return null;
+  return { amount: Math.round(value * 100) / 100, currency: deal.po?.currency || null, po: po || deal.po?.docNumber || "", basis: `PO value ${fmt(value, deal.po?.currency || null)}, no payment recorded yet` };
 }
 
 /** Deals for the card's "change deal" box. */
