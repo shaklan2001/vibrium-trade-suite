@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/app-shell";
 import { Badge, Button, Card, CardHeader, Stat } from "@/components/ui/primitives";
 import { useTradeStore } from "@/lib/trade/store";
@@ -16,6 +17,18 @@ export default function PartnersPage() {
   const drafts = applications.filter((a) => a.status === "draft");
   const submitted = applications.filter((a) => a.status === "submitted");
   const hubFactories = factories.filter((p) => p.sourceApplicationId);
+
+  /** Confirm, then drop the application and the factory profile it created. */
+  function removeSupplier(applicationId: string, name: string | undefined, status: string) {
+    const label = name?.trim() || "this application";
+    const message =
+      status === "submitted"
+        ? `Remove ${label} from Supplier Hub? Its application and factory profile are deleted from this browser and it stops appearing in recommendations. This can't be undone.`
+        : `Delete the draft for ${label}? This can't be undone.`;
+    if (!window.confirm(message)) return;
+    deleteApplication(applicationId);
+    toast.success(`${label} removed`);
+  }
 
   return (
     <div>
@@ -98,15 +111,13 @@ export default function PartnersPage() {
                         {a.status === "submitted" ? "View / update" : "Continue"}
                       </Button>
                     </Link>
-                    {a.status === "draft" ? (
-                      <Button
-                        variant="ghost"
-                        className="px-2 py-1 text-xs text-red-700"
-                        onClick={() => deleteApplication(a.id)}
-                      >
-                        Delete
-                      </Button>
-                    ) : null}
+                    <Button
+                      variant="ghost"
+                      className="px-2 py-1 text-xs text-red-700"
+                      onClick={() => removeSupplier(a.id, a.company.legalName, a.status)}
+                    >
+                      Remove
+                    </Button>
                   </div>
                 </li>
               ))}
@@ -204,12 +215,23 @@ export default function PartnersPage() {
                       <p className="mt-1 text-xs text-zinc-500">{p.notes}</p>
                     ) : null}
                     {p.sourceApplicationId ? (
-                      <Link
-                        href={`/partners/onboard?id=${p.sourceApplicationId}`}
-                        className="mt-1 inline-block text-[11px] text-teal-700 underline"
-                      >
-                        Open HUB application
-                      </Link>
+                      <div className="mt-1 flex items-center gap-3">
+                        <Link
+                          href={`/partners/onboard?id=${p.sourceApplicationId}`}
+                          className="text-xs font-semibold text-teal-700 hover:underline"
+                        >
+                          Open HUB application
+                        </Link>
+                        <button
+                          type="button"
+                          className="text-xs font-semibold text-red-700 hover:underline"
+                          onClick={() =>
+                            removeSupplier(p.sourceApplicationId!, p.company, "submitted")
+                          }
+                        >
+                          Remove supplier
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                   <span className="rounded-md bg-zinc-900 px-2 py-1 text-sm font-semibold text-white">

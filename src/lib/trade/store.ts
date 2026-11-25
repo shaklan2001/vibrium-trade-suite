@@ -423,10 +423,20 @@ export const useTradeStore = create<TradeState>()(
       getSupplierApplication: (id) =>
         get().supplierApplications.find((a) => a.id === id),
 
+      // Also drops the factory profile a submitted application created, so a
+      // removed supplier stops appearing in the directory and recommendations.
       deleteSupplierApplication: (id) =>
-        set((s) => ({
-          supplierApplications: s.supplierApplications.filter((a) => a.id !== id),
-        })),
+        set((s) => {
+          const app = s.supplierApplications.find((a) => a.id === id);
+          return {
+            supplierApplications: s.supplierApplications.filter((a) => a.id !== id),
+            partyProfiles: s.partyProfiles.filter(
+              (p) =>
+                p.sourceApplicationId !== id &&
+                !(app?.profileId && p.id === app.profileId),
+            ),
+          };
+        }),
 
       submitSupplierApplication: (id) => {
         const existing = get().getSupplierApplication(id);

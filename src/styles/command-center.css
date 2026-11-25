@@ -1079,3 +1079,11 @@ a.cc-chip:hover {
 .wg-more { display: inline-flex; }
 .wg-more[open] { display: flex; flex-basis: 100%; }
 .wg-more > .wg-deals { display: flex; margin-top: 0; }
+
+/* Operations: brief + priority side by side, equal height, scroll inside. */
+.ops-pane { display: flex; flex-direction: column; min-width: 0; max-height: 34rem; }
+.ops-pane-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+@media (min-width: 1024px) {
+  .ops-pane { height: 34rem; }
+}
+.lb-queue { margin-bottom: 0.25rem; }

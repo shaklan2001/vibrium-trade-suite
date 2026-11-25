@@ -316,7 +316,9 @@ export default function OperationsDashboardPage() {
       </div>
 
       <div className="mb-4 grid gap-3 lg:grid-cols-5">
-        <Card className="lg:col-span-3">
+        {/* Both cards share one fixed height on desktop and scroll inside,
+            so neither leaves empty space under its content. */}
+        <Card className="ops-pane lg:col-span-3">
           <CardHeader
             title="Morning brief"
             description={
@@ -329,7 +331,7 @@ export default function OperationsDashboardPage() {
                   : "Today's operating snapshot"
             }
           />
-          <div className="ops-brief max-h-80 overflow-auto px-4 py-3 text-sm">
+          <div className="ops-brief ops-pane-body px-4 py-3 text-sm">
             {briefIsLocal ? (
               <LocalBrief deals={deals} />
             ) : brief ? (
@@ -341,7 +343,7 @@ export default function OperationsDashboardPage() {
             )}
           </div>
         </Card>
-        <Card className="lg:col-span-2">
+        <Card className="ops-pane lg:col-span-2">
           <CardHeader
             title="Priority now"
             description={
@@ -350,7 +352,7 @@ export default function OperationsDashboardPage() {
                 : "No open warnings"
             }
           />
-          <div className="max-h-[32rem] overflow-auto">
+          <div className="ops-pane-body">
             {mailboxStatus === "error" && mailboxError ? (
               <p className="px-4 py-3 text-sm text-red-700" role="alert">
                 {friendlyMailboxError(mailboxError)}
