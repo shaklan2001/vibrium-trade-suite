@@ -299,13 +299,22 @@ function JumpPalette({
 
 /** Shown only after a real sign-in (sign-in is opt-in; off by default). */
 function SignOutLink() {
-  const [signedIn, setSignedIn] = useState(false);
+  const [email, setEmail] = useState<string | null>(null);
   useEffect(() => {
-    setSignedIn(/(?:^|;\s*)vt_signed_in=1(?:;|$)/.test(document.cookie));
+    let cancelled = false;
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: { email?: string } | null) => {
+        if (!cancelled && body?.email) setEmail(body.email);
+      })
+      .catch(() => null);
+    return () => {
+      cancelled = true;
+    };
   }, []);
-  if (!signedIn) return null;
   return (
     <>
+      {email ? ` · Signed in as ${email}` : null}
       {" · "}
       <button
         type="button"
