@@ -72,7 +72,8 @@ function decode(s: string) {
 export function classifyBankLine(p: string, debit: number, credit: number): BankLineKind {
   const t = p.toUpperCase();
   if (/^GRS\//.test(t) && credit > 0) return "inward_remittance";
-  if (credit > 0 && /\bINWARD\b|REMITTANCE|\bSWIFT\b|TELEGRAPHIC|\bTT\b|CHAPS|\bFCY\b/.test(t)) return "inward_remittance";
+  // A credit advice says "amount credited after charges": the advice wording wins over the word "charges".
+  if (credit > 0 && /\bINWARD\b|REMITTANCE|\bSWIFT\b|TELEGRAPHIC|\bTT\b|CHAPS|\bFCY\b|CREDIT ADVICE|BY ORDER OF/.test(t)) return "inward_remittance";
   if (/SLAB [CS]GST|CHARGES?\b|CHGS|COMMISSION CHG|GST ON|SERVICE FEE|BANK FEE/.test(t)) return "charges";
   if (/COMISSION|COMMISSION/.test(t) && credit > 0) return "commission";
   if (/AUTO LOAN|EMI\b|LOAN/.test(t)) return "loan_emi";

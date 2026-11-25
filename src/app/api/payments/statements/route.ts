@@ -41,12 +41,14 @@ export async function POST(req: Request) {
     if (doc.status !== "ok") return jsonError("The file could not be read", 422);
     const html = ext === ".html" || ext === ".htm" ? buf.toString("utf8") : undefined;
 
-    const parsed = useAgent ? null : parseStatement({ html, text: doc.text });
-    let method: string = parsed?.method ?? "none";
-    let lines = parsed?.lines ?? [];
-    let skipped = parsed?.skipped ?? 0;
+    // The built-in reader always runs. The AI reader runs when asked for (agent=1) or when the
+    // built-in one finds nothing, and only if it is provisioned; its lines win when it returns any.
+    const parsed = parseStatement({ html, text: doc.text });
+    let method: string = parsed.method;
+    let lines = parsed.lines;
+    let skipped = parsed.skipped;
     let usedAgent = false;
-    if (!lines.length && statementAgentId()) {
+    if ((useAgent || !lines.length) && statementAgentId()) {
       const viaAgent = await readStatementWithAgent(doc.text);
       if (viaAgent?.lines.length) {
         lines = viaAgent.lines;
