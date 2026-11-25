@@ -1,4 +1,5 @@
 import { decryptSecret } from "./crypto";
+import { isBounceMessage } from "./bounce";
 import { ensureLearnedRoles } from "./learnedRolesStore";
 import { noteTextsFor } from "./dealRecords";
 import type { NextActionState } from "./nextAction";
@@ -97,8 +98,10 @@ export async function loadInboxPage(opts: {
   });
   // One-year view: threads arrive newest first, so the first one outside the year ends the list.
   const { kept, done } = withinYear(page.threads);
-  const ctx = itemContext(rows, await dealsFor(page.messages));
-  const byThread = groupByThread(page.messages);
+  // Bounces ("Undeliverable: RE: …" from postmaster) are noise: a thread of only bounces drops out.
+  const messages = page.messages.filter((m) => !isBounceMessage({ from: m.from_email, subject: m.subject }));
+  const ctx = itemContext(rows, await dealsFor(messages));
+  const byThread = groupByThread(messages);
   const lastAt = new Map(kept.map((t) => [t.thread_key, t.last_at]));
   const items = await withNextActions(
     await withPayments(
@@ -125,11 +128,14 @@ export async function loadInboxPage(opts: {
 export async function loadThread(threadKey: string): Promise<InboxItem | null> {
   const { rows } = await listMailboxes();
   if (!rows.length) return null;
-  const messages = await getMailStore().threadMessages({
+  const all = await getMailStore().threadMessages({
     connectionIds: rows.map((r) => r.id),
     threadKey,
     limit: THREAD_LIMIT,
   });
+  // Bounces are hidden in a conversation; a link straight to a bounce-only thread still opens.
+  const real = all.filter((m) => !isBounceMessage({ from: m.from_email, subject: m.subject }));
+  const messages = real.length ? real : all;
   const ctx = itemContext(rows, await dealsFor(messages));
   const item = buildInboxItem(threadKey, messages, ctx);
   if (!item) return null;

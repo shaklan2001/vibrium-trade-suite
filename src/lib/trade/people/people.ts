@@ -17,6 +17,8 @@
  * the next person. Personas (name, extra addresses, shared / person, active) can be edited. Pure.
  */
 
+import { isSystemSender } from "@/lib/mail/bounce";
+
 export const WEIGHTS = { from: 3, to: 1.5 } as const;
 export const HALF_LIFE_DAYS = 120;
 export const LATEST_SENDER_BONUS = 4;
@@ -154,7 +156,8 @@ export function buildPersonas(messages: PeopleMessage[], edits: PersonaEdit[]): 
     for (const [e, n] of Object.entries(m.names || {})) vote(e, n);
   }
   const byId = new Map<string, Persona>();
-  for (const email of [...seen].filter(isTeamEmail).sort()) {
+  // postmaster@ / mailer-daemon@ are the mail system, not people.
+  for (const email of [...seen].filter((e) => isTeamEmail(e) && !isSystemSender(e)).sort()) {
     const id = personaIdFor(email);
     if (byId.has(id)) {
       byId.get(id)!.emails.push(email);

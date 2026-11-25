@@ -7,6 +7,7 @@
  * the mail store — current even before the stage agent re-reads the deal — and gives every
  * email its own inbox link (src/lib/mail/mailLink.ts).
  */
+import { isBounceMessage } from "@/lib/mail/bounce";
 import { docTextsFor, type StoredFile } from "@/lib/mail/docStore";
 import { DOC_TYPE_LABELS } from "@/lib/mail/docText";
 import { freshText } from "@/lib/mail/inbox";
@@ -28,6 +29,7 @@ export async function withMailTrail(deal: Deal): Promise<Deal> {
       // The same mail is often copied into several connected mailboxes.
       if (seen.has(id)) continue;
       seen.add(id);
+      if (isBounceMessage({ from: m.from_email, subject: m.subject })) continue;
       sources.push({
         id: `${deal.mailboxSourceId}-live-${id}`,
         kind: "other",
