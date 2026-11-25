@@ -10,6 +10,7 @@ import type { InboxCursor, InboxDocument, InboxItem, InboxMailbox } from "./inbo
 import { MailAuthError } from "./providers/http";
 import { getMailStore } from "./store";
 import { threadKeyFor } from "./thread";
+import { isDead, withinYear } from "./viewWindow";
 import type { InboxMessageRow, MailConnectionRow } from "./types";
 
 /**
@@ -94,13 +95,18 @@ export async function loadInboxPage(opts: {
     q: opts.q?.trim().slice(0, 120) || undefined,
     before: opts.before || null,
   });
+  // One-year view: threads arrive newest first, so the first one outside the year ends the list.
+  const { kept, done } = withinYear(page.threads);
   const ctx = itemContext(rows, await dealsFor(page.messages));
   const byThread = groupByThread(page.messages);
+  const lastAt = new Map(kept.map((t) => [t.thread_key, t.last_at]));
   const items = await withNextActions(
     await withPayments(
-      page.threads
+      kept
         .map((t) => buildInboxItem(t.thread_key, byThread.get(t.thread_key) || [], ctx))
-        .filter((i): i is InboxItem => Boolean(i)),
+        .filter((i): i is InboxItem => Boolean(i))
+        // Dead: quiet for 6 months. Hidden from the list, not deleted.
+        .filter((i) => !isDead(lastAt.get(i.mailbox.threadKey) || Date.now())),
       byThread,
     ),
   );
@@ -108,7 +114,7 @@ export async function loadInboxPage(opts: {
   return {
     mailboxes,
     items,
-    nextCursor: page.has_more && last ? { at: new Date(last.last_at).toISOString(), key: last.thread_key } : null,
+    nextCursor: !done && page.has_more && last ? { at: new Date(last.last_at).toISOString(), key: last.thread_key } : null,
   };
 }
 
