@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { MessageSquare } from "lucide-react";
+import { AUTHOR_KEY, onDealUpdatesChanged, openCopilot } from "@/lib/trade/dealUpdateEvents";
 
 type Note = { id: string; author: string; text: string; createdAt: string };
-
-const AUTHOR_KEY = "trade.notes.author";
 
 function storedAuthor() {
   try {
@@ -35,6 +35,8 @@ export function DealNotes({ dealKey }: { dealKey: string }) {
   useEffect(() => {
     setAuthor(storedAuthor());
     void load();
+    // Updates confirmed in Copilot land here as notes too.
+    return onDealUpdatesChanged(() => void load());
   }, [load]);
 
   async function add() {
@@ -64,7 +66,12 @@ export function DealNotes({ dealKey }: { dealKey: string }) {
 
   return (
     <section className="rounded-lg border border-zinc-200 bg-white p-4">
-      <h3 className="text-sm font-semibold text-zinc-900">Team notes</h3>
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="text-sm font-semibold text-zinc-900">Team notes</h3>
+        <button type="button" className="du-text-btn" onClick={() => openCopilot({ prefill: "" })}>
+          <MessageSquare className="h-3 w-3" aria-hidden /> Tell Copilot
+        </button>
+      </div>
       <p className="mt-0.5 text-xs text-zinc-500">Calls, buyer instructions, factory updates — things that are not in any email. Copilot and reply drafts use them.</p>
       <div className="mt-3 flex flex-col gap-2">
         <textarea

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { streamCompletion } from "@/lib/vibrium/chat";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { buildGroundedChatMessage } from "@/lib/trade/copilotGrounding";
+import { proposeDealUpdate } from "@/lib/trade/copilot/dealUpdates";
 import { getVibriumConfig } from "@/lib/vibrium/config";
 import type { CommercialModelFilter } from "@/lib/trade/commercialModel";
 
@@ -68,7 +69,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const grounding = await buildGroundedChatMessage(userMessage, {
+    const ctx = {
       focusDealId: cleanId(body.focusDealId),
       activeDealIds: Array.isArray(body.activeDealIds)
         ? body.activeDealIds.map(cleanId).filter((x): x is string => Boolean(x)).slice(0, 10)
@@ -76,7 +77,22 @@ export async function POST(req: NextRequest) {
       bookFilter: BOOK_FILTERS.has(body.bookFilter as CommercialModelFilter)
         ? (body.bookFilter as CommercialModelFilter)
         : undefined,
+    };
+
+    // "Received $5K from the buyer on WhatsApp for PO 15269" is an update, not a question:
+    // answer with a proposal the person confirms in the Copilot card. Nothing is saved here.
+    const proposal = await proposeDealUpdate(userMessage, ctx).catch((err) => {
+      console.warn("[chat] deal update proposal failed", err instanceof Error ? err.message : err);
+      return null;
     });
+    if (proposal) {
+      return NextResponse.json(
+        { type: "deal_update_proposal", proposal },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
+    const grounding = await buildGroundedChatMessage(userMessage, ctx);
     let grounded = grounding.message.slice(0, GROUNDED_MESSAGE_MAX);
     if (body.voice === true) {
       grounded += `\n\n${VOICE_TURN_HINT}`;

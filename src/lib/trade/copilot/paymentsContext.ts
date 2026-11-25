@@ -11,6 +11,11 @@ import type { Deal } from "@/types/trade";
 const TTL_MS = 2 * 60_000;
 let cached: { at: number; ledger: PaymentLedger; size: number } | null = null;
 
+/** A payment was logged or undone: the next answer reads the ledger again. */
+export function invalidatePaymentLedger(): void {
+  cached = null;
+}
+
 export async function getPaymentLedger(deals: Deal[]): Promise<PaymentLedger | null> {
   if (!mailStoreConfigured()) return null;
   if (cached && Date.now() - cached.at < TTL_MS && cached.size === deals.length) return cached.ledger;
@@ -68,7 +73,7 @@ export function paymentLines(ledger: PaymentLedger, deal: Deal): string[] {
         (o.sharedUnsplit ? ` · ${o.sharedUnsplit} shared payment(s) not split per PO` : ""),
     );
     for (const l of o.lines.slice(-5)) {
-      const label = `${l.date} · ${KIND[l.kind] || l.kind} ${money(l.amount ?? l.total, l.currency)}`;
+      const label = `${l.date} · ${KIND[l.kind] || l.kind} ${money(l.amount ?? l.total, l.currency)}${l.offMail ? " (logged by the team from WhatsApp / a call, not an email)" : ""}`;
       out.push(
         `  - ${l.mailHref ? `[${label}](${l.mailHref})` : label}${l.side && l.side !== "buyer" ? ` (${l.side})` : ""}` +
           (l.alsoCovers.length ? ` · same payment also covers ${l.alsoCovers.slice(0, 4).join(", ")}${l.split === "pro_rata" ? " (split pro rata to PO value)" : l.split === "shared" ? " (not split)" : ""}` : "") +

@@ -11,6 +11,11 @@
 export type PaymentKind = "payment_received" | "payment_sent" | "payment_request" | "other";
 export type PaymentSide = "buyer" | "factory" | "freight" | "commission" | "other";
 
+/** Ledger rows logged through Copilot from WhatsApp / calls (no email behind them). */
+export const OFF_MAIL_CONNECTION = "offmail";
+export const isOffMailEntry = (e: { id: string; connectionId?: string }) =>
+  e.connectionId === OFF_MAIL_CONNECTION || e.id.startsWith("offmail:");
+
 export type PaymentAllocation = { po: string | null; invoice: string | null; amount: number | null };
 
 export type PaymentEntry = {

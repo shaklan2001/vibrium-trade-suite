@@ -10,7 +10,7 @@
  * Client-safe and pure.
  */
 import { mailHref } from "@/lib/mail/mailLink";
-import { normPo, type PaymentEntry, type PaymentKind, type PaymentSide } from "@/lib/mail/payments";
+import { isOffMailEntry, normPo, type PaymentEntry, type PaymentKind, type PaymentSide } from "@/lib/mail/payments";
 import type { Deal } from "@/types/trade";
 import { buildInvoiceRegister, posForInvoice } from "./invoiceRegister";
 
@@ -31,6 +31,8 @@ export type LedgerLine = {
   subject: string;
   summary: string | null;
   mailHref: string | null;
+  /** Logged through Copilot from WhatsApp / a call — no email behind it. */
+  offMail: boolean;
 };
 
 export type OrderStatus = "no_value" | "unpaid" | "part_paid" | "paid" | "overpaid" | "currency_mismatch";
@@ -137,7 +139,8 @@ export function buildPaymentLedger(entries: PaymentEntry[], deals: Deal[]): Paym
   for (const e of kept) {
     if (e.status !== "done" || !e.kind || e.kind === "other") continue;
     const home = e.dealKey ? byKey.get(e.dealKey) : undefined;
-    const href = home ? mailHref(home, e.id) : null;
+    const offMail = isOffMailEntry(e);
+    const href = home && !offMail ? mailHref(home, e.id) : null;
     // Which orders does it cover? Stated POs first, else the PO of the deal the mail sits in.
     let targets = [...new Map(e.allocations.filter((a) => a.po).map((a) => [normPo(a.po!), a])).values()]
       .map((a) => ({ a, hit: byPo.get(normPo(a.po!)) }))
@@ -190,6 +193,7 @@ export function buildPaymentLedger(entries: PaymentEntry[], deals: Deal[]): Paym
         subject: e.subject,
         summary: e.summary,
         mailHref: href,
+        offMail,
       });
     });
   }
