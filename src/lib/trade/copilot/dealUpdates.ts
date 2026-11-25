@@ -303,8 +303,10 @@ export async function applyDealUpdate(input: DealUpdateInput): Promise<DealUpdat
 
 export async function listDealUpdates(opts: { dealKey?: string; limit?: number } = {}): Promise<DealUpdateRecord[]> {
   if (!mailStoreConfigured()) return [];
-  const rows = await getMailStore().listRecords({ kind: "deal_update", dealKey: opts.dealKey, limit: opts.limit ?? 20 });
-  return rows.map(recordOf);
+  const limit = opts.limit ?? 20;
+  const rows = await getMailStore().listRecords({ kind: "deal_update", dealKey: opts.dealKey, limit: limit + 20 });
+  // Hidden = removed from the feed (e.g. a test entry); records are never deleted.
+  return rows.filter((r) => !r.data.hidden).slice(0, limit).map(recordOf);
 }
 
 /** Take an update back: the payment stops counting, the note is hidden, the feed shows it as undone. */
