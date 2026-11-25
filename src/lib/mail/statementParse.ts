@@ -16,7 +16,7 @@ export type ParsedStatement = {
   lines: BankLine[];
   currency: string;
   account: string;
-  method: "finacle_html" | "table" | "text" | "none";
+  method: "finacle_html" | "table" | "text" | "advice" | "none";
   /** Date-looking lines whose amount or direction could not be worked out. */
   skipped: number;
 };
@@ -273,12 +273,103 @@ export function parseStatementTable(text: string): ParsedStatement {
   return { lines, currency, account, method: lines.length ? "table" : "none", skipped };
 }
 
+const ADVICE_HEAD = /\b(credit|debit)\s+advice\b/i;
+const ADVICE_MONEY = /\b([A-Z]{3})\s?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?![\d,])/;
+const ADVICE_DATE = /(\d{4}-\d{2}-\d{2}|\d{1,2}[-/. ](?:\d{1,2}|[A-Za-z]{3,9})\.?[-/. ]\d{2,4})/;
+/** The labels of a credit / debit advice; a line that starts with one ends the block above it. */
+const ADVICE_LABEL = /^\s*(?:payer bank|payment details|by order of|bank to bank information|beneficiary(?: bank)?|notes|remitting bank|ordering customer|this is a computer)\b/i;
+
+/** "Payment amount: USD10,970.00 Local charges: HKD65.00" → { currency: "USD", value: 10970 } */
+function adviceMoney(seg: string, label: RegExp): { currency: string; value: number } | null {
+  const at = label.exec(seg);
+  if (!at) return null;
+  const m = ADVICE_MONEY.exec(seg.slice(at.index + at[0].length, at.index + at[0].length + 40));
+  if (!m) return null;
+  const value = Number(m[2]!.replace(/,/g, ""));
+  return Number.isFinite(value) && value > 0 ? { currency: m[1]!, value } : null;
+}
+
+/** The lines under a label line (two-column layouts put both labels on one line and the values below). */
+function linesUnder(lines: string[], label: RegExp): string[] {
+  const i = lines.findIndex((l) => label.test(l));
+  if (i < 0) return [];
+  const out: string[] = [];
+  const sameLine = lines[i]!.replace(label, "").replace(/^[\s:]+/, "").trim();
+  if (sameLine && !/:\s*$/.test(lines[i]!) && !ADVICE_LABEL.test(sameLine)) out.push(sameLine);
+  for (const l of lines.slice(i + 1)) {
+    if (ADVICE_LABEL.test(l) || /^\s*page\s*:?\s*\d/i.test(l)) break;
+    if (l.trim()) out.push(l.trim());
+  }
+  return out;
+}
+
+/**
+ * A bank credit / debit advice (HSBC "Credit Advice", "Debit Advice"): one transaction per advice,
+ * written as labelled fields rather than a table. A file may hold several advices; each becomes a line.
+ */
+export function parseBankAdvice(text: string): ParsedStatement {
+  const empty: ParsedStatement = { lines: [], currency: "INR", account: "uploaded", method: "none", skipped: 0 };
+  if (!ADVICE_HEAD.test(text)) return empty;
+  const starts = [...text.matchAll(new RegExp(ADVICE_HEAD.source, "gi"))].map((m) => m.index!);
+  const segments = starts.map((s, i) => text.slice(s, starts[i + 1] ?? text.length));
+  const seen = new Set<string>();
+  const lines: BankLine[] = [];
+  let skipped = 0;
+  for (const seg of segments) {
+    const dir = /^debit/i.test(ADVICE_HEAD.exec(seg)![1]!) ? "dr" : "cr";
+    const net = adviceMoney(seg, dir === "cr" ? /amount credited\s*:/i : /amount debited\s*:/i);
+    const gross = adviceMoney(seg, /(?:payment|transaction|remittance) amount\s*:/i);
+    const amt = net ?? gross;
+    const charges = adviceMoney(seg, /total charges\s*:/i);
+    const dateRaw = /(?:transaction|value) date\s*:\s*([^\n]*)/i.exec(seg)?.[1] ?? "";
+    const date = parseLooseDate(ADVICE_DATE.exec(dateRaw)?.[1] ?? "");
+    const reference = /(?:transaction|our|bank) reference(?:\s*(?:no\.?|number))?\s*:\s*([A-Z0-9][A-Z0-9/-]{5,})/i.exec(seg)?.[1]?.toUpperCase() ?? null;
+    if (!amt || !date) {
+      // A heading with no amount / date is the advice's second page or a mention in prose.
+      if (amt || date) skipped += 1;
+      continue;
+    }
+    if (reference && seen.has(reference)) continue;
+    if (reference) seen.add(reference);
+
+    const rows = seg.replace(/\r/g, "").split("\n");
+    const acct = /(?:credited|debited|your) account(?:\s*(?:no\.?|number))?\s*:\s*([0-9][0-9\- ]{5,24})/i.exec(seg)?.[1]?.replace(/\D/g, "") ?? "";
+    const account = acct ? `…${acct.slice(-4)}` : "uploaded";
+    const party = linesUnder(rows, dir === "cr" ? /^\s*(?:by order of|ordering customer)\s*:?/i : /^\s*beneficiary\s*:?/i)[0] ?? "";
+    const bankBlock = linesUnder(rows, /^\s*(?:payer bank|remitting bank|beneficiary bank)\s*:?/i);
+    // SWIFT field 70 lines start with "/" and wrap at a fixed width, often mid-word: join them unspaced.
+    const firstDetail = bankBlock.findIndex((l) => l.startsWith("/"));
+    const bank = (firstDetail < 0 ? bankBlock : bankBlock.slice(0, firstDetail)).join(" ");
+    const details = firstDetail < 0 ? "" : bankBlock.slice(firstDetail).join("");
+    const fmt = (m: { currency: string; value: number }) => `${m.currency} ${m.value.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
+    const particulars = [
+      dir === "cr" ? "INWARD TT" : "OUTWARD TT",
+      party ? `${dir === "cr" ? "FROM" : "TO"} ${party}` : "",
+      bank ? `VIA ${bank}` : "",
+      details,
+      reference ? `REF ${reference}` : "",
+      gross && net && gross.value !== net.value ? `GROSS ${fmt(gross)}` : "",
+      charges ? `LESS COSTS ${fmt(charges)}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    lines.push({
+      ...toLine({ date, particulars, debit: dir === "dr" ? amt.value : 0, credit: dir === "cr" ? amt.value : 0, balance: null }, account, amt.currency),
+      reference: reference ?? referenceOf(particulars),
+    });
+  }
+  return { lines, currency: lines[0]?.currency ?? "INR", account: lines[0]?.account ?? "uploaded", method: lines.length ? "advice" : "none", skipped };
+}
+
 /** Any uploaded statement. `html` is the raw file when it is an HTML e-statement; `text` is its extracted text. */
 export function parseStatement(input: { html?: string; text: string }): ParsedStatement {
   if (input.html) {
     const fin = parseFinacleStatement(input.html);
     if (fin.length) return { lines: fin, currency: "INR", account: fin[0]!.account, method: "finacle_html", skipped: 0 };
   }
+  // Labelled advice fields ("Transaction reference:", "Amount credited:") never appear in a statement table.
+  const advice = parseBankAdvice(input.text);
+  if (advice.lines.length) return advice;
   const table = parseStatementTable(input.text);
   if (table.lines.length) return table;
   const text = parseStatementText(input.text);

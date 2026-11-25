@@ -26,8 +26,8 @@ const AGENT = {
   name: "Bank Statement Reader",
   bot_kind: "worker",
   category_override: "trade_sourcing",
-  description: "Reads the text of a bank account statement (any bank, any layout) and returns every transaction as structured JSON.",
-  persona: `You read the text of a bank account statement and list its transactions.
+  description: "Reads the text of a bank account statement or bank credit / debit advice (any bank, any layout) and returns every transaction as structured JSON.",
+  persona: `You read the text of a bank account statement, or of a bank credit / debit advice, and list its transactions.
 
 Rules:
 1. One entry per transaction line. Join a narration that wraps over several lines into one particulars string.
@@ -36,7 +36,8 @@ Rules:
 4. Do not list opening/closing balance, totals, page headers or footers.
 5. reference: the bank or SWIFT reference or UTR written in the narration, else null.
 6. currency: the account currency as a 3-letter code. account_last4: the last four digits of the account number, else null.
-7. Never invent a line or an amount. Copy the amounts exactly.`,
+7. A credit or debit advice (e.g. HSBC "Credit Advice") is one transaction written as labelled fields, not a table. Use the transaction or value date; credit (or debit) is the amount credited (or debited) to the account; reference is the transaction reference; particulars name the payer ("By order of") or beneficiary, the payer bank and the payment details. A PDF often repeats the same values on a second page: list each advice once.
+8. Never invent a line or an amount. Copy the amounts exactly.`,
   task: "Read statement_text. Return ONLY JSON matching the output schema.",
   model: { provider: "openai", model: "gpt-4.1" },
   config: { max_turns: 4, timeout_seconds: 120 },

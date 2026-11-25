@@ -90,7 +90,7 @@ export function StatementUpload() {
             Bank statement
           </h3>
           <p className="mt-1 max-w-2xl text-xs text-zinc-500">
-            Banks that email an encrypted file (HSBC) cannot be read from the mail. Download the statement from the bank as a PDF, Excel or CSV, upload it here and press Read statement.
+            Banks that email an encrypted file (HSBC) cannot be read from the mail. Download the statement or the credit / debit advice from the bank as a PDF, Excel or CSV, upload it here and press Read statement.
             Trade lines are matched to payment emails and POs; salary, loan, tax and card lines are counted and dropped, and the file is not kept.
           </p>
         </div>
