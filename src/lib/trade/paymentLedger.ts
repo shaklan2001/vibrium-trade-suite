@@ -10,7 +10,7 @@
  * Client-safe and pure.
  */
 import { mailHref } from "@/lib/mail/mailLink";
-import { isOffMailEntry, normPo, type PaymentEntry, type PaymentKind, type PaymentSide } from "@/lib/mail/payments";
+import { isBankAdviceEntry, isOffMailEntry, normPo, type PaymentEntry, type PaymentKind, type PaymentSide } from "@/lib/mail/payments";
 import type { Deal } from "@/types/trade";
 import { buildInvoiceRegister, posForInvoice } from "./invoiceRegister";
 
@@ -33,6 +33,8 @@ export type LedgerLine = {
   mailHref: string | null;
   /** Logged through Copilot from WhatsApp / a call — no email behind it. */
   offMail: boolean;
+  /** Recorded by matching an uploaded bank advice / statement line to the deal. */
+  bankAdvice: boolean;
 };
 
 export type OrderStatus = "no_value" | "unpaid" | "part_paid" | "paid" | "overpaid" | "currency_mismatch";
@@ -194,6 +196,7 @@ export function buildPaymentLedger(entries: PaymentEntry[], deals: Deal[]): Paym
         summary: e.summary,
         mailHref: href,
         offMail,
+        bankAdvice: offMail && isBankAdviceEntry(e),
       });
     });
   }

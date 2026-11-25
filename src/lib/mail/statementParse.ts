@@ -274,7 +274,8 @@ export function parseStatementTable(text: string): ParsedStatement {
 }
 
 const ADVICE_HEAD = /\b(credit|debit)\s+advice\b/i;
-const ADVICE_MONEY = /\b([A-Z]{3})\s?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?![\d,])/;
+// No \b before the code: OCR of a scanned advice can glue a stray letter to it ("uUSD8.30").
+const ADVICE_MONEY = /(?<![A-Z])([A-Z]{3})\s?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?![\d,])/;
 const ADVICE_DATE = /(\d{4}-\d{2}-\d{2}|\d{1,2}[-/. ](?:\d{1,2}|[A-Za-z]{3,9})\.?[-/. ]\d{2,4})/;
 /** The labels of a credit / debit advice; a line that starts with one ends the block above it. */
 const ADVICE_LABEL = /^\s*(?:payer bank|payment details|by order of|bank to bank information|beneficiary(?: bank)?|notes|remitting bank|ordering customer|this is a computer)\b/i;
@@ -320,7 +321,10 @@ export function parseBankAdvice(text: string): ParsedStatement {
     const net = adviceMoney(seg, dir === "cr" ? /amount credited\s*:/i : /amount debited\s*:/i);
     const gross = adviceMoney(seg, /(?:payment|transaction|remittance) amount\s*:/i);
     const amt = net ?? gross;
-    const charges = adviceMoney(seg, /total charges\s*:/i);
+    // OCR can miss the charges field on a scan: gross minus credited is the same number.
+    const charges =
+      adviceMoney(seg, /total charges\s*:/i) ??
+      (gross && net && gross.currency === net.currency && gross.value > net.value ? { currency: net.currency, value: Math.round((gross.value - net.value) * 100) / 100 } : null);
     const dateRaw = /(?:transaction|value) date\s*:\s*([^\n]*)/i.exec(seg)?.[1] ?? "";
     const date = parseLooseDate(ADVICE_DATE.exec(dateRaw)?.[1] ?? "");
     const reference = /(?:transaction|our|bank) reference(?:\s*(?:no\.?|number))?\s*:\s*([A-Z0-9][A-Z0-9/-]{5,})/i.exec(seg)?.[1]?.toUpperCase() ?? null;
@@ -361,6 +365,46 @@ export function parseBankAdvice(text: string): ParsedStatement {
   return { lines, currency: lines[0]?.currency ?? "INR", account: lines[0]?.account ?? "uploaded", method: lines.length ? "advice" : "none", skipped };
 }
 
+const COLLECTION_HEAD = /\bexport collection payment advice\b/i;
+
+/**
+ * An HSBC "Export Collection Payment Advice": the buyer (drawee) paid a documentary collection.
+ * Collection amount = what the buyer paid; Final Total = what reached the account after the
+ * collecting bank's and HSBC's fees. "Your Reference No." carries our invoice numbers.
+ */
+export function parseExportCollection(text: string): ParsedStatement {
+  const empty: ParsedStatement = { lines: [], currency: "INR", account: "uploaded", method: "none", skipped: 0 };
+  if (!COLLECTION_HEAD.test(text)) return empty;
+  const field = (label: RegExp) => label.exec(text)?.[1]?.trim() ?? "";
+  const gross = adviceMoney(text, /collection amount\s*:/i);
+  const proceeds = adviceMoney(text, /proceeds? received\s*:/i);
+  const final = /final total[^\n]*?(?<![A-Z])([A-Z]{3})\s?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)\s*CR\b/i.exec(text);
+  const net = final ? { currency: final[1]!, value: Number(final[2]!.replace(/,/g, "")) } : proceeds ?? gross;
+  const valueDate = /value\s+([A-Za-z]{3,9}\.? \d{1,2},? \d{4}|\d{1,2}[-/. ][A-Za-z]{3,9}[-/. ]\d{2,4})/i.exec(text)?.[1];
+  const date = parseLooseDate(valueDate ?? "") ?? parseLooseDate(/^\s*([A-Za-z]{3,9} \d{1,2},? \d{4})\s*$/m.exec(text)?.[1] ?? "");
+  if (!net || !date) return { ...empty, skipped: 1 };
+  const reference = field(/our reference no\.?\s*:\s*([A-Z0-9-]{6,})/i).toUpperCase() || null;
+  const drawee = field(/drawee\s*:\s*([^\n]+)/i);
+  const invoices = field(/your reference no\.?\s*:\s*([^\n]+)/i);
+  const fmt = (m: { currency: string; value: number }) => `${m.currency} ${m.value.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
+  const costs = gross && gross.currency === net.currency && gross.value > net.value ? { currency: net.currency, value: Math.round((gross.value - net.value) * 100) / 100 } : null;
+  const particulars = [
+    "INWARD EXPORT COLLECTION",
+    drawee ? `FROM ${drawee}` : "",
+    "VIA HSBC",
+    invoices ? `INV ${invoices}` : "",
+    reference ? `REF ${reference}` : "",
+    gross && gross.value !== net.value ? `GROSS ${fmt(gross)}` : "",
+    costs ? `LESS COSTS ${fmt(costs)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const acct = /credited your account number\s*[*xX]*(\d{3,})/i.exec(text)?.[1] ?? "";
+  const account = acct ? `…${acct.slice(-4)}` : "uploaded";
+  const line: BankLine = { ...toLine({ date, particulars, debit: 0, credit: net.value, balance: null }, account, net.currency), reference: reference ?? referenceOf(particulars) };
+  return { lines: [line], currency: net.currency, account, method: "advice", skipped: 0 };
+}
+
 /** Any uploaded statement. `html` is the raw file when it is an HTML e-statement; `text` is its extracted text. */
 export function parseStatement(input: { html?: string; text: string }): ParsedStatement {
   if (input.html) {
@@ -370,6 +414,8 @@ export function parseStatement(input: { html?: string; text: string }): ParsedSt
   // Labelled advice fields ("Transaction reference:", "Amount credited:") never appear in a statement table.
   const advice = parseBankAdvice(input.text);
   if (advice.lines.length) return advice;
+  const collection = parseExportCollection(input.text);
+  if (collection.lines.length) return collection;
   const table = parseStatementTable(input.text);
   if (table.lines.length) return table;
   const text = parseStatementText(input.text);

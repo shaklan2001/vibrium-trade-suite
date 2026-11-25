@@ -11,12 +11,13 @@
 import type { PaymentKind, PaymentSide } from "@/lib/mail/payments";
 
 export type DealUpdateType = "payment" | "note";
-export type DealUpdateChannel = "whatsapp" | "phone" | "meeting" | "other";
+export type DealUpdateChannel = "whatsapp" | "phone" | "meeting" | "bank" | "other";
 
 export const CHANNEL_LABEL: Record<DealUpdateChannel, string> = {
   whatsapp: "WhatsApp",
   phone: "Phone call",
   meeting: "Meeting",
+  bank: "Bank advice",
   other: "Other",
 };
 

@@ -73,7 +73,7 @@ export function OffMailUpdates({ limit = 6 }: { limit?: number }) {
       <header className="cc-panel-head">
         <div>
           <h2 id="cc-offmail">Off-mail updates</h2>
-          <p className="cc-panel-sub">Payments and news from WhatsApp, calls and meetings, logged through Copilot.</p>
+          <p className="cc-panel-sub">Payments and news from WhatsApp, calls, meetings and bank advices, logged through Copilot.</p>
         </div>
         <button type="button" className="ou-log" onClick={() => openCopilot({ prefill: "" })}>
           <Plus className="h-3.5 w-3.5" aria-hidden />
@@ -105,7 +105,7 @@ export function OffMailUpdates({ limit = 6 }: { limit?: number }) {
                       {u.dealCode}
                     </Link>
                     {u.channel !== "other" ? (
-                      <span className={cn("ou-chip", u.channel === "whatsapp" && "ou-chip-wa")}>{CHANNEL_LABEL[u.channel]}</span>
+                      <span className={cn("ou-chip", u.channel === "whatsapp" && "ou-chip-wa", u.channel === "bank" && "ou-chip-bank")}>{CHANNEL_LABEL[u.channel]}</span>
                     ) : null}
                     <span>by {u.author}</span>
                     {void_ ? <span className="ou-chip ou-chip-void">Undone{u.voidedBy ? ` by ${u.voidedBy}` : ""}</span> : null}

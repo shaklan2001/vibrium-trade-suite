@@ -1,6 +1,6 @@
 /**
  * Browser events that tie the Copilot's off-mail updates to the rest of the app:
- *   deal-updates:changed  an update was saved or undone → the feed, ledger and notes reload
+ *   deal-updates:changed  an update was saved or undone, or a bank line matched → the feed, ledger, notes and bank lines reload
  *   copilot:open          open the floating Copilot (optionally with text in the composer)
  * Client only.
  */
@@ -9,13 +9,14 @@ import type { DealUpdateRecord } from "./dealUpdate";
 const CHANGED = "deal-updates:changed";
 const OPEN = "copilot:open";
 
-export function emitDealUpdatesChanged(update: DealUpdateRecord): void {
+/** `update` is absent when the change was not one update (e.g. a bank line reopened). */
+export function emitDealUpdatesChanged(update: DealUpdateRecord | null = null): void {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent<DealUpdateRecord>(CHANGED, { detail: update }));
+  window.dispatchEvent(new CustomEvent<DealUpdateRecord | null>(CHANGED, { detail: update }));
 }
 
-export function onDealUpdatesChanged(cb: (update: DealUpdateRecord) => void): () => void {
-  const fn = (e: Event) => cb((e as CustomEvent<DealUpdateRecord>).detail);
+export function onDealUpdatesChanged(cb: (update: DealUpdateRecord | null) => void): () => void {
+  const fn = (e: Event) => cb((e as CustomEvent<DealUpdateRecord | null>).detail ?? null);
   window.addEventListener(CHANGED, fn);
   return () => window.removeEventListener(CHANGED, fn);
 }

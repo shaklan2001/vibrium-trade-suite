@@ -13,11 +13,12 @@
 import { randomUUID } from "node:crypto";
 import { addDealNote, notifyPayment } from "@/lib/mail/dealRecords";
 import type { PaymentRow } from "@/lib/mail/paymentJobs";
-import { OFF_MAIL_CONNECTION } from "@/lib/mail/payments";
+import { BANK_ADVICE_SUBJECT as BANK_SUBJECT, OFF_MAIL_CONNECTION } from "@/lib/mail/payments";
 import { getMailStore, mailStoreConfigured, type MailRecord } from "@/lib/mail/store";
 import type { CommercialModelFilter } from "@/lib/trade/commercialModel";
 import { findDealByRef } from "@/lib/trade/dealLink";
 import {
+  CHANNEL_LABEL,
   describeUpdate,
   detectDealUpdate,
   type DealUpdateChannel,
@@ -36,7 +37,7 @@ import { dealPos, retrieveForQuery } from "./retrieve";
 
 const KINDS = new Set(["payment_received", "payment_sent", "payment_request"]);
 const SIDES = new Set(["buyer", "factory", "freight", "commission", "other"]);
-const CHANNELS = new Set<DealUpdateChannel>(["whatsapp", "phone", "meeting", "other"]);
+const CHANNELS = new Set<DealUpdateChannel>(["whatsapp", "phone", "meeting", "bank", "other"]);
 const ID_RE = /^[a-f0-9-]{36}$/;
 
 export function dealKeyOf(d: Deal): string {
@@ -136,6 +137,22 @@ export async function searchDealsForUpdate(text: string): Promise<DealUpdateDeal
   return dealsByWords(book, text, book.deals).slice(0, 8).map(refOf);
 }
 
+/**
+ * Deals whose POs / document numbers carry any of these references (normalised, e.g. "8937",
+ * "GP2526055"), most hits first. For bank advices whose payment details list order or invoice numbers.
+ */
+export async function dealsByReferences(refs: string[]): Promise<{ deal: DealUpdateDealRef; hits: string[] }[]> {
+  const want = new Set(refs.map((r) => r.toUpperCase().replace(/[^A-Z0-9]/g, "")).filter((r) => r.length >= 4));
+  if (!want.size) return [];
+  const book = await getCopilotBook();
+  return book.deals
+    .map((d) => ({ d, hits: dealPos(d).filter((p) => want.has(p)) }))
+    .filter((x) => x.hits.length)
+    .sort((a, b) => b.hits.length - a.hits.length || byRecency(a.d, b.d))
+    .slice(0, 6)
+    .map((x) => ({ deal: refOf(x.d), hits: x.hits }));
+}
+
 /* ------------------------------------------------------------------ save */
 
 export class DealUpdateError extends Error {
@@ -212,7 +229,8 @@ function recordOf(r: MailRecord): DealUpdateRecord {
 
 const paymentId = (id: string) => `offmail:${id}`;
 
-export async function applyDealUpdate(input: DealUpdateInput): Promise<DealUpdateRecord> {
+/** `link.bankLineId`: the bank statement line this payment came from (set by bank reconciliation, never by the client). */
+export async function applyDealUpdate(input: DealUpdateInput, link: { bankLineId?: string } = {}): Promise<DealUpdateRecord> {
   if (!mailStoreConfigured()) throw new DealUpdateError("No database is connected, so updates can't be saved.", 503);
   const store = getMailStore();
   const book = await getCopilotBook();
@@ -236,8 +254,8 @@ export async function applyDealUpdate(input: DealUpdateInput): Promise<DealUpdat
       id: paymentId(input.id),
       dealKey: ref.key,
       connectionId: OFF_MAIL_CONNECTION,
-      mailbox: "Copilot",
-      subject: `Off-mail update · ${summary}`,
+      mailbox: input.channel === "bank" ? "Bank advice" : "Copilot",
+      subject: `${input.channel === "bank" ? BANK_SUBJECT : "Off-mail update"} · ${summary}`,
       from: input.author,
       to: "",
       cc: "",
@@ -264,8 +282,8 @@ export async function applyDealUpdate(input: DealUpdateInput): Promise<DealUpdat
     invalidatePaymentLedger();
   }
 
-  const noteText = input.type === "payment" && input.note && input.note !== summary ? `${summary}. ${input.note}` : input.type === "payment" ? summary : `${input.note}${input.channel !== "other" ? ` (via ${input.channel === "whatsapp" ? "WhatsApp" : input.channel === "phone" ? "phone call" : "meeting"})` : ""}`;
-  const note = await addDealNote(store, { dealKey: ref.key, author: input.author, text: `[Off-mail] ${noteText}` });
+  const noteText = input.type === "payment" && input.note && input.note !== summary ? `${summary}. ${input.note}` : input.type === "payment" ? summary : `${input.note}${input.channel !== "other" ? ` (via ${input.channel === "phone" ? "phone call" : CHANNEL_LABEL[input.channel]})` : ""}`;
+  const note = await addDealNote(store, { dealKey: ref.key, author: input.author, text: `${input.channel === "bank" ? "[Bank]" : "[Off-mail]"} ${noteText}` });
 
   const data = {
     type: input.type,
@@ -284,6 +302,7 @@ export async function applyDealUpdate(input: DealUpdateInput): Promise<DealUpdat
     paymentId: input.payment ? paymentId(input.id) : null,
     voidedAt: null,
     voidedBy: null,
+    bankLineId: link.bankLineId ?? null,
   };
   await store.upsertRecords([{ kind: "deal_update", id: input.id, dealKey: ref.key, owner: null, data, createdAt: now }]);
 
@@ -294,7 +313,10 @@ export async function applyDealUpdate(input: DealUpdateInput): Promise<DealUpdat
       kind: input.payment.kind,
       amount: input.payment.amount,
       currency: input.payment.currency,
-      summary: `${input.author} logged this from ${input.channel === "other" ? "outside email" : input.channel}: ${input.note || summary}`,
+      summary:
+        input.channel === "bank"
+          ? `${input.author} matched a bank advice to this deal: ${input.note || summary}`
+          : `${input.author} logged this from ${input.channel === "other" ? "outside email" : input.channel}: ${input.note || summary}`,
       href: ref.href,
     }).catch(() => false);
   }
@@ -334,5 +356,17 @@ export async function undoDealUpdate(id: string, by: string): Promise<DealUpdate
   }
   const data = { ...hit.data, voidedAt: now, voidedBy: by.slice(0, 80) || "team" };
   await store.upsertRecords([{ kind: "deal_update", id, dealKey: hit.dealKey, owner: null, data, createdAt: hit.createdAt }]);
+  // A payment that came from a bank line: the line goes back to "needs a deal".
+  const bankLineId = typeof hit.data.bankLineId === "string" ? hit.data.bankLineId : null;
+  if (bankLineId) {
+    const line = (await store.listRecords({ kind: "bank_line", limit: 5000 })).find((r) => r.id === bankLineId);
+    if (line && line.data.updateId === id) {
+      const rest = { ...line.data };
+      delete rest.reconciled;
+      delete rest.updateId;
+      const pos = Array.isArray(rest.pos) && rest.poHow === "manual" ? [] : rest.pos;
+      await store.upsertRecords([{ kind: "bank_line", id: line.id, dealKey: null, data: { ...rest, pos, poHow: rest.poHow === "manual" ? null : rest.poHow }, createdAt: line.createdAt }]);
+    }
+  }
   return recordOf({ ...hit, data });
 }

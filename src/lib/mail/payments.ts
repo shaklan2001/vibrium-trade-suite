@@ -15,6 +15,10 @@ export type PaymentSide = "buyer" | "factory" | "freight" | "commission" | "othe
 export const OFF_MAIL_CONNECTION = "offmail";
 export const isOffMailEntry = (e: { id: string; connectionId?: string }) =>
   e.connectionId === OFF_MAIL_CONNECTION || e.id.startsWith("offmail:");
+/** Off-mail rows recorded by matching an uploaded bank advice / statement line to a deal. */
+export const BANK_ADVICE_SUBJECT = "Bank advice";
+export const isBankAdviceEntry = (e: { id: string; connectionId?: string; subject?: string | null }) =>
+  isOffMailEntry(e) && (e.subject || "").startsWith(`${BANK_ADVICE_SUBJECT} ·`);
 
 export type PaymentAllocation = { po: string | null; invoice: string | null; amount: number | null };
 

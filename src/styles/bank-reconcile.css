@@ -1,0 +1,266 @@
+/* Finance: bank advices & statements — upload, then match each payment to a deal (statement-upload.tsx). */
+.br-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.6rem;
+  background: var(--ok-bg);
+  color: var(--ok);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+.br-summary svg {
+  margin-top: 0.1rem;
+  flex-shrink: 0;
+}
+.br-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 1rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: none;
+}
+.br-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: -1px;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.br-tab:hover {
+  color: var(--ink);
+}
+.br-tab-on {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+.br-tab:focus-visible,
+.br-match:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+.br-count {
+  min-width: 1.25rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--muted-bg);
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-align: center;
+}
+.br-count-warn {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.br-empty {
+  padding: 1rem 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.br-row {
+  border-bottom: 1px solid var(--line);
+}
+.br-row-open {
+  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
+}
+.br-row-main {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.75rem 0.25rem;
+}
+.br-dir {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.6rem;
+}
+.br-dir-in {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.br-dir-out {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.br-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.br-new {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.br-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.6rem;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.br-ref {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+}
+.br-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+.br-file:hover {
+  text-decoration: underline;
+}
+.br-done {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+  color: var(--ok);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.br-deal {
+  color: var(--accent);
+  font-weight: 700;
+}
+.br-deal:hover {
+  text-decoration: underline;
+}
+.br-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+  text-align: right;
+}
+.br-amt {
+  font-size: 0.95rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.br-amt-in {
+  color: var(--ok);
+}
+.br-amt-out {
+  color: var(--ink);
+}
+.br-net {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+.br-chip {
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: var(--muted-bg);
+  color: #35505a;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.br-chip-warn {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.br-chip-info {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.br-chip-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.br-match {
+  padding: 0.3rem 0.7rem;
+  border-radius: 0.5rem;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+.br-match:hover {
+  filter: brightness(1.06);
+}
+.br-form {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0 0.25rem 0.9rem 2.75rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--bg-raised);
+}
+.br-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.9rem;
+}
+.br-sugg-label {
+  padding: 0.35rem 0.55rem 0.2rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.br-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.du-bank-tag,
+.ou-chip-bank {
+  background: #e6effa;
+  color: #1d4f8a;
+}
+
+@media (max-width: 720px) {
+  .br-form {
+    margin-left: 0.25rem;
+  }
+  .br-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .br-row-main {
+    grid-template-columns: 2rem minmax(0, 1fr);
+  }
+  .br-right {
+    grid-column: 2;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left;
+  }
+}

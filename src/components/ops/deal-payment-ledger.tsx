@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Mail, MessageCircle, Plus } from "lucide-react";
+import { Landmark, Mail, MessageCircle, Plus } from "lucide-react";
 import { Badge, Card, CardHeader } from "@/components/ui/primitives";
 import type { PaymentEntry } from "@/lib/mail/payments";
 import { buildPaymentLedger, ordersForDeal, type OrderLedger } from "@/lib/trade/paymentLedger";
@@ -43,7 +43,17 @@ function loadEntries() {
   return entriesPromise;
 }
 
-type BankLine = { id: string; date: string; kind: string; amountInr: number; pos: string[]; invoiceNo: string | null };
+type BankLine = {
+  id: string;
+  date: string;
+  kind: string;
+  amountInr: number;
+  currency?: string;
+  gross?: number | null;
+  pos: string[];
+  invoiceNo: string | null;
+  status?: string;
+};
 
 /** Bank statement trade lines, fetched once per page load (empty when none were read). */
 let bankPromise: Promise<BankLine[]> | null = null;
@@ -65,8 +75,14 @@ export function DealPaymentLedger({ deal }: { deal: Deal }) {
   useEffect(() => {
     let alive = true;
     void loadBankLines().then((l) => alive && setBank(l));
+    // A bank line matched to a deal (or undone): read the bank lines again.
+    const off = onDealUpdatesChanged(() => {
+      bankPromise = null;
+      void loadBankLines().then((l) => alive && setBank(l));
+    });
     return () => {
       alive = false;
+      off();
     };
   }, []);
 
@@ -144,11 +160,16 @@ export function DealPaymentLedger({ deal }: { deal: Deal }) {
                 </dl>
                 <ul className="mt-2 space-y-1">
                   {bank
+                    .filter((b) => b.status !== "ignored")
                     .filter((b) => b.pos.some((p) => p.toUpperCase().replace(/[^A-Z0-9]/g, "") === o.po.toUpperCase().replace(/[^A-Z0-9]/g, "")))
                     .map((b) => (
                       <li key={`bank-${b.id}`} className="flex flex-wrap items-center gap-x-2 text-xs text-emerald-800">
                         <span className="w-20 shrink-0 tabular-nums">{b.date}</span>
-                        <span className="font-medium">Confirmed in bank INR {Math.abs(b.amountInr).toLocaleString("en-IN")}</span>
+                        <Landmark className="h-3 w-3 shrink-0" aria-hidden />
+                        <span className="font-medium">
+                          Confirmed in bank {b.currency || "INR"} {Math.abs(b.amountInr).toLocaleString(b.currency && b.currency !== "INR" ? "en-US" : "en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                        {b.gross && b.gross !== Math.abs(b.amountInr) ? <span>· sent {money(b.gross, b.currency || null)} before bank charges</span> : null}
                         {b.invoiceNo ? <span>· commission invoice {b.invoiceNo}</span> : null}
                       </li>
                     ))}
@@ -166,7 +187,11 @@ export function DealPaymentLedger({ deal }: { deal: Deal }) {
                         </span>
                       ) : null}
                       {l.reference ? <span>· ref {l.reference}</span> : null}
-                      {l.offMail ? (
+                      {l.bankAdvice ? (
+                        <span className="du-offmail-tag du-bank-tag" title={l.summary || undefined}>
+                          <Landmark className="h-3 w-3" aria-hidden /> from bank advice
+                        </span>
+                      ) : l.offMail ? (
                         <span className="du-offmail-tag" title={l.summary || undefined}>
                           <MessageCircle className="h-3 w-3" aria-hidden /> logged off-mail
                         </span>
