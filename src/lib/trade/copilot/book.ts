@@ -6,6 +6,7 @@
  * same numbers as Command Center. Cached in memory for a few minutes; the
  * first question after a cold start pays the load.
  */
+import { isLiveDealRow } from "@/lib/mail/viewWindow";
 import { getSql } from "@/lib/db";
 import { invokeTradeSuiteRds, isRdsProxyEnabled } from "@/lib/rdsProxy";
 import { enrichMailboxDeals } from "@/lib/trade/enrichMailboxDeals";
@@ -137,8 +138,9 @@ async function loadBook(): Promise<CopilotBook> {
     for (const row of batch) {
       if (!row.id || seen.has(row.id)) continue;
       seen.add(row.id);
-      rows.push(row);
       fresh += 1;
+      // Dead deals (no mail for 6 months) are left out of the Copilot's book.
+      if (isLiveDealRow(row)) rows.push(row);
     }
     if (batch.length < PAGE_SIZE || fresh === 0) break;
   }

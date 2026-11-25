@@ -10,6 +10,8 @@
  *   store writes when nothing changed server-side.
  */
 
+import { isLiveDealRow } from "@/lib/mail/viewWindow";
+
 export const PROCESSED_DEALS_PAGE_SIZE = 400;
 const MAX_PARALLEL = 5;
 const MAX_ROWS = 20_000;
@@ -124,8 +126,9 @@ async function load<Row extends { id?: string | null }>(
       const id = row.id;
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      rows.push(row);
       fresh += 1;
+      // Dead deals (no mail for 6 months) are not shown; paging still counts them.
+      if (isLiveDealRow(row as never)) rows.push(row);
     }
     pageHashes.push(hashString(JSON.stringify(batch)));
     if (body.counts) counts = { ...counts, ...body.counts } as ProcessedDealsCounts;
@@ -171,6 +174,16 @@ async function load<Row extends { id?: string | null }>(
       offset += PROCESSED_DEALS_PAGE_SIZE;
     }
   }
+
+  // Counts follow what is shown.
+  const shown = rows as unknown as { primary_stage?: string | null; status?: string | null }[];
+  const byStage: Record<string, number> = {};
+  const byStatus: Record<string, number> = {};
+  for (const r of shown) {
+    if (r.primary_stage) byStage[r.primary_stage] = (byStage[r.primary_stage] || 0) + 1;
+    if (r.status) byStatus[r.status] = (byStatus[r.status] || 0) + 1;
+  }
+  counts = { ...counts, total: rows.length, byStage, byStatus };
 
   return {
     rows,
