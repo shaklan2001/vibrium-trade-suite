@@ -44,7 +44,9 @@ export async function addDealNote(store: MailStore, input: { dealKey: string; au
 }
 
 export async function listDealNotes(store: MailStore, dealKey: string, limit = 20): Promise<DealNote[]> {
-  return (await store.listRecords({ kind: "deal_note", dealKey, limit })).map(noteOf);
+  // Notes from an off-mail update that was undone stay in the table but are not shown or used.
+  const rows = await store.listRecords({ kind: "deal_note", dealKey, limit: limit + 10 });
+  return rows.filter((r) => !r.data.voidedAt).slice(0, limit).map(noteOf);
 }
 
 /** Newest notes as one line each, for the reply prompt, Copilot and the next-action brief. */

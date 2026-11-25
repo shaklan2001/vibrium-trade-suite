@@ -97,7 +97,7 @@ function termIsEntity(term: string, vocab: Set<string>): boolean {
   return false;
 }
 
-function dealPos(d: Deal): string[] {
+export function dealPos(d: Deal): string[] {
   const out = new Set<string>();
   for (const p of d.mailboxPoNumbers || []) {
     const c = cleanPoNumber(p);

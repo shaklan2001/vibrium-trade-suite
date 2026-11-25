@@ -73,7 +73,7 @@ export function Badge({
   return <span className={cn("badge", BADGE_TONE[tone])}>{children}</span>;
 }
 
-export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+export function Input(props: React.ComponentProps<"input">) {
   return <input {...props} className={cn("field", props.className)} />;
 }
 

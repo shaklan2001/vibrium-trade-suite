@@ -1,0 +1,528 @@
+/* Off-mail deal updates: Copilot confirm card (du-*) and the Command Center feed (ou-*). */
+
+/* ── Copilot intro ─────────────────────────────────────────────────── */
+.du-intro {
+  margin-top: 0.75rem;
+  padding: 0.7rem 0.75rem;
+  border: 1px dashed var(--line);
+  border-radius: 0.75rem;
+  background: var(--bg);
+}
+.du-intro-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.2rem;
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.du-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+.du-example {
+  text-align: left;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: var(--bg-raised);
+  color: #35505a;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  transition: border-color 0.15s var(--ease-out), background 0.15s var(--ease-out);
+}
+.du-example:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
+}
+
+/* ── Confirm card ──────────────────────────────────────────────────── */
+.du-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  border-radius: 0.85rem;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+.du-card-done {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+  background: linear-gradient(180deg, var(--ok-bg), var(--bg-raised) 70%);
+}
+.du-card-muted {
+  border-color: var(--line);
+  background: var(--bg);
+  box-shadow: none;
+}
+.du-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.du-head-icon,
+.du-done-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.du-done-icon {
+  background: var(--ok);
+  color: #fff;
+}
+.du-done-icon-muted {
+  background: var(--line);
+  color: var(--muted);
+}
+.du-eyebrow {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.du-title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.du-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.du-label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.du-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+.du-input,
+.du-money {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: var(--bg-raised);
+  color: var(--ink);
+  font-size: 0.82rem;
+}
+.du-input {
+  padding: 0.38rem 0.5rem;
+  outline: none;
+}
+textarea.du-input {
+  resize: vertical;
+  line-height: 1.4;
+}
+.du-input:focus,
+.du-money:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+.du-input:disabled {
+  background: var(--bg);
+  color: var(--muted);
+}
+.du-money {
+  display: flex;
+  overflow: hidden;
+}
+.du-money select {
+  flex: none;
+  padding: 0 0.3rem 0 0.45rem;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 600;
+  outline: none;
+}
+.du-money input {
+  min-width: 0;
+  flex: 1;
+  padding: 0.38rem 0.5rem;
+  border: 0;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  outline: none;
+}
+
+/* segmented control */
+.du-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 0.6rem;
+  background: var(--muted-bg);
+}
+.du-seg-btn {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.35rem;
+  border-radius: 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out);
+}
+.du-seg-btn:hover {
+  color: var(--ink);
+}
+.du-seg-on {
+  background: var(--bg-raised);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(26, 51, 60, 0.12);
+}
+.du-seg-btn:focus-visible,
+.du-text-btn:focus-visible,
+.du-confirm:focus-visible,
+.du-deal-option:focus-visible,
+.du-example:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* deal */
+.du-deal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--bg);
+}
+.du-deal > div,
+.du-deal-option {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.du-deal-code {
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.du-deal-title {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.du-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.5rem;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+.du-picker {
+  border: 1px solid var(--accent);
+  border-radius: 0.6rem;
+  box-shadow: var(--ring);
+  overflow: hidden;
+}
+.du-picker-input {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.55rem;
+}
+.du-picker-input input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  font-size: 0.8rem;
+  outline: none;
+}
+.du-picker-list {
+  max-height: 11rem;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+}
+.du-picker-list-inline {
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+}
+.du-picker-list li + li {
+  border-top: 1px solid var(--line);
+}
+.du-deal-option {
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  text-align: left;
+}
+.du-deal-option:hover {
+  background: var(--accent-soft);
+}
+.du-picker-empty {
+  padding: 0.5rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+/* preview + actions */
+.du-preview {
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.6rem;
+  background: var(--accent-soft);
+}
+.du-preview p {
+  margin-top: 0.1rem;
+  line-height: 1.4;
+}
+.du-preview-foot {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+.du-missing {
+  color: var(--warning);
+  font-size: 0.74rem;
+}
+.du-error {
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.5rem;
+  background: var(--critical-bg);
+  color: var(--critical);
+  font-size: 0.75rem;
+}
+.du-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+.du-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 0.6rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+  transition: filter 0.15s var(--ease-out), opacity 0.15s var(--ease-out);
+}
+.du-confirm:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+.du-confirm:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.du-text-btn,
+.du-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 0.4rem;
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.du-text-btn:hover,
+.du-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.du-text-btn:disabled {
+  color: var(--muted);
+  text-decoration: none;
+}
+.du-icon-btn {
+  display: inline-flex;
+  padding: 0.2rem;
+  border-radius: 0.35rem;
+  color: var(--muted);
+}
+.du-icon-btn:hover {
+  background: var(--muted-bg);
+  color: var(--ink);
+}
+.du-done-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+.du-done-title {
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+.du-done-text {
+  color: #35505a;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+.du-done-foot {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+/* ── Command Center: Off-mail updates ──────────────────────────────── */
+.ou-panel .cc-panel-head {
+  align-items: center;
+}
+.ou-log {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 0.65rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: filter 0.15s var(--ease-out);
+}
+.ou-log:hover {
+  filter: brightness(0.94);
+}
+.ou-log:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+.ou-list {
+  border-top: 1px solid var(--line);
+}
+.ou-row {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.ou-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.6rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.ou-icon-pay {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.ou-icon-void {
+  background: var(--muted-bg);
+  color: var(--muted);
+}
+.ou-text {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.ou-void .ou-text {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.ou-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.5rem;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.ou-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--muted-bg);
+  color: #35505a;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.ou-chip-wa {
+  background: #e3f7ec;
+  color: #11734b;
+}
+.ou-chip-void {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.ou-deal {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+.ou-deal:hover {
+  text-decoration: underline;
+}
+.ou-time {
+  color: var(--muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+.ou-empty {
+  padding: 1rem 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+/* Deal room: off-mail ledger lines */
+.du-offmail-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: #e3f7ec;
+  color: #11734b;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .ou-row {
+    grid-template-columns: 2rem minmax(0, 1fr);
+  }
+  .ou-time {
+    grid-column: 2;
+  }
+  .ou-panel .cc-panel-head {
+    flex-wrap: wrap;
+  }
+}
