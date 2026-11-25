@@ -82,7 +82,7 @@ const FINANCE_NAV: NavItem[] = [
  */
 export const GLOBAL_SIDEBAR_NAV: NavItem[] = [
   { href: "/partners", label: "Supplier Hub", icon: Building2 },
-  { href: "/partners/commissions", label: "Agency commissions", icon: Landmark },
+  // Agency commissions lives in the Finance section only (it was listed twice).
   { href: "/mailbox/inbox", label: "Inbox", icon: Inbox },
   { href: "/mailbox", label: "Mailbox book", icon: Mail },
   { href: "/mailbox/connections", label: "Email connections", icon: Plug },
