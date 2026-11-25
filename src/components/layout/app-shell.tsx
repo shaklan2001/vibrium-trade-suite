@@ -24,6 +24,7 @@ import {
 import { MailboxHydrator } from "@/components/layout/mailbox-hydrator";
 import { Select } from "@/components/ui/select";
 import { MailAutoSync } from "@/components/layout/mail-auto-sync";
+import { LogOut } from "lucide-react";
 import { useTradeStore } from "@/lib/trade/store";
 import {
   COMMERCIAL_MODEL_OPTIONS,
@@ -298,7 +299,12 @@ function JumpPalette({
 }
 
 /** Shown only after a real sign-in (sign-in is opt-in; off by default). */
-function SignOutLink() {
+async function signOut() {
+  await fetch("/api/auth/sign-out", { method: "POST" }).catch(() => null);
+  window.location.assign("/sign-in");
+}
+
+function useSignedInEmail() {
   const [email, setEmail] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -312,18 +318,38 @@ function SignOutLink() {
       cancelled = true;
     };
   }, []);
+  return email;
+}
+
+function LogoutButton() {
+  const email = useSignedInEmail();
+  const [busy, setBusy] = useState(false);
+  const label = email ? `Log out (${email})` : "Log out";
+  return (
+    <button
+      type="button"
+      className="logout-button"
+      title={label}
+      aria-label={label}
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void signOut();
+      }}
+    >
+      <LogOut aria-hidden="true" />
+      <span>{busy ? "Logging out…" : "Log out"}</span>
+    </button>
+  );
+}
+
+function SignOutLink() {
+  const email = useSignedInEmail();
   return (
     <>
       {email ? ` · Signed in as ${email}` : null}
       {" · "}
-      <button
-        type="button"
-        className="cursor-pointer underline"
-        onClick={async () => {
-          await fetch("/api/auth/sign-out", { method: "POST" }).catch(() => null);
-          window.location.assign("/sign-in");
-        }}
-      >
+      <button type="button" className="cursor-pointer underline" onClick={() => void signOut()}>
         Sign out
       </button>
     </>
@@ -625,6 +651,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
                 <span>Jump to…</span>
                 <kbd>⌘K</kbd>
               </button>
+              <LogoutButton />
             </div>
           </header>
           <div className="page-wide">{children}</div>
