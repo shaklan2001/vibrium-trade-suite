@@ -3,6 +3,7 @@
 @import "../styles/ui-polish.css";
 @import "../styles/command-center.css";
 @import "../styles/deal-updates.css";
+@import "../styles/bank-reconcile.css";
 
 @theme inline {
   --font-sans: var(--font-jakarta), "Segoe UI", sans-serif;

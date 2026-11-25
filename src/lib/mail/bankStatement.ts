@@ -73,7 +73,7 @@ export function classifyBankLine(p: string, debit: number, credit: number): Bank
   const t = p.toUpperCase();
   if (/^GRS\//.test(t) && credit > 0) return "inward_remittance";
   // A credit advice says "amount credited after charges": the advice wording wins over the word "charges".
-  if (credit > 0 && /\bINWARD\b|REMITTANCE|\bSWIFT\b|TELEGRAPHIC|\bTT\b|CHAPS|\bFCY\b|CREDIT ADVICE|BY ORDER OF/.test(t)) return "inward_remittance";
+  if (credit > 0 && /\bINWARD\b|REMITTANCE|\bSWIFT\b|TELEGRAPHIC|\bTT\b|EXPORT COLLECTION|CHAPS|\bFCY\b|CREDIT ADVICE|BY ORDER OF/.test(t)) return "inward_remittance";
   if (/SLAB [CS]GST|CHARGES?\b|CHGS|COMMISSION CHG|GST ON|SERVICE FEE|BANK FEE/.test(t)) return "charges";
   if (/COMISSION|COMMISSION/.test(t) && credit > 0) return "commission";
   if (/AUTO LOAN|EMI\b|LOAN/.test(t)) return "loan_emi";
@@ -203,6 +203,15 @@ export function matchCommissionInvoice(line: BankLine, invoices: CommissionInvoi
 
 const DAY = 86_400_000;
 
+/** PO numbers written in a bank line: "PO 15269", "PO#4512", and lists such as "PO21399, 21503, 21504, 21699". */
+export function posInText(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/\bPO[#\s:.-]*([A-Z]?\s?\d{4,}(?:\s*(?:,|&|AND|\/)\s*\d{4,})*)/gi)) {
+    for (const n of m[1]!.split(/\s*(?:,|&|AND|\/)\s*/i)) if (/\d{4,}/.test(n)) out.push(normPo(n));
+  }
+  return [...new Set(out)];
+}
+
 /**
  * Match trade statement lines to payment emails and POs. `refText` gives, per payment email,
  * the text to search for the bank reference (subject + attachment names + summary).
@@ -243,7 +252,7 @@ export function matchStatement(
         if (pos.length) poHow = "email";
       }
       if (!pos.length) {
-        const inLine = [...line.particulars.matchAll(/\bPO[#\s:-]*([A-Z]?\s?\d{4,})/gi)].map((m) => normPo(m[1]!));
+        const inLine = posInText(line.particulars);
         if (inLine.length) {
           pos = [...new Set(inLine)];
           poHow = "line";

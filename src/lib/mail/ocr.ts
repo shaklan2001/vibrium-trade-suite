@@ -127,14 +127,21 @@ export async function stopOcr() {
 }
 
 async function tesseractRead(m: Marker, deadline: number) {
-  const buf = await readObject(m.s3Key);
+  return ocrBuffer(await readObject(m.s3Key), m.name, { deadline });
+}
+
+/**
+ * OCR a file in hand (Tesseract): PDF pages rendered and read one by one until `maxPages` or the
+ * deadline (the first page is always read). Used inline for uploads, e.g. a scanned bank advice.
+ */
+export async function ocrBuffer(buf: Buffer, name: string, opts: { deadline: number; maxPages?: number }) {
   const ocr = await tesseract();
   const pages: { text: string; confidence: number }[] = [];
-  if (extOf(m.name) === ".pdf") {
+  if (extOf(name) === ".pdf") {
     const { getDocumentProxy, renderPageAsImage } = await import("unpdf");
     const pdf = await getDocumentProxy(new Uint8Array(buf));
-    for (let p = 1; p <= Math.min(pdf.numPages, MAX_PAGES); p++) {
-      if (p > 1 && Date.now() + PAGE_BUDGET_MS > deadline) break;
+    for (let p = 1; p <= Math.min(pdf.numPages, opts.maxPages ?? MAX_PAGES); p++) {
+      if (p > 1 && Date.now() + PAGE_BUDGET_MS > opts.deadline) break;
       const png = await renderPageAsImage(pdf, p, { canvasImport: () => import("@napi-rs/canvas"), scale: 2.5 });
       const { data } = await ocr.recognize(Buffer.from(png));
       pages.push({ text: data.text, confidence: data.confidence });

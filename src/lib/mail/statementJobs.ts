@@ -6,7 +6,7 @@
  *
  * Only trade lines are stored (remittances, commission, and credits/debits with a buyer, factory or
  * forwarder in the book). Salary, loan, tax, card and personal lines are counted and dropped,
- * never stored. Server only; every step fails soft.
+ * never stored. An uploaded file is kept in S3 with the other documents and linked from its lines. Server only; every step fails soft.
  */
 import { createHash } from "node:crypto";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -14,7 +14,7 @@ import { getCopilotBook } from "@/lib/trade/copilot/book";
 import { buildInvoiceRegister, commissionInvoices } from "@/lib/trade/invoiceRegister";
 import { isBankStatementMail, matchStatement, parseFinacleStatement, type BankLine, type CommissionInvoice } from "./bankStatement";
 import { attachmentBucket } from "./parse";
-import type { MailStore } from "./store";
+import type { MailRecord, MailStore } from "./store";
 import type { StoredAttachment } from "./types";
 
 const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "ap-south-1";
@@ -37,9 +37,60 @@ export type BankLineRecord = {
   currency?: string;
   /** "mail" = a statement mail attachment, "upload" = a file uploaded in the app. */
   source?: "mail" | "upload";
+  /** Remitter (credit) or beneficiary (debit) named on a bank advice. */
+  party?: string | null;
+  /** What the payer sent before bank charges (advices); amountInr is what reached the account. */
+  gross?: number | null;
+  charges?: { currency: string; amount: number } | null;
+  /** Set when someone matched the line to a deal (see src/lib/mail/bankReconcile.ts). */
+  reconciled?: BankReconciliation | null;
+  updateId?: string | null;
+  /** The uploaded advice / statement in S3 ({prefix}/{sha256}/{name}, opened via /api/ingest-files). */
+  file?: { name: string; sha256: string } | null;
 };
 
-const lineId = (l: BankLine) => createHash("sha1").update(`${l.account}|${l.date}|${l.debit}|${l.credit}|${l.particulars}`).digest("hex").slice(0, 24);
+export type BankReconciliation = {
+  status: "recorded" | "ignored";
+  dealKey: string | null;
+  dealId: string | null;
+  dealCode: string | null;
+  href: string | null;
+  po: string | null;
+  side: string | null;
+  amount: number | null;
+  by: string;
+  at: string;
+};
+
+const num = (s: string | undefined) => (s ? Number(s.replace(/,/g, "")) : NaN);
+
+/** Payer, gross and charges, as parseBankAdvice writes them into the particulars. */
+export function adviceFields(particulars: string) {
+  const party = /\b(?:FROM|TO) (.+?)(?= VIA | \/| REF |$)/.exec(particulars)?.[1]?.trim() || null;
+  const g = /\bGROSS ([A-Z]{3}) ([\d,]+(?:\.\d+)?)/.exec(particulars);
+  const c = /\bLESS COSTS ([A-Z]{3}) ([\d,]+(?:\.\d+)?)/.exec(particulars);
+  return {
+    party,
+    gross: g && Number.isFinite(num(g[2])) ? num(g[2]) : null,
+    charges: c && Number.isFinite(num(c[2])) ? { currency: c[1]!, amount: num(c[2]) } : null,
+  };
+}
+
+/**
+ * The same payment uploaded again must not be stored twice. A line with a bank reference (every
+ * advice has one) is the same payment when reference, date and amount match, however its text was
+ * read (OCR, a better parser); a line without one falls back to its full text.
+ */
+export function refKey(reference: string | null | undefined, date: string, amount: number): string | null {
+  return reference ? `${reference.toUpperCase()}|${date}|${Math.round(Math.abs(amount) * 100)}` : null;
+}
+export const lineId = (l: BankLine) => {
+  const k = refKey(l.reference, l.date, l.credit || l.debit);
+  return createHash("sha1")
+    .update(k ? `ref|${k}` : `${l.account}|${l.date}|${l.debit}|${l.credit}|${l.particulars}`)
+    .digest("hex")
+    .slice(0, 24);
+};
 
 async function readStatement(a: StoredAttachment): Promise<string | null> {
   if (!a.s3_key) return null;
@@ -53,6 +104,10 @@ async function readStatement(a: StoredAttachment): Promise<string | null> {
 
 type MatchContext = {
   known: Set<string>;
+  /** Stored lines by id, to fill in fields that older uploads did not keep. */
+  stored: Map<string, MailRecord>;
+  /** Stored lines by reference + date + amount (lines stored before ids were reference-based). */
+  byRef: Map<string, string>;
   partyNames: string[];
   entries: Awaited<ReturnType<MailStore["listPayments"]>>;
   refText: (e: { id: string; subject: string; attachment: string | null; reference: string | null; summary: string | null }) => string;
@@ -61,7 +116,15 @@ type MatchContext = {
 
 /** What matching needs: lines already stored, party names, payment emails, commission invoices. */
 export async function loadMatchContext(store: MailStore): Promise<MatchContext> {
-  const known = new Set((await store.listRecords({ kind: "bank_line", limit: 5000 })).map((r) => r.id));
+  const storedRows = await store.listRecords({ kind: "bank_line", limit: 5000 });
+  const known = new Set(storedRows.map((r) => r.id));
+  const stored = new Map(storedRows.map((r) => [r.id, r]));
+  const byRef = new Map<string, string>();
+  for (const r of storedRows) {
+    if (r.data.duplicateOf) continue;
+    const k = refKey(r.data.reference as string | null, String(r.data.date), Number(r.data.amountInr) || 0);
+    if (k && !byRef.has(k)) byRef.set(k, r.id);
+  }
   const book = await getCopilotBook();
   const partyNames = [
     ...new Set(
@@ -82,12 +145,26 @@ export async function loadMatchContext(store: MailStore): Promise<MatchContext> 
     buyer: e.buyer,
     date: e.date,
   }));
-  return { known, partyNames, entries, refText, invoices };
+  return { known, stored, byRef, partyNames, entries, refText, invoices };
 }
 
 /** Match the trade lines of one statement and store them. Salary, loan, tax, card and personal lines are counted and dropped. */
-export async function storeStatementLines(store: MailStore, lines: BankLine[], ctx: MatchContext, source: "mail" | "upload") {
-  const fresh = lines.filter((l) => !ctx.known.has(lineId(l)));
+export async function storeStatementLines(
+  store: MailStore,
+  lines: BankLine[],
+  ctx: MatchContext,
+  source: "mail" | "upload",
+  file: { name: string; sha256: string } | null = null,
+) {
+  /** The stored line this one is (by id, or by reference + date + amount), if any. */
+  const existing = (l: BankLine) => {
+    const id = lineId(l);
+    if (ctx.known.has(id)) return id;
+    const k = refKey(l.reference, l.date, l.credit || l.debit);
+    return (k && ctx.byRef.get(k)) || null;
+  };
+  const seen = lines.map(existing);
+  const fresh = lines.filter((_, i) => !seen[i]);
   const matches = matchStatement(fresh, ctx.entries, ctx.refText, ctx.partyNames, ctx.invoices);
   const rows = matches.map((m) => {
     const data: BankLineRecord = {
@@ -95,7 +172,7 @@ export async function storeStatementLines(store: MailStore, lines: BankLine[], c
       kind: m.line.kind,
       amountInr: m.line.credit || -m.line.debit,
       reference: m.line.reference ?? null,
-      particulars: m.line.particulars.slice(0, 120),
+      particulars: m.line.particulars.slice(0, 240),
       emailId: m.email?.id ?? null,
       emailHow: m.email?.how ?? null,
       pos: m.pos,
@@ -103,12 +180,31 @@ export async function storeStatementLines(store: MailStore, lines: BankLine[], c
       invoiceNo: m.invoice?.invoiceNo ?? null,
       currency: m.line.currency || "INR",
       source,
+      ...adviceFields(m.line.particulars),
+      reconciled: null,
+      updateId: null,
+      file,
     };
     ctx.known.add(lineId(m.line));
+    const k = refKey(m.line.reference, m.line.date, m.line.credit || m.line.debit);
+    if (k) ctx.byRef.set(k, lineId(m.line));
     return { kind: "bank_line" as const, id: lineId(m.line), dealKey: null, data: data as unknown as Record<string, unknown>, createdAt: new Date(`${m.line.date}T00:00:00Z`).toISOString() };
   });
-  if (rows.length) await store.upsertRecords(rows);
+  // Uploaded again: a line stored before payer / gross / the file were kept gets them now (its match is untouched).
+  const refreshed = lines.flatMap((l, i) => {
+    const old = seen[i] ? ctx.stored.get(seen[i]!) : undefined;
+    if (!old) return [];
+    const needFields = old.data.gross == null;
+    const needFile = Boolean(file && !old.data.file);
+    if (!needFields && !needFile) return [];
+    const f = needFields ? adviceFields(l.particulars) : null;
+    const fields = f && (f.gross != null || f.party) ? { ...f, particulars: l.particulars.slice(0, 240) } : {};
+    return [{ kind: "bank_line" as const, id: old.id, dealKey: old.dealKey, data: { ...old.data, ...fields, ...(needFile ? { file } : {}) }, createdAt: old.createdAt }];
+  });
+  if (rows.length || refreshed.length) await store.upsertRecords([...rows, ...refreshed]);
   return {
+    /** Every line of this file that is a stored trade line (new or from an earlier upload). */
+    ids: [...new Set(lines.map((l, i) => seen[i] || lineId(l)).filter((id) => ctx.known.has(id)))],
     lines: lines.length,
     alreadyStored: lines.length - fresh.length,
     tradeLines: matches.length,
@@ -117,6 +213,7 @@ export async function storeStatementLines(store: MailStore, lines: BankLine[], c
     matchedToEmail: matches.filter((m) => m.email).length,
     matchedToPo: matches.filter((m) => m.pos.length).length,
     trade: matches.map((m) => ({
+      id: lineId(m.line),
       date: m.line.date,
       kind: m.line.kind,
       amount: m.line.credit || -m.line.debit,
