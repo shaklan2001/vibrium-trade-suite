@@ -149,6 +149,15 @@ function nearPos(scope: Deal[], po: string): Deal[] {
     .slice(0, 5);
 }
 
+/** A team person and their weight on each deal (from src/lib/trade/people). Keyed by mailboxSourceId. */
+export type PersonFilter = {
+  id: string;
+  name: string;
+  emails: string[];
+  isActive: boolean;
+  deals: Map<string, { role: "owner" | "involved"; score: number; lastAt: string; lastAction: string; latestSender: boolean }>;
+};
+
 export function retrieveForQuery(
   book: CopilotBook,
   q: CopilotQuery,
@@ -157,6 +166,8 @@ export function retrieveForQuery(
     focusDealId?: string;
     activeDealIds?: string[];
     listLimit?: number;
+    /** A team person the question is about ("Radha's POs"): deals weighted by that person's mail. */
+    person?: PersonFilter;
   } = {},
 ): Retrieval {
   const listLimit = ctx.listLimit ?? 15;
@@ -279,8 +290,25 @@ export function retrieveForQuery(
 
   // 3. Filters.
   let set = scope;
+  // "Radha's POs": the deals Radha works (she replied, or mail was sent to her), from the weighted
+  // people index — not every deal whose text mentions her. Cc does not count.
+  const person = ctx.person;
+  let personWeight: Map<string, number> | null = null;
+  if (person) {
+    const roleOf = (d: Deal) => person.deals.get(d.mailboxSourceId || d.id);
+    const onDeal = set.filter((d) => roleOf(d));
+    const owner = onDeal.filter((d) => roleOf(d)!.role === "owner");
+    const involved = onDeal.filter((d) => roleOf(d)!.role === "involved");
+    set = [...owner, ...involved];
+    personWeight = new Map(set.map((d) => [d.id, (roleOf(d)!.role === "owner" ? 1000 : 0) + roleOf(d)!.score]));
+    out.matchedBy.push(
+      `team person ${person.name} (${person.emails.join(", ")}): owner of ${owner.length} deal(s), works on ${involved.length} more — from the mail: who replied (latest reply counts most) and who it was sent to; cc is ignored; older mail counts less${person.isActive ? "" : `; ${person.name} has not sent mail recently (inactive), so owns none`}`,
+    );
+  }
   const vocab = entityVocab(book);
-  const entityTerms = q.terms.filter((t) => termIsEntity(t, vocab));
+  // "radha email box", "radha's mails": box / mail mean the mailbox here, not a product.
+  const personWords = new Set(person ? [person.id, ...person.name.toLowerCase().split(/\s+/), ...person.emails.map((e) => e.split("@")[0]!), "box", "mail", "mails", "emailbox"] : []);
+  const entityTerms = q.terms.filter((t) => termIsEntity(t, vocab) && !personWords.has(t));
   for (const term of entityTerms) {
     const hits = set.filter((d) => (book.index.get(d.id) || "").includes(term));
     // Ignore terms that match nothing or almost everything.
@@ -301,7 +329,7 @@ export function retrieveForQuery(
     out.matchedBy.push("documents missing");
   }
 
-  const filtered = set !== scope;
+  const filtered = set !== scope || Boolean(person);
   if (q.intent === "product") {
     out.mode = "product";
     return out;
@@ -320,7 +348,8 @@ export function retrieveForQuery(
 
   out.mode = q.intent === "count" ? "count" : "list";
   out.matchedTotal = set.length;
-  out.deals = uniqueByCode(rankForList(set)).slice(0, q.intent === "count" ? 8 : listLimit);
+  const ranked = personWeight ? [...set].sort((a, b) => (personWeight!.get(b.id) || 0) - (personWeight!.get(a.id) || 0)) : rankForList(set);
+  out.deals = uniqueByCode(ranked).slice(0, q.intent === "count" ? 8 : listLimit);
   // A single hit is better answered with the full deal card.
   if (set.length === 1 && filtered) out.mode = "deal";
   if (out.mode === "deal") return withAttention(out);

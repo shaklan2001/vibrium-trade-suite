@@ -17,6 +17,7 @@ import {
   Ship,
   Sparkles,
   Upload,
+  Users,
   Workflow,
 } from "lucide-react";
 
@@ -86,6 +87,7 @@ export const GLOBAL_SIDEBAR_NAV: NavItem[] = [
   { href: "/mailbox/inbox", label: "Inbox", icon: Inbox },
   { href: "/mailbox", label: "Mailbox book", icon: Mail },
   { href: "/mailbox/connections", label: "Email connections", icon: Plug },
+  { href: "/mailbox/people", label: "Team & deals", icon: Users },
 ];
 
 /** Paths that belong to the global sidebar (never process-gated). */
