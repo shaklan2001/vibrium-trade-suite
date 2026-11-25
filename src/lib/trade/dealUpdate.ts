@@ -77,6 +77,8 @@ export type DealUpdateProposal = ParsedDealUpdate & {
   po: string | null;
   /** Why no deal was picked, shown in the card. */
   dealHint: string | null;
+  /** Set when the amount was not said and was pre-filled from the balance due (shown in the card). */
+  amountNote?: string | null;
 };
 
 /** What the confirm card sends back (the person may have edited any of it). */
@@ -120,8 +122,9 @@ const COMMAND =
 const OFF_MAIL =
   /\b(?:whats\s?app|wa msg|on wa|phone|call(?:ed)?|rang|spoke|talked|told (?:me|us)|said|says|confirmed|informed|verbally|meeting|met|in person|visit(?:ed)?)\b/i;
 
+// Common misspellings count: "recieved", "recived", "receved".
 const RECEIVED =
-  /\b(?:received|receive|recd|rcvd|got|credited|came in|realised|realized|landed|mil (?:gay[ae]|gya|gaye)|aa (?:gay[ae]|gya|gaye)|aay[ae]|aaya|mila|mile)\b/i;
+  /\b(?:received|receive|recieved|recieve|recived|recive|receved|recevied|recd|rcvd|got|credited|came in|realised|realized|landed|mil (?:gay[ae]|gya|gaye)|aa (?:gay[ae]|gya|gaye)|aay[ae]|aaya|mila|mile)\b/i;
 const SENT =
   /\b(?:paid|pay|sent|send|transferred|remitted|wired|released|cleared|bhej (?:diy[ae]|di|de)|bheje|bheja|de diy[ae]|kar diy[ae])\b/i;
 const REQUESTED =
@@ -253,7 +256,7 @@ function cleanNote(text: string): string {
 }
 
 const UPDATE_WORDS =
-  /\b(?:log|record|note|update|mark|save|book|copilot|savvy|please|pls|that|this|received|receive|recd|rcvd|got|credited|came|in|paid|pay|sent|send|transferred|remitted|wired|released|requested|request|asked|asking|wants|payment|payments|advance|balance|money|amount|today|yesterday|whatsapp|whats|app|phone|call|called|spoke|told|said|says|confirmed|informed|meeting|met|person|from|to|for|on|by|via|of|the|a|an|we|us|i|our|me|he|she|they|has|have|had|is|was|just|already|deal|po|order|ref|utr|aa|gaya|gaye|gya|mil|mila|bhej|bheja|bheje|diya|diye|di|de|kar|ne|dollars?|lakhs?|lacs?|utr|ka|ki|ke|se|hai|ho)\b/gi;
+  /\b(?:log|record|note|update|mark|save|book|copilot|savvy|please|pls|that|this|received|receive|recieved|recieve|recived|recive|receved|recevied|full|complete|entire|whole|poora|pura|recd|rcvd|got|credited|came|in|paid|pay|sent|send|transferred|remitted|wired|released|requested|request|asked|asking|wants|payment|payments|advance|balance|money|amount|today|yesterday|whatsapp|whats|app|phone|call|called|spoke|told|said|says|confirmed|informed|meeting|met|person|from|to|for|on|by|via|of|the|a|an|we|us|i|our|me|he|she|they|has|have|had|is|was|just|already|deal|po|order|ref|utr|aa|gaya|gaye|gya|mil|mila|bhej|bheja|bheje|diya|diye|di|de|kar|ne|dollars?|lakhs?|lacs?|utr|ka|ki|ke|se|hai|ho)\b/gi;
 
 /**
  * Is this message an update to record (not a question)? Returns what it says, or null.
@@ -274,7 +277,11 @@ export function detectDealUpdate(raw: string, now = new Date()): ParsedDealUpdat
   const moneyVerb = received || sent || requested;
   const offMail = OFF_MAIL.test(text);
 
-  const isPayment = Boolean(hit && moneyVerb) || Boolean(command && moneyVerb && /\b(?:payment|advance|balance|money)\b/i.test(text));
+  const paymentNoun = /\b(?:payment|payments|advance|balance|money|amount|dues?|remittance)\b/i.test(text);
+  // No amount: "received the payment of PO 11301777", "buyer paid PO 15269" — the card asks for
+  // (or pre-fills) the amount. "Received the docs for PO …" is not a payment: it needs a payment word.
+  const amountless = !question && ((moneyVerb && paymentNoun) || (/\bpaid\b/i.test(text) && /\b(?:po|order)\b|\b[A-Z]{0,2}\d{4,10}[A-Z]{0,2}\b/i.test(text)));
+  const isPayment = Boolean(hit && moneyVerb) || Boolean(command && moneyVerb && paymentNoun) || amountless;
   if (!isPayment && !(command || (offMail && text.split(" ").length >= 4))) return null;
 
   const channel = channelIn(text);
@@ -323,7 +330,8 @@ export function detectDealUpdate(raw: string, now = new Date()): ParsedDealUpdat
 
 export function formatMoney(amount: number | null, currency: string | null): string {
   if (amount == null) return "amount not set";
-  return `${currency || ""} ${amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}`.trim();
+  const cents = amount % 1 !== 0;
+  return `${currency || ""} ${amount.toLocaleString("en-US", { minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: 2 })}`.trim();
 }
 
 /** One line for the feed, the deal note and the notification. */

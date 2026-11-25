@@ -7,6 +7,8 @@ import { v4 as uuid } from "uuid";
 import { Button, Card, CardHeader, Input } from "@/components/ui/primitives";
 import { MarkdownMessage } from "@/components/copilot/markdown-message";
 import { DealUpdateCard, type DealUpdateCardState } from "@/components/copilot/deal-update-card";
+import { PeopleUpdateCard, type PeopleCardState } from "@/components/copilot/people-update-card";
+import type { PeopleProposal } from "@/lib/trade/people/peopleCommands";
 import type { DealUpdateProposal } from "@/lib/trade/dealUpdate";
 import { onOpenCopilot } from "@/lib/trade/dealUpdateEvents";
 import { ArrowUpRight, MessageSquare, Mic, NotebookPen, Square, Volume2, X } from "lucide-react";
@@ -125,6 +127,9 @@ type ChatMessage = {
   /** An off-mail update Copilot understood — shown as a confirm card, saved only on confirm. */
   proposal?: DealUpdateProposal;
   card?: DealUpdateCardState;
+  /** A team change ("Kalpana is handling PO …") — confirm card, saved only on confirm. */
+  people?: PeopleProposal;
+  peopleCard?: PeopleCardState;
 };
 
 const UPDATE_EXAMPLES = [
@@ -279,9 +284,24 @@ export function CopilotPanel({
       }
       // An update ("received $5K on WhatsApp") comes back as a proposal to confirm, not an answer.
       if ((res.headers.get("Content-Type") || "").includes("application/json")) {
-        const j = (await res.json().catch(() => ({}))) as { type?: string; proposal?: DealUpdateProposal };
+        const j = (await res.json().catch(() => ({}))) as { type?: string; proposal?: DealUpdateProposal | PeopleProposal };
+        if (j.type === "people_update_proposal" && j.proposal) {
+          const people = j.proposal as PeopleProposal;
+          const intro =
+            people.kind === "pin_owner"
+              ? `Got it — **${people.personName}** is handling **${people.deal.code}**. Confirm below and I'll set it.`
+              : people.kind === "set_active"
+                ? `Got it — I'll mark **${people.personName}** as ${people.active === "inactive" ? "left" : "active again"} once you confirm.`
+                : `Got it — I'll add **${people.email}** to **${people.personName}** once you confirm.`;
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "assistant", content: intro, people, peopleCard: { status: "draft" } };
+            return copy;
+          });
+          return "I've got that ready. Check it on screen and press confirm to save it.";
+        }
         if (j.type !== "deal_update_proposal" || !j.proposal) throw new Error("Copilot sent an unexpected reply");
-        const proposal = j.proposal;
+        const proposal = j.proposal as DealUpdateProposal;
         if (proposal.deal) activeDealIdsRef.current = [proposal.deal.id];
         const intro = proposalIntro(proposal);
         setMessages((m) => {
@@ -549,12 +569,23 @@ export function CopilotPanel({
             className={
               m.role === "user"
                 ? "ml-8 rounded-lg bg-teal-50 px-3 py-2 text-sm text-zinc-800"
-                : m.proposal
+                : m.proposal || m.people
                   ? "space-y-2"
                   : "mr-8 rounded-lg bg-zinc-100 px-3 py-2.5"
             }
           >
-            {m.role === "assistant" && m.proposal ? (
+            {m.role === "assistant" && m.people ? (
+              <>
+                <div className="mr-8 rounded-lg bg-zinc-100 px-3 py-2.5">
+                  <MarkdownMessage content={m.content} />
+                </div>
+                <PeopleUpdateCard
+                  proposal={m.people}
+                  state={m.peopleCard || { status: "draft" }}
+                  onState={(peopleCard) => setMessages((all) => all.map((x, j) => (j === i ? { ...x, peopleCard } : x)))}
+                />
+              </>
+            ) : m.role === "assistant" && m.proposal ? (
               <>
                 <div className="mr-8 rounded-lg bg-zinc-100 px-3 py-2.5">
                   <MarkdownMessage content={m.content} />

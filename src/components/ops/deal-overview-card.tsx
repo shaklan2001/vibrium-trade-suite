@@ -1,5 +1,6 @@
 "use client";
 
+import { isBounceMessage } from "@/lib/mail/bounce";
 import { Badge, Card, CardHeader } from "@/components/ui/primitives";
 import type { Deal, SourceMessage } from "@/types/trade";
 import { STAGE_LABELS } from "@/types/trade";
@@ -42,7 +43,8 @@ function mailSnippet(body: string | undefined): string {
 }
 
 function recentSources(sources: SourceMessage[], limit = 5) {
-  return [...sources]
+  return sources
+    .filter((s) => !isBounceMessage({ from: s.from, subject: s.subject }))
     .sort(
       (a, b) =>
         Date.parse(b.receivedAt || "") - Date.parse(a.receivedAt || ""),

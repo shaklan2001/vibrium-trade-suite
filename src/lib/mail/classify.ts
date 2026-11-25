@@ -4,6 +4,7 @@
  * process_deals.py (choose_slot / pick_document). Keep the two in step:
  * PST backfills and connected inboxes must label deals the same way.
  */
+import { isBounceMessage, isSystemSender } from "./bounce";
 import { extraDomains } from "./config";
 
 const NOISE_DOMAINS = [
@@ -164,6 +165,8 @@ export function setLearnedRoles(roles: Record<string, PartyRole>) {
 export function partyRole(email: string | null | undefined, ctx: ClassifyContext = {}): PartyRole {
   const em = (email || "").toLowerCase().trim();
   if (!em) return "other";
+  // postmaster@snspl.in is on our domain but is the mail system, not a colleague.
+  if (isSystemSender(em)) return "noise";
   const internal = [...INTERNAL_DOMAINS, ...extraDomains("MAIL_EXTRA_INTERNAL_DOMAINS")];
   for (const raw of ctx.ownEmails || []) {
     const own = raw.toLowerCase();
@@ -187,6 +190,8 @@ export function isNoiseMessage(
   ctx: ClassifyContext = {},
 ): boolean {
   if (partyRole(msg.from_email, ctx) === "noise") return true;
+  // Bounces ("Undeliverable: RE: …") repeat a deal's subject but say nothing about the deal.
+  if (isBounceMessage({ from: msg.from_email, subject: msg.subject })) return true;
   const subj = msg.subject || "";
   if (TRAVEL_ADMIN_RE.test(subj)) return true;
   const low = subj.toLowerCase();

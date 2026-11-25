@@ -1,6 +1,7 @@
 import { mapProcessedDeal, uniqueDealIds, type ProcessedDealRow } from "./processedDealMapper";
 import type { MailSignal } from "@/lib/mail/mailSignals";
 import { enrichMailboxDeals } from "./enrichMailboxDeals";
+import { syncLedgerIntoStore } from "./ledgerSync";
 import { useTradeStore } from "./store";
 import { readBookSnapshot, writeBookSnapshot } from "./bookCache";
 import { fetchAllProcessedDeals, hashString } from "./processedDealsClient";
@@ -72,7 +73,11 @@ function applyRows(rows: ProcessedDealRow[], liveIds: Set<string>, signals?: Sig
     if (open?.length) d.mailSignals = open;
   }
   // Real mailbox book replaces synthetic portfolio seeds.
-  if (mapped.length > 0) useTradeStore.getState().mergeMailboxDeals(mapped);
+  if (mapped.length > 0) {
+    useTradeStore.getState().mergeMailboxDeals(mapped);
+    // Payments from the ledger (emails, Copilot updates, bank advices) onto each deal's schedule.
+    void syncLedgerIntoStore();
+  }
   return mapped.length;
 }
 

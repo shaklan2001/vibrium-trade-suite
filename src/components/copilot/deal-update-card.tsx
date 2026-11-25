@@ -376,6 +376,12 @@ export function DealUpdateCard({
               options={KIND_OPTIONS.map((k) => ({ value: k.value, label: k.label, title: k.hint }))}
             />
           </div>
+          {proposal.amountNote && amountText === String(proposal.payment?.amount ?? "") ? (
+            <p className="du-hint">
+              <CircleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {proposal.amountNote}
+            </p>
+          ) : null}
           <div className="du-grid">
             <label className="du-field">
               <span className="du-label">Amount</span>

@@ -7,6 +7,8 @@ import { getMailStore, mailStoreConfigured } from "@/lib/mail/store";
 import type { PaymentEntry } from "@/lib/mail/payments";
 import { buildPaymentLedger, ordersForDeal, type OrderLedger, type PaymentLedger } from "@/lib/trade/paymentLedger";
 import type { Deal } from "@/types/trade";
+import { applyLedgerToDeals } from "@/lib/trade/ledgerApply";
+import type { CopilotBook } from "./book";
 
 const TTL_MS = 2 * 60_000;
 let cached: { at: number; ledger: PaymentLedger; size: number } | null = null;
@@ -82,4 +84,18 @@ export function paymentLines(ledger: PaymentLedger, deal: Deal): string[] {
     }
   }
   return out;
+}
+
+/** The book with ledger payments applied to each deal's schedule (Copilot's overdue / paid answers match the ledger). */
+export async function bookWithPayments(book: CopilotBook): Promise<CopilotBook> {
+  const ledger = await getPaymentLedger(book.deals);
+  if (!ledger) return book;
+  const deals = applyLedgerToDeals(book.deals, ledger);
+  if (deals.every((d, i) => d === book.deals[i])) return book;
+  const byId = new Map(book.byId);
+  for (const d of deals) {
+    byId.set(d.id, d);
+    if (d.mailboxSourceId) byId.set(d.mailboxSourceId, d);
+  }
+  return { ...book, deals, byId };
 }

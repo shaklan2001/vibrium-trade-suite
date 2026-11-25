@@ -11,9 +11,11 @@ import type { CommercialModelFilter } from "@/lib/trade/commercialModel";
 import { getCopilotBook } from "@/lib/trade/copilot/book";
 import { buildContextBlock, dealHref } from "@/lib/trade/copilot/context";
 import { withMailTrail } from "@/lib/trade/copilot/mailTrail";
-import { getPaymentLedger, paymentLines } from "@/lib/trade/copilot/paymentsContext";
+import { bookWithPayments, getPaymentLedger, paymentLines } from "@/lib/trade/copilot/paymentsContext";
 import { parseCopilotQuery, type CopilotQuery } from "@/lib/trade/copilot/query";
-import { retrieveForQuery, type Retrieval } from "@/lib/trade/copilot/retrieve";
+import { retrieveForQuery, type PersonFilter, type Retrieval } from "@/lib/trade/copilot/retrieve";
+import { personInText } from "@/lib/trade/people/people";
+import { getPeopleIndex } from "@/lib/trade/people/peopleStore";
 import { noteTextsFor } from "@/lib/mail/dealRecords";
 import type { NextActionState } from "@/lib/mail/nextAction";
 import { getMailStore, mailStoreConfigured } from "@/lib/mail/store";
@@ -53,7 +55,7 @@ export async function buildGroundedChatMessage(
 
   let book;
   try {
-    book = await getCopilotBook();
+    book = await bookWithPayments(await getCopilotBook());
   } catch (err) {
     const reason = err instanceof Error ? err.message : "book unavailable";
     return {
@@ -65,11 +67,40 @@ export async function buildGroundedChatMessage(
     };
   }
 
+  // Team people weighted by their mail (src/lib/trade/people): "Radha's POs" → the deals Radha works.
+  const people = await getPeopleIndex().catch(() => null);
+  const nameOf = new Map((people?.people || []).map((p) => [p.id, p.kind === "shared" ? `${p.name} (shared mailbox)` : p.name]));
+  const personId = people && !query.poNumbers.length && !query.dealCodes.length ? personInText(question, people.people) : null;
+  const who = personId ? people!.people.find((p) => p.id === personId) : undefined;
+  const person: PersonFilter | undefined =
+    who && people
+      ? {
+          id: who.id,
+          name: who.name,
+          emails: who.emails,
+          isActive: who.isActive,
+          deals: new Map(
+            Object.entries(people.deals).flatMap(([key, rows]) => {
+              const r = rows.find((x) => x.personId === who.id);
+              return r ? [[key, { role: r.role, score: r.score, lastAt: r.lastAt, lastAction: r.lastAction, latestSender: r.latestSender }] as const] : [];
+            }),
+          ),
+        }
+      : undefined;
   const retrieval = retrieveForQuery(book, query, {
     bookFilter: opts.bookFilter,
     focusDealId: opts.focusDealId,
     activeDealIds: opts.activeDealIds,
+    person,
   });
+  const teamLine = (d: Deal) => {
+    const rows = people?.deals[d.mailboxSourceId || d.id];
+    if (!rows?.length) return null;
+    return rows
+      .slice(0, 4)
+      .map((r) => `${nameOf.get(r.personId) || r.personId} ${r.role === "owner" ? `owner${r.pinned ? " (set by hand)" : ""}` : "works on it"}${r.latestSender ? ", sent the latest reply" : ""} (last ${r.lastAction === "sent" ? "replied" : "received"} ${r.lastAt.slice(0, 10)})`)
+      .join("; ");
+  };
   // Deal answers get each deal's latest emails (with links) straight from the mail store.
   if (retrieval.mode === "deal" && retrieval.deals.length) {
     const ledger = await getPaymentLedger(book.deals);
@@ -78,6 +109,8 @@ export async function buildGroundedChatMessage(
         const withMail = await withMailTrail(d);
         const notes = ledger ? paymentLines(ledger, d) : [];
         const extra = await dealExtraNotes(d);
+        const team = teamLine(d);
+        if (team) extra.unshift(`- Team on this deal (from who replied and who it was sent to): ${team}`);
         const merged = { ...withMail, ...(extra.length ? { extraNotes: extra } : {}) };
         return notes.length ? { ...merged, paymentNotes: notes } : merged;
       }),
@@ -87,6 +120,13 @@ export async function buildGroundedChatMessage(
   const productBlock = retrieval.mode === "deal" ? "" : await productHistoryBlock(question);
   const block = buildContextBlock(query, retrieval, {
     bookFilterLabel: BOOK_LABEL[query.model || opts.bookFilter || "all"],
+    rowNote: person
+      ? (d) => {
+          const r = person.deals.get(d.mailboxSourceId || d.id);
+          if (!r) return null;
+          return `${person.name}: ${r.role === "owner" ? "owner" : "works on it"}${r.latestSender ? ", sent the latest reply" : ""} (last ${r.lastAction === "sent" ? "replied" : "received"} ${r.lastAt.slice(0, 10)})`;
+        }
+      : undefined,
   });
 
   const shown = retrieval.mode === "deal" ? retrieval.deals : retrieval.deals.slice(0, 6);

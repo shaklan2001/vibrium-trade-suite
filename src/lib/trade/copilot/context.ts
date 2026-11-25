@@ -284,7 +284,7 @@ const RULES = `ANSWER RULES
 export function buildContextBlock(
   q: CopilotQuery,
   r: Retrieval,
-  opts: { now?: Date; bookFilterLabel?: string; budget?: number } = {},
+  opts: { now?: Date; bookFilterLabel?: string; budget?: number; rowNote?: (d: Deal) => string | null } = {},
 ): string {
   const budget = opts.budget ?? CONTEXT_BUDGET;
   const now = opts.now ?? new Date();
@@ -312,7 +312,10 @@ export function buildContextBlock(
           ? `Showing the ${r.deals.length} most urgent / recent:`
           : "All of them:"),
     );
-    for (const d of r.deals) parts.push(dealRow(d));
+    for (const d of r.deals) {
+      const note = opts.rowNote?.(d);
+      parts.push(note ? `${dealRow(d)} · ${note}` : dealRow(d));
+    }
   } else if (r.mode === "attention" || r.mode === "overview") {
     const crit = r.attention.filter((a) => a.severity === "critical");
     const warn = r.attention.filter((a) => a.severity === "warning");

@@ -751,6 +751,8 @@ export interface PaymentCheckpoint {
   checkpoint?: string;
   /** Source message confirming the gate and/or receipt */
   confirmationSourceId?: string;
+  /** Marked received from the payment ledger (a payment email, a Copilot update or a bank advice). */
+  fromLedger?: boolean;
   /** Related mailbox source ids for audit trail */
   sourceIds?: string[];
   termsExcerpt?: string;
@@ -843,6 +845,10 @@ export interface Deal {
   commission?: CommissionChecklist;
   /** PO/PI payment-term installments + checkpoint confirmations */
   paymentSchedule?: DealPaymentSchedule;
+  /** The schedule as read from the mail, before ledger payments were applied (ledgerApply.ts). */
+  paymentScheduleMail?: DealPaymentSchedule;
+  /** The payment clock as read from the mail, before ledger payments were applied. */
+  paymentMail?: PaymentClock;
   /** Deal-level economics for Command Center (seeded + agent-refined) */
   economics?: DealEconomics;
   /** Cash exposure ledger (Finance workspace) */

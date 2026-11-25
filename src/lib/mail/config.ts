@@ -43,6 +43,10 @@ export const MAIL_LIMITS = {
   /** The shared inbox wants all mail: a year by default, up to ten. */
   defaultBackfillDays: Number(env("MAIL_DEFAULT_BACKFILL_DAYS") || 365),
   maxBackfillDays: 3650,
+  /** The inbox lists the last year only (days). */
+  viewDays: Number(env("MAIL_VIEW_DAYS") || 365),
+  /** A conversation with no deal and no activity for this long is dead and hidden (days). */
+  deadDays: Number(env("MAIL_DEAD_DAYS") || 180),
   /** Re-list a window behind the cursor so late-indexed mail is not missed. */
   overlapMs: 2 * 60 * 60 * 1000,
   bodyChars: 20_000,
