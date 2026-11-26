@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { classifyBankLine } from "../src/lib/mail/bankStatement";
 import { parseLooseDate, parseStatement } from "../src/lib/mail/statementParse";
+import { tidyAmount } from "../src/lib/mail/statementOcr";
 
 let passed = 0;
 function test(name: string, fn: () => void) {
@@ -178,6 +179,55 @@ test("two advices in one file are two lines; a debit advice is a payment out", (
 test("an AI-read credit advice that mentions charges is still an inward remittance", () => {
   assert.equal(classifyBankLine("Credit advice: By order of BUYER IMPORTS SA DE CV via HSBC BANK USA NA. Amount credited after charges.", 0, 10961.7), "inward_remittance");
   assert.equal(classifyBankLine("SERVICE CHARGES OCT", 25, 0), "charges");
+});
+
+test("OCR'd amounts: Indian and Western grouping, swapped separators, Cr / Dr marks", () => {
+  assert.equal(tidyAmount("12,34,567.89 Cr"), "1234567.89");
+  assert.equal(tidyAmount("12.34.567.89C"), "1234567.89");
+  assert.equal(tidyAmount("2,50,001.5"), "250001.50");
+  assert.equal(tidyAmount("1,00,000.00"), "100000.00");
+  assert.equal(tidyAmount("250000.00"), "250000.00");
+  assert.equal(tidyAmount("1,234.50 Dr"), "-1234.50");
+  assert.equal(tidyAmount("TOTAL"), "TOTAL");
+});
+
+// A made-up ICICI-style statement as statementOcr writes it: cells joined with " | ", the header row first.
+const OCR_TABLE = [
+  "Bank account Statement from 02-11-2026 to 08-11-2026 .",
+  "Account Number | Tran Date | Value Date | Cheque No | Particulars | Dr_Amt | Cr_Amt | Balance Amount | Deposit Branch",
+  " | 02-NOV-2026 |  |  | B/F |  |  | 1000000.00 | ",
+  " | 02-Nov-2026 |  |  | TRF/ACME TRAVELS PVT LTD/ICI | 250000.00 | 0.00 | 750000.00 | ",
+  " | 03-Nov-2026 |  |  | INF/INFT/000011112222/12345678 /SAMPLE INDUSTRIES /COMISSION CI 01 02 | 0.00 | 120000.00 | 870000.00 | ",
+  // OCR read the balance with an extra digit; the next line shows the right one.
+  " | 04-Nov-2026 |  |  | TRF/SAMPLE PAYEE/ICI | 30000.00 | 0.00 | 8410000.00 | ",
+  " | 05-Nov-2026 |  |  | BIL/PAVC/XYZ0000001/Visa/Sample | 100000.50 | 0.00 | 739999.50 | ",
+  // OCR dropped a digit of the amount; both balances agree with each other.
+  " | 06-Nov-2026 |  |  | BIL/INFT/XYZ0000002/Auto Loan XX00001 EMI Sample | 4000.00 | 0.00 | 699999.50 | ",
+  " | 07-Nov-2026 |  |  | BIL/INFT/XYZ0000003/Auto Loan XX00002 EMI Sample | 20000.00 | 0.00 | 679999.50 | ",
+].join("\n");
+
+test("scanned ICICI-style table: Dr_Amt / Cr_Amt columns, B/F opens the running balance", () => {
+  const p = parseStatement({ text: OCR_TABLE });
+  assert.equal(p.method, "table");
+  assert.equal(p.lines.length, 6);
+  assert.equal(p.skipped, 0);
+  assert.equal(p.lines[0]!.debit, 250000);
+  assert.equal(p.lines[1]!.credit, 120000);
+  assert.equal(p.lines[1]!.kind, "commission");
+});
+
+test("running balance: a misread balance or amount is fixed when the next line confirms it", () => {
+  const p = parseStatement({ text: OCR_TABLE });
+  assert.deepEqual(p.balanceCheck, { agreed: 4, corrected: 2, unconfirmed: 0 });
+  assert.equal(p.lines[2]!.balance, 840000);
+  assert.equal(p.lines[4]!.debit, 40000);
+});
+
+test("running balance: a line the next one cannot settle is counted, not changed", () => {
+  const t = OCR_TABLE.replace("| 4000.00 |", "| 40000.00 |").replace("679999.50", "600000.00");
+  const p = parseStatement({ text: t });
+  assert.equal(p.balanceCheck!.unconfirmed, 1);
+  assert.equal(p.lines[5]!.debit, 20000);
 });
 
 console.log(`\n${passed} passed`);

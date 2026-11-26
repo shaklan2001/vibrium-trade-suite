@@ -3,6 +3,8 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { jsonError, NO_STORE } from "@/lib/mail/api";
 import { extractDocText, extOf } from "@/lib/mail/docText";
 import { ocrBuffer } from "@/lib/mail/ocr";
+import { tableOcrImage, tableOcrPdf } from "@/lib/mail/statementOcr";
+import { MAX_STATEMENT_BYTES, MAX_UPLOAD_PARTS, takeUploadParts, validUploadId } from "@/lib/mail/statementUpload";
 import { parseStatement } from "@/lib/mail/statementParse";
 import { readStatementWithAgent, statementAgentId } from "@/lib/mail/statementAgent";
 import { loadMatchContext, storeStatementLines } from "@/lib/mail/statementJobs";
@@ -12,15 +14,16 @@ import { getMailStore, mailStoreConfigured } from "@/lib/mail/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Hobby functions stop at 60 s; the OCR and agent waits are capped below that.
-export const maxDuration = 60;
+// A scanned 10-page statement is read cell by cell (~6 s a page); the OCR stops well before this.
+export const maxDuration = 300;
+const OCR_BUDGET_MS = 230_000;
 
-const MAX_BYTES = 8 * 1024 * 1024;
 const OK_EXT = new Set([".pdf", ".xlsx", ".xls", ".csv", ".html", ".htm", ".txt", ".jpg", ".jpeg", ".png"]);
 const SCAN_EXT = new Set([".pdf", ".jpg", ".jpeg", ".png"]);
 
 /**
  * POST /api/payments/statements   multipart: file (PDF / Excel / CSV / HTML; scanned PDF or photo → OCR), agent=1 to force the AI reader
+ *                                  or, for a file over 3.5 MB sent in parts: uploadId, parts, name, type
  * → counts and the trade lines found. Only trade lines are stored (remittances, commission, known parties);
  * salary, loan, tax, card and personal lines are counted and dropped. The file is kept in S3 with the
  * other documents and linked from its lines.
@@ -30,24 +33,53 @@ export async function POST(req: Request) {
   if (limited) return limited;
   if (!mailStoreConfigured()) return jsonError("No database configured", 503);
   try {
+    const started = Date.now();
     const form = await req.formData();
-    const file = form.get("file");
-    if (!(file instanceof File)) return jsonError("Choose a statement file", 400);
+    const upload = form.get("file");
+    // Small files come whole; larger ones were sent to /api/payments/statements/parts first.
+    let file: { name: string; size: number; type: string };
+    let buf: Buffer;
+    if (upload instanceof File) {
+      file = { name: upload.name, size: upload.size, type: upload.type };
+      if (file.size > MAX_STATEMENT_BYTES) return jsonError("File is larger than 20 MB", 413);
+      buf = Buffer.from(await upload.arrayBuffer());
+    } else {
+      const uploadId = form.get("uploadId");
+      const parts = Number(form.get("parts"));
+      const name = String(form.get("name") || "");
+      if (!validUploadId(uploadId) || !Number.isInteger(parts) || parts < 1 || parts > MAX_UPLOAD_PARTS || !name) return jsonError("Choose a statement file", 400);
+      const joined = await takeUploadParts(uploadId, parts);
+      if (!joined) return jsonError("The upload was incomplete. Upload the file again.", 400);
+      if (joined.length > MAX_STATEMENT_BYTES) return jsonError("File is larger than 20 MB", 413);
+      file = { name, size: joined.length, type: String(form.get("type") || "") };
+      buf = joined;
+    }
     const ext = extOf(file.name);
     if (!OK_EXT.has(ext)) return jsonError("Upload a PDF, Excel, CSV or HTML statement", 400);
-    if (file.size > MAX_BYTES) return jsonError("File is larger than 8 MB", 413);
-    const buf = Buffer.from(await file.arrayBuffer());
     const useAgent = form.get("agent") === "1";
 
     const isImage = ext === ".jpg" || ext === ".jpeg" || ext === ".png";
     const doc = isImage ? { status: "empty" as const, text: "" } : await extractDocText(buf, file.name);
     let ocred = false;
+    let pagesRead: { read: number; total: number } | null = null;
     if (doc.status === "empty" && SCAN_EXT.has(ext)) {
-      // A scanned advice / photo: read it with OCR (first pages only; an advice is one page).
-      const read = await ocrBuffer(buf, file.name, { deadline: Date.now() + 40_000, maxPages: 3 }).catch(() => null);
-      const text = (read?.pages || []).map((p) => p.text).join("\n");
+      // A scan or a statement printed as an image. Statement tables are read cell by cell (the ruled
+      // lines say which word belongs to which column); a scanned advice has no table and falls back
+      // to plain OCR below.
+      const deadline = started + OCR_BUDGET_MS;
+      const table = await (isImage ? tableOcrImage(buf) : tableOcrPdf(buf, { deadline })).catch((err) => {
+        console.warn("[payments/statements] table OCR failed", err instanceof Error ? err.message : err);
+        return null;
+      });
+      let text = table?.text || "";
+      if (table) pagesRead = { read: table.pagesRead, total: table.pages };
+      if (!parseStatement({ text }).lines.length) {
+        const read = await ocrBuffer(buf, file.name, { deadline: Math.min(deadline, Date.now() + 40_000), maxPages: 3 }).catch(() => null);
+        const plain = (read?.pages || []).map((p) => p.text).join("\n");
+        if (plain.replace(/\s/g, "").length > text.replace(/\s/g, "").length / 2) text = plain;
+      }
       if (text.replace(/\s/g, "").length < 40) {
-        return jsonError("This file is a scan and its text could not be read. Download the advice from HSBC again as a PDF.", 422);
+        return jsonError("This file is a scan and its text could not be read. Download it from the bank again as a PDF.", 422);
       }
       doc.text = text;
       doc.status = "ok";
@@ -63,7 +95,9 @@ export async function POST(req: Request) {
     let lines = parsed.lines;
     let skipped = parsed.skipped;
     let usedAgent = false;
-    if ((useAgent || !lines.length) && statementAgentId()) {
+    // A table whose every line agrees with its running balance is not handed to the AI reader.
+    const verified = Boolean(parsed.balanceCheck && !parsed.balanceCheck.unconfirmed);
+    if ((useAgent ? !verified : !lines.length) && statementAgentId()) {
       const viaAgent = await readStatementWithAgent(doc.text);
       if (viaAgent?.lines.length) {
         lines = viaAgent.lines;
@@ -108,6 +142,8 @@ export async function POST(req: Request) {
         currency: lines[0]?.currency || "INR",
         period: { from: lines.reduce((a, l) => (l.date < a ? l.date : a), lines[0]!.date), to: lines.reduce((a, l) => (l.date > a ? l.date : a), lines[0]!.date) },
         skipped,
+        balanceCheck: usedAgent ? null : (parsed.balanceCheck ?? null),
+        pagesRead,
         fileKept: Boolean(kept?.s3_key),
         ...result,
       },

@@ -19,6 +19,8 @@ export type ParsedStatement = {
   method: "finacle_html" | "table" | "text" | "advice" | "none";
   /** Date-looking lines whose amount or direction could not be worked out. */
   skipped: number;
+  /** Tables with a running balance: lines whose amount agrees with the balance, lines fixed from it, lines it could not confirm. */
+  balanceCheck?: { agreed: number; corrected: number; unconfirmed: number };
 };
 
 const MONTHS: Record<string, string> = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" };
@@ -204,11 +206,12 @@ export function parseStatementText(text: string): ParsedStatement {
   return { lines, currency, account, method: lines.length ? "text" : "none", skipped };
 }
 
-const HEADER = {
+/** Column headings of a statement table (also used by statementOcr to pick the columns worth reading). */
+export const HEADER = {
   date: /^(?:txn |tran(?:saction)? |posting |booking )?date$|^date$/i,
   desc: /narration|description|particulars|details|remarks|transaction/i,
-  debit: /debit|withdraw|paid out|money out|^dr$/i,
-  credit: /credit|deposit|paid in|money in|^cr$/i,
+  debit: /debit|withdraw|paid out|money out|^dr$|\bdr[\s_.]*amt/i,
+  credit: /credit|deposits?$|^deposit amt|paid in|money in|^cr$|\bcr[\s_.]*amt/i,
   balance: /balance/i,
   amount: /^amount$/i,
   type: /^(?:dr\/cr|cr\/dr|type)$/i,
@@ -246,6 +249,7 @@ export function parseStatementTable(text: string): ParsedStatement {
   };
   const lines: BankLine[] = [];
   let skipped = 0;
+  let opening: number | null = null;
   for (const cells of grid.slice(hi + 1)) {
     const date = parseLooseDate(cells[cDate] || "", year);
     if (!date) continue;
@@ -263,14 +267,61 @@ export function parseStatementTable(text: string): ParsedStatement {
         else credit = Math.abs(a.value);
       }
     }
+    const balance = cBal >= 0 ? (num(cells[cBal])?.value ?? null) : null;
     if (!debit && !credit) {
-      skipped += 1;
+      // "B/F" / opening balance: no amount, but it starts the running balance.
+      if (balance != null && !lines.length) opening = balance;
+      else skipped += 1;
       continue;
     }
-    const balance = cBal >= 0 ? (num(cells[cBal])?.value ?? null) : null;
     lines.push(toLine({ date, particulars: cells[cDesc] || cells.join(" "), debit, credit, balance }, account, currency));
   }
-  return { lines, currency, account, method: lines.length ? "table" : "none", skipped };
+  const balanceCheck = checkRunningBalance(lines, opening);
+  return { lines, currency, account, method: lines.length ? "table" : "none", skipped, ...(balanceCheck ? { balanceCheck } : {}) };
+}
+
+const cents = (n: number) => Math.round(n * 100);
+
+/**
+ * Every line of a statement with a running balance must satisfy  previous − debit + credit = balance.
+ * A line that does not was misread somewhere (OCR: a digit, a dropped comma). When the next line
+ * agrees with one reading and not the other, the line is fixed: a wrong balance takes the computed
+ * one; a wrong amount (or a debit read as a credit) takes the balance's change. Anything the next
+ * line cannot settle is counted as unconfirmed, never guessed.
+ */
+export function checkRunningBalance(lines: BankLine[], opening: number | null) {
+  const withBal = lines.filter((l) => l.balance != null).length;
+  if (lines.length < 2 || withBal < lines.length * 0.8) return null;
+  let agreed = 0;
+  let corrected = 0;
+  let unconfirmed = 0;
+  let prev = opening;
+  const follows = (from: number, l: BankLine | undefined) => l?.balance != null && cents(from - l.debit + l.credit) === cents(l.balance);
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]!;
+    if (l.balance == null) {
+      prev = null;
+      continue;
+    }
+    if (prev == null) {
+      prev = l.balance;
+      continue;
+    }
+    const computed = prev - l.debit + l.credit;
+    if (cents(computed) === cents(l.balance)) agreed++;
+    else if (follows(computed, lines[i + 1])) {
+      l.balance = Math.round(computed * 100) / 100;
+      corrected++;
+    } else if (follows(l.balance, lines[i + 1]) && cents(l.balance) !== cents(prev)) {
+      const change = Math.round((l.balance - prev) * 100) / 100;
+      l.debit = change < 0 ? -change : 0;
+      l.credit = change > 0 ? change : 0;
+      l.kind = classifyBankLine(l.particulars, l.debit, l.credit);
+      corrected++;
+    } else unconfirmed++;
+    prev = l.balance;
+  }
+  return { agreed, corrected, unconfirmed };
 }
 
 const ADVICE_HEAD = /\b(credit|debit)\s+advice\b/i;
