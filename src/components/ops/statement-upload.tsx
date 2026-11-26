@@ -33,7 +33,20 @@ type Line = {
   reconciled?: { status: string; dealCode: string | null; href: string | null; po: string | null; side: string | null; amount: number | null; by: string; at: string } | null;
 };
 
-type UploadResult = { ok: boolean; ids?: string[]; lines: number; tradeLines: number; stored: number; alreadyStored: number; dropped: number; error?: string };
+type UploadResult = {
+  ok: boolean;
+  ids?: string[];
+  lines: number;
+  tradeLines: number;
+  stored: number;
+  alreadyStored: number;
+  dropped: number;
+  error?: string;
+  /** Scans: pages read before the time limit. */
+  pagesRead?: { read: number; total: number } | null;
+  /** Statements with a running balance: lines it could not confirm. */
+  balanceCheck?: { agreed: number; corrected: number; unconfirmed: number } | null;
+};
 
 type Tab = "open" | "recorded" | "matched" | "ignored";
 const TABS: { key: Tab; label: string; has: (s: Status) => boolean }[] = [
@@ -42,6 +55,19 @@ const TABS: { key: Tab; label: string; has: (s: Status) => boolean }[] = [
   { key: "matched", label: "Matched to email", has: (s) => s === "matched" },
   { key: "ignored", label: "Not a deal payment", has: (s) => s === "ignored" },
 ];
+
+/** Files per batch, and the size above which a file is sent in parts (Vercel's request limit is 4.5 MB). */
+const MAX_FILES = 10;
+const PART_BYTES = 3_500_000;
+
+/** A reply that is not the route's JSON: the platform answered (too large, timed out) or the server failed. */
+function failureText(status: number) {
+  if (status === 413) return "the file is too large";
+  if (status === 504 || status === 524) return "reading took too long; try fewer pages at a time";
+  if (status === 429) return "too many uploads at once; wait a minute and try again";
+  if (status >= 500) return `the server could not read it (error ${status})`;
+  return "could not be read";
+}
 
 const fmt = (n: number, cur: string) => `${cur} ${n.toLocaleString(cur === "INR" ? "en-IN" : "en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const day = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
@@ -59,6 +85,7 @@ export function StatementUpload() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const [lines, setLines] = useState<Line[] | null>(null);
   const [tab, setTab] = useState<Tab>("open");
@@ -79,6 +106,30 @@ export function StatementUpload() {
     return onDealUpdatesChanged(() => void load());
   }, [load]);
 
+  /** One file: whole when small, else in parts (Vercel refuses a request body over 4.5 MB). */
+  async function send(file: File): Promise<{ res: Response; json: UploadResult | null }> {
+    const body = new FormData();
+    if (file.size <= PART_BYTES) body.append("file", file);
+    else {
+      const uploadId = crypto.randomUUID();
+      const parts = Math.ceil(file.size / PART_BYTES);
+      for (let i = 0; i < parts; i++) {
+        const part = new FormData();
+        part.append("uploadId", uploadId);
+        part.append("index", String(i));
+        part.append("part", file.slice(i * PART_BYTES, (i + 1) * PART_BYTES), `${i}`);
+        const r = await fetch("/api/payments/statements/parts", { method: "POST", body: part });
+        if (!r.ok) return { res: r, json: (await r.json().catch(() => null)) as UploadResult | null };
+      }
+      body.append("uploadId", uploadId);
+      body.append("parts", String(parts));
+      body.append("name", file.name);
+      body.append("type", file.type);
+    }
+    const res = await fetch("/api/payments/statements", { method: "POST", body });
+    return { res, json: (await res.json().catch(() => null)) as UploadResult | null };
+  }
+
   async function run() {
     if (!files.length || busy) return;
     setBusy(true);
@@ -89,17 +140,19 @@ export function StatementUpload() {
     let read = 0;
     let trade = 0;
     let again = 0;
-    for (const file of files) {
+    for (const [i, file] of files.entries()) {
+      setProgress(`Reading ${i + 1} of ${files.length}: ${file.name}${file.size > PART_BYTES ? " (large scan, can take a minute or two)" : ""}`);
       try {
-        const body = new FormData();
-        body.append("file", file);
-        const res = await fetch("/api/payments/statements", { method: "POST", body });
-        const json = (await res.json()) as UploadResult;
-        if (!res.ok || !json.ok) {
-          failed.push(`${file.name}: ${json.error || "could not be read"}`);
+        const { res, json } = await send(file);
+        if (!res.ok || !json?.ok) {
+          failed.push(`${file.name}: ${json?.error || failureText(res.status)}`);
           continue;
         }
         read += 1;
+        if (json.pagesRead && json.pagesRead.read < json.pagesRead.total)
+          failed.push(`${file.name}: only pages 1–${json.pagesRead.read} of ${json.pagesRead.total} were read in time. Upload the rest as a separate PDF.`);
+        if (json.balanceCheck?.unconfirmed)
+          failed.push(`${file.name}: ${json.balanceCheck.unconfirmed} line${json.balanceCheck.unconfirmed === 1 ? "" : "s"} did not agree with the running balance; check ${json.balanceCheck.unconfirmed === 1 ? "it" : "them"} against the PDF.`);
         trade += json.tradeLines;
         again += json.alreadyStored;
         for (const id of json.ids || []) ids.add(id);
@@ -107,6 +160,7 @@ export function StatementUpload() {
         failed.push(`${file.name}: upload failed, check your connection`);
       }
     }
+    setProgress(null);
     setBusy(false);
     setFresh(ids);
     setFiles([]);
@@ -138,7 +192,7 @@ export function StatementUpload() {
             Bank advices &amp; statements
           </h3>
           <p className="mt-1 max-w-2xl text-xs text-zinc-500">
-            Upload the HSBC credit / debit advice PDFs (or a statement). Each payment is matched to its payment email or PO. The ones we can&apos;t place wait under{" "}
+            Upload the HSBC credit / debit advice PDFs or bank statements, up to {MAX_FILES} at a time (scanned PDFs too). Each payment is matched to its payment email or PO. The ones we can&apos;t place wait under{" "}
             <b>Needs a deal</b>: pick the deal, confirm, and the payment is recorded on the PO and the team is told. Each PDF is kept with the other documents. Salary, loan, tax and card lines are dropped.
           </p>
         </div>
@@ -150,8 +204,9 @@ export function StatementUpload() {
             accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.csv,.html,.htm,.txt"
             className="hidden"
             onChange={(e) => {
-              setFiles(Array.from(e.target.files || []));
-              setError(null);
+              const chosen = Array.from(e.target.files || []);
+              setFiles(chosen.slice(0, MAX_FILES));
+              setError(chosen.length > MAX_FILES ? `Up to ${MAX_FILES} files at a time: the first ${MAX_FILES} are chosen.` : null);
               setSummary(null);
             }}
           />
@@ -165,6 +220,11 @@ export function StatementUpload() {
         </div>
       </div>
 
+      {progress ? (
+        <p className="mt-3 text-xs text-zinc-600" role="status" aria-live="polite">
+          {progress}
+        </p>
+      ) : null}
       {error ? <p className="mt-3 whitespace-pre-line rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p> : null}
       {summary ? (
         <p className="br-summary">
